@@ -1,0 +1,44 @@
+[
+  {
+    "id": "20260420233412_a7f2503c",
+    "date": "2026-04-20",
+    "crop": "小麦",
+    "plot": "默认地块",
+    "cost_type": "种子",
+    "item_name": "",
+    "quantity": 1,
+    "unit": "项",
+    "unit_price": 0.0,
+    "total_amount": 0.0,
+    "notes": "",
+    "created_at": "2026-04-20 23:34:12"
+  },
+  {
+    "id": "20260421005235_4c05df32",
+    "date": "2026-04-21",
+    "crop": "小麦",
+    "plot": "默认地块",
+    "cost_type": "种子",
+    "item_name": "",
+    "quantity": 1,
+    "unit": "项",
+    "unit_price": 100.0,
+    "total_amount": 100.0,
+    "notes": "",
+    "created_at": "2026-04-21 00:52:35"
+  },
+  {
+    "id": "20260424022952_00c228c2",
+    "date": "2026-04-24",
+    "crop": "",
+    "plot": "默认地块",
+    "cost_type": "种子",
+    "item_name": "",
+    "quantity": 1,
+    "unit": "项",
+    "unit_price": 0.0,
+    "total_amount": 0.0,
+    "notes": "",
+    "created_at": "2026-04-24 02:29:52"
+  }
+]

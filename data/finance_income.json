@@ -1,0 +1,28 @@
+[
+  {
+    "id": "20260421005249_3258472d",
+    "date": "2026-04-21",
+    "crop": "小麦",
+    "plot": "默认地块",
+    "income_type": "销售",
+    "quantity": 0.0,
+    "unit_price": 0,
+    "total_amount": 0.0,
+    "buyer": "",
+    "notes": "",
+    "created_at": "2026-04-21 00:52:49"
+  },
+  {
+    "id": "20260424115929_c5ba121c",
+    "date": "2026-04-24",
+    "crop": "小麦",
+    "plot": "默认地块",
+    "income_type": "销售",
+    "quantity": 0.0,
+    "unit_price": 0,
+    "total_amount": 0.0,
+    "buyer": "",
+    "notes": "",
+    "created_at": "2026-04-24 11:59:29"
+  }
+]

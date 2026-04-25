@@ -1,0 +1,6 @@
+.env
+/.claude/
+/.idea/
+/memory/
+*.md
+!README.md
