@@ -1,0 +1,190 @@
+{
+  "crop_name": "番茄",
+  "aliases": ["西红柿", "洋柿子", "六月柿"],
+  "suitable_regions": ["全国", "设施栽培", "露地栽培"],
+  "planting_seasons": {
+    "spring": {
+      "name": "春番茄",
+      "sowing_time": "1-2月育苗，3-4月定植",
+      "harvest_time": "5-7月",
+      "suitable_climate": "露地春栽",
+      "notes": "需要育苗移栽"
+    },
+    "autumn": {
+      "name": "秋番茄",
+      "sowing_time": "6-7月育苗，7-8月定植",
+      "harvest_time": "9-11月",
+      "suitable_climate": "露地秋栽",
+      "notes": "避开高温期"
+    },
+    "greenhouse": {
+      "name": "设施番茄",
+      "sowing_time": "全年可种",
+      "harvest_time": "根据播种时间",
+      "suitable_climate": "温室、大棚",
+      "notes": "可周年生产"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["壤土", "砂壤土"],
+    "ph_range": "6.0-7.0",
+    "fertility": "高肥力，富含有机质",
+    "notes": "忌连作，需轮作3年以上"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "25-30℃",
+      "growth": "20-25℃",
+      "fruit_development": "20-25℃",
+      "frost_sensitivity": "低于10℃停止生长，低于0℃冻死"
+    },
+    "water": {
+      "requirement": "喜水但不耐涝",
+      "critical_period": "开花坐果期需水较多"
+    },
+    "light": "喜光作物，每天需要6-8小时光照"
+  },
+  "growth_stages": [
+    {
+      "stage": "播种育苗期",
+      "duration_days": 30,
+      "key_tasks": ["浸种催芽", "播种", "苗期管理", "炼苗"],
+      "notes": "种子消毒，保持25-30℃"
+    },
+    {
+      "stage": "定植缓苗期",
+      "duration_days": 10,
+      "key_tasks": ["定植", "浇水", "遮阴"],
+      "notes": "带土移栽，株距30-40cm，行距50-60cm"
+    },
+    {
+      "stage": "开花坐果期",
+      "duration_days": 20,
+      "key_tasks": ["整枝打杈", "保花保果", "追肥"],
+      "notes": "控制氮肥，增施磷钾肥"
+    },
+    {
+      "stage": "果实膨大期",
+      "duration_days": 30,
+      "key_tasks": ["疏果", "追肥", "浇水", "病虫害防治"],
+      "notes": "每穗留3-5个果"
+    },
+    {
+      "stage": "成熟采收期",
+      "duration_days": 60,
+      "key_tasks": ["分期采收", "水肥管理", "植株调整"],
+      "notes": "青果期采收利于储运，红熟期采收口感佳"
+    }
+  ],
+  "fertilization_guide": [
+    {
+      "time": "定植前",
+      "type": "有机肥+复合肥",
+      "amount": "有机肥5000kg/亩，复合肥50kg/亩",
+      "method": "底肥深施"
+    },
+    {
+      "time": "第一穗果膨大期",
+      "type": "高钾复合肥",
+      "amount": "15-20kg/亩",
+      "method": "追施"
+    },
+    {
+      "time": "第二穗果膨大期",
+      "type": "钾肥",
+      "amount": "10-15kg/亩",
+      "method": "追施"
+    },
+    {
+      "time": "盛果期（叶面肥）",
+      "type": "磷酸二氢钾+钙肥",
+      "amount": "0.2%溶液",
+      "method": "叶面喷施，10天一次"
+    }
+  ],
+  "irrigation_guide": [
+    {
+      "stage": "定植后",
+      "purpose": "缓苗",
+      "amount": "浇透水"
+    },
+    {
+      "stage": "开花坐果期",
+      "purpose": "促花促果",
+      "amount": "适量，保持土壤湿润"
+    },
+    {
+      "stage": "果实膨大期",
+      "purpose": "促果实发育",
+      "amount": "充足水分，忌忽干忽湿"
+    }
+  ],
+  "common_diseases": [
+    {
+      "name": "番茄早疫病",
+      "symptoms": "叶片出现同心轮纹病斑，茎基部褐色凹陷",
+      "prevention": "轮作，清除病残体，喷施百菌清或代森锰锌",
+      "occurrence_stage": "全生育期"
+    },
+    {
+      "name": "番茄晚疫病",
+      "symptoms": "叶片出现水渍状病斑，湿度大时背面有白霉",
+      "prevention": "控制湿度，发病初期喷施甲霜灵",
+      "occurrence_stage": "多雨季节"
+    },
+    {
+      "name": "番茄病毒病",
+      "symptoms": "叶片黄化、皱缩、变小，植株矮化",
+      "prevention": "防治蚜虫传毒，选用抗病品种",
+      "occurrence_stage": "苗期至开花期"
+    },
+    {
+      "name": "番茄青枯病",
+      "symptoms": "中午萎蔫，早晚恢复，维管束变褐",
+      "prevention": "轮作，嫁接栽培，土壤消毒",
+      "occurrence_stage": "开花坐果期"
+    }
+  ],
+  "common_pests": [
+    {
+      "name": "蚜虫",
+      "symptoms": "嫩叶卷曲，分泌蜜露，传播病毒",
+      "control": "黄板诱杀，喷施吡虫啉"
+    },
+    {
+      "name": "白粉虱",
+      "symptoms": "叶片褪绿，分泌蜜露诱发煤污病",
+      "control": "黄板诱杀，喷施噻虫嗪"
+    },
+    {
+      "name": "棉铃虫",
+      "symptoms": "果实被蛀，内有虫粪",
+      "control": "糖醋液诱杀，喷施Bt制剂"
+    }
+  ],
+  "cultivation_tips": [
+    {
+      "topic": "整枝方式",
+      "content": "单干整枝：保留主干，摘除全部侧枝；双干整枝：保留主干和第一花序下的侧枝"
+    },
+    {
+      "topic": "保花保果",
+      "content": "温度适宜时自然授粉，高温或低温时使用坐果灵点花"
+    },
+    {
+      "topic": "疏果",
+      "content": "每穗保留3-5个健壮果实，摘除畸形果、病果"
+    }
+  ],
+  "yield_info": {
+    "low_yield": "3000-5000kg/亩",
+    "medium_yield": "5000-8000kg/亩",
+    "high_yield": "10000kg/亩以上",
+    "factors": ["品种", "管理水平", "病虫害控制", "水肥条件"]
+  },
+  "market_info": {
+    "peak_season": "夏季露地，冬季设施",
+    "price_factors": ["上市时间", "品质", "品种"],
+    "storage_tips": "青果期采收，10-12℃储存可保鲜2-3周"
+  }
+}

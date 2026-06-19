@@ -1,0 +1,78 @@
+{
+  "crop_name": "高粱",
+  "aliases": ["蜀黍", "茭子", "芦粟"],
+  "suitable_regions": ["东北", "西北", "华北", "黄淮海"],
+  "planting_seasons": {
+    "spring": {
+      "name": "春高粱",
+      "sowing_time": "4月下旬-5月中旬",
+      "harvest_time": "9月上旬-9月下旬",
+      "suitable_climate": "气温稳定在12℃以上，土壤5cm地温≥10℃",
+      "notes": "北方主栽模式，生育期120-140天"
+    },
+    "summer": {
+      "name": "夏高粱",
+      "sowing_time": "6月上旬-6月中旬",
+      "harvest_time": "9月下旬-10月中旬",
+      "suitable_climate": "麦茬后抢时播种",
+      "notes": "黄淮海地区为主，生育期90-110天"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["壤土", "沙壤土", "黏壤土"],
+    "ph_range": "6.5-8.0",
+    "fertility": "耐瘠薄，适应各种肥力水平",
+    "drainage": "耐涝性一般，排水良好为宜",
+    "notes": "耐盐碱能力强，可在轻中度盐碱地种植"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "8-10℃（最低），20-25℃（最适）",
+      "growth": "25-30℃",
+      "cold_resistance": "苗期可耐0℃低温，灌浆期<15℃影响品质"
+    },
+    "water": {
+      "critical_period": "拔节至抽穗期需水量最大",
+      "requirement": "全生育期需水300-450mm，极耐旱"
+    },
+    "light": "短日照C4作物，光能利用率高，耐强光"
+  },
+  "growth_stages": [
+    {"stage": "播种出苗期", "duration_days": 10, "key_tasks": ["精细整地", "施足底肥", "药剂拌种"], "notes": "适当浅播，确保全苗"},
+    {"stage": "苗期", "duration_days": 30, "key_tasks": ["间苗定苗", "中耕除草", "防治地下害虫"], "notes": "蹲苗控上促下，培育壮苗"},
+    {"stage": "拔节期", "duration_days": 25, "key_tasks": ["追施拔节肥", "中耕培土", "灌溉"], "notes": "进入快速生长期，需水需肥增加"},
+    {"stage": "抽穗开花期", "duration_days": 15, "key_tasks": ["保持水分供应", "防鸟害", "去杂去劣"], "notes": "对水分最敏感时期"},
+    {"stage": "灌浆成熟期", "duration_days": 35, "key_tasks": ["防旱防涝", "防治穗部病害", "适时收获"], "notes": "穗部下垂、籽粒变硬即可收获"}
+  ],
+  "fertilization_guide": [
+    {"time": "播种前（基肥）", "type": "有机肥+磷钾肥", "amount": "有机肥1500-2000kg/亩，过磷酸钙25-30kg/亩", "method": "耕地前撒施翻入"},
+    {"time": "拔节期（追肥）", "type": "尿素", "amount": "尿素15-20kg/亩", "method": "结合中耕培土施入"},
+    {"time": "抽穗期（补肥）", "type": "磷酸二氢钾", "amount": "0.2%溶液叶面喷施1-2次", "method": "叶面喷施"}
+  ],
+  "irrigation_guide": [
+    {"stage": "播种期", "purpose": "确保出苗", "amount": "底墒水充足即可，高粱耐旱"},
+    {"stage": "拔节期", "purpose": "促进茎叶生长", "amount": "灌水1次（视墒情）"},
+    {"stage": "抽穗开花期", "purpose": "保证正常抽穗", "amount": "保持土壤湿润，遇旱及时灌溉"},
+    {"stage": "灌浆期", "purpose": "促进籽粒饱满", "amount": "适量灌溉，避免大水漫灌"}
+  ],
+  "common_diseases": [
+    {"name": "高粱黑穗病", "symptoms": "穗部变为黑色粉状物，植株矮化", "prevention": "选用抗病品种，药剂拌种，轮作倒茬", "occurrence_stage": "抽穗开花期"},
+    {"name": "高粱叶斑病", "symptoms": "叶片出现椭圆形褐色病斑", "prevention": "合理密植改善通风，发病初期喷施多菌灵", "occurrence_stage": "拔节至灌浆期"},
+    {"name": "高粱纹枯病", "symptoms": "叶鞘出现水渍状斑纹，逐渐扩展", "prevention": "降低密度，控制氮肥，发病时喷井冈霉素", "occurrence_stage": "拔节至抽穗期"}
+  ],
+  "common_pests": [
+    {"name": "高粱蚜虫", "symptoms": "密集叶片背面吸食汁液，诱发煤污病", "control": "吡虫啉或抗蚜威喷雾"},
+    {"name": "高粱螟虫", "symptoms": "幼虫蛀入茎秆取食，造成枯心或折茎", "control": "拔节前撒施颗粒剂，成虫期灯光诱杀"}
+  ],
+  "yield_info": {
+    "low_yield": "300-400kg/亩",
+    "medium_yield": "500-600kg/亩",
+    "high_yield": "800-1000kg/亩",
+    "factors": ["品种（杂交种/常规种）", "播种密度", "水肥管理", "病虫害防治"]
+  },
+  "market_info": {
+    "peak_season": "9-11月（新粮上市）",
+    "price_factors": ["酿酒需求", "饲料需求", "进口量", "品种（糯高粱/粳高粱）"],
+    "storage_tips": "干燥至含水量≤13%，防潮防虫，与玉米类似储存条件"
+  }
+}

@@ -1,0 +1,178 @@
+{
+  "crop_name": "棉花",
+  "aliases": ["棉", "棉花作物", "棉麻"],
+  "suitable_regions": ["西北", "黄淮海", "华北", "长江流域"],
+  "planting_seasons": {
+    "spring_cotton": {
+      "name": "春棉",
+      "sowing_time": "4月中下旬",
+      "harvest_time": "9月-11月（分批采收）",
+      "suitable_climate": "温带、暖温带，无霜期180天以上",
+      "notes": "生育期130-160天，需≥10℃积温3200-4200℃"
+    },
+    "summer_cotton": {
+      "name": "夏棉",
+      "sowing_time": "5月下旬-6月上旬",
+      "harvest_time": "10月-11月",
+      "suitable_climate": "麦后复种，生育期较短",
+      "notes": "生育期100-120天，产量略低于春棉"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["壤土", "砂壤土", "轻黏土"],
+    "ph_range": "6.5-8.0",
+    "fertility": "中等以上肥力，有机质丰富",
+    "drainage": "排水良好，地下水位1.5m以下"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "12℃（最低），25-30℃（最适）",
+      "growth": "25-30℃",
+      "cold_resistance": "低于15℃蕾铃脱落增加，低于10℃纤维停止发育"
+    },
+    "water": {
+      "annual_rainfall": "500-800mm（或灌溉补充）",
+      "critical_period": "花铃期需水最多，占全生育期50%以上"
+    },
+    "light": "喜光作物，每天需要10-12小时充足光照"
+  },
+  "growth_stages": [
+    {
+      "stage": "播种出苗期",
+      "duration_days": 10,
+      "key_tasks": ["整地覆膜", "施基肥", "精量播种"],
+      "notes": "膜下滴灌播种，播深2-3cm，一播全苗"
+    },
+    {
+      "stage": "苗期",
+      "duration_days": 35,
+      "key_tasks": ["查苗补苗", "中耕松土", "防治苗病"],
+      "notes": "蹲苗促根，控制地上部徒长"
+    },
+    {
+      "stage": "蕾期",
+      "duration_days": 25,
+      "key_tasks": ["中耕培土", "追施蕾肥", "整枝抹杈"],
+      "notes": "营养生长向生殖生长过渡，合理化控"
+    },
+    {
+      "stage": "花铃期",
+      "duration_days": 50,
+      "key_tasks": ["追施花铃肥", "灌溉", "打顶", "病虫害防治"],
+      "notes": "水肥需求高峰期，7月中旬打顶"
+    },
+    {
+      "stage": "吐絮期",
+      "duration_days": 45,
+      "key_tasks": ["控水控肥", "催熟", "分批采收"],
+      "notes": "停止浇水，促进吐絮，9月开始采摘"
+    },
+    {
+      "stage": "收获期",
+      "duration_days": 50,
+      "key_tasks": ["分批采摘", "晾晒", "分级", "交售"],
+      "notes": "霜前花品质好，霜后花品质差，需分开"
+    }
+  ],
+  "fertilization_guide": [
+    {
+      "time": "基肥（播种前）",
+      "type": "有机肥+复合肥",
+      "amount": "有机肥2000-3000kg/亩，复合肥40-50kg/亩",
+      "method": "撒施后深耕翻入"
+    },
+    {
+      "time": "蕾肥",
+      "type": "尿素",
+      "amount": "10-15kg/亩",
+      "method": "结合中耕培土追施"
+    },
+    {
+      "time": "花铃肥",
+      "type": "尿素+硫酸钾",
+      "amount": "尿素15-20kg/亩，硫酸钾10-15kg/亩",
+      "method": "开沟追施或随水滴施"
+    },
+    {
+      "time": "盖顶肥（叶面肥）",
+      "type": "磷酸二氢钾+尿素",
+      "amount": "0.2%磷酸二氢钾+1%尿素溶液",
+      "method": "8月上旬叶面喷施防早衰"
+    }
+  ],
+  "irrigation_guide": [
+    {
+      "stage": "出苗期",
+      "purpose": "出苗水",
+      "amount": "小水轻灌，保证出苗"
+    },
+    {
+      "stage": "苗期",
+      "purpose": "蹲苗促根",
+      "amount": "适当控水，不旱不浇"
+    },
+    {
+      "stage": "蕾期",
+      "purpose": "促蕾稳长",
+      "amount": "小水轻浇，防止旺长"
+    },
+    {
+      "stage": "花铃期",
+      "purpose": "需水高峰",
+      "amount": "充足灌溉，7-10天一次"
+    },
+    {
+      "stage": "吐絮期",
+      "purpose": "促吐絮",
+      "amount": "停止浇水"
+    }
+  ],
+  "common_diseases": [
+    {
+      "name": "枯萎病",
+      "symptoms": "叶片萎蔫变黄，维管束变褐，植株枯死",
+      "prevention": "选用抗病品种，轮作倒茬（与非寄主作物轮作5年以上），种子处理",
+      "occurrence_stage": "苗期至蕾期"
+    },
+    {
+      "name": "黄萎病",
+      "symptoms": "叶片出现黄斑，叶脉间变黄，维管束褐色",
+      "prevention": "选用抗耐病品种，合理灌溉，增施有机肥",
+      "occurrence_stage": "花铃期"
+    },
+    {
+      "name": "棉铃疫病",
+      "symptoms": "棉铃出现暗褐色水渍状病斑，腐烂脱落",
+      "prevention": "合理整枝通风透光，发病初期喷施代森锰锌",
+      "occurrence_stage": "结铃期"
+    }
+  ],
+  "common_pests": [
+    {
+      "name": "棉铃虫",
+      "symptoms": "幼虫蛀食蕾、花、铃，造成脱落和烂铃",
+      "control": "卵孵化盛期喷施甲维盐或氯虫苯甲酰胺，诱杀成虫"
+    },
+    {
+      "name": "棉蚜",
+      "symptoms": "叶片卷曲，蜜露污染，传播病毒",
+      "control": "苗期防治，喷施吡虫啉或啶虫脒，保护天敌"
+    },
+    {
+      "name": "红蜘蛛",
+      "symptoms": "叶片出现黄白色小斑点，严重时变红叶枯焦",
+      "control": "干旱年份重发，喷施阿维菌素或哒螨灵"
+    }
+  ],
+  "yield_info": {
+    "low_yield": "250-300kg/亩（籽棉）",
+    "medium_yield": "300-400kg/亩（籽棉）",
+    "high_yield": "400-500kg/亩（籽棉）",
+    "factors": ["品种", "水肥管理", "病虫害防治", "种植密度", "气候条件"]
+  },
+  "market_info": {
+    "peak_season": "9-11月（集中采收上市）",
+    "price_factors": ["国际棉价", "国储政策", "品质等级", "纺织需求"],
+    "storage_tips": "充分干燥，防火防潮，分等级堆放"
+  }
+}

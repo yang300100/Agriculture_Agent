@@ -1,0 +1,79 @@
+{
+  "crop_name": "甘薯",
+  "aliases": ["红薯", "地瓜", "番薯", "白薯", "红苕"],
+  "suitable_regions": ["全国"],
+  "planting_seasons": {
+    "spring": {
+      "name": "春甘薯",
+      "sowing_time": "4月中旬-5月中旬（扦插）",
+      "harvest_time": "9月下旬-10月下旬",
+      "suitable_climate": "气温稳定在15℃以上",
+      "notes": "全国主栽模式，生育期150-180天"
+    },
+    "summer": {
+      "name": "夏甘薯",
+      "sowing_time": "6月上旬-7月上旬（扦插）",
+      "harvest_time": "10月中旬-11月上旬",
+      "suitable_climate": "麦收后抢时扦插",
+      "notes": "黄淮海地区为主，生育期110-130天"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["沙壤土", "轻壤土"],
+    "ph_range": "5.5-7.0",
+    "fertility": "中等肥力，有机质含量≥1%",
+    "drainage": "要求疏松透气，排水良好",
+    "notes": "起垄栽培有利于块根膨大和排水"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "15℃以上发根（扦插）",
+      "growth": "22-30℃",
+      "tuber_development": "22-25℃最适块根膨大，<15℃停止",
+      "frost_sensitivity": "9℃以下受冷害"
+    },
+    "water": {
+      "critical_period": "块根膨大期需水最多",
+      "requirement": "全生育期需水300-450mm，耐旱不耐涝"
+    },
+    "light": "短日照作物，充足光照促进块根膨大和淀粉积累"
+  },
+  "growth_stages": [
+    {"stage": "发根缓苗期", "duration_days": 10, "key_tasks": ["浇足定根水", "查苗补苗", "松土提温"], "notes": "确保成活率≥95%"},
+    {"stage": "分枝结薯期", "duration_days": 35, "key_tasks": ["中耕培土", "追施苗肥", "防治地下害虫"], "notes": "块根开始形成的关键期"},
+    {"stage": "茎叶盛长期", "duration_days": 40, "key_tasks": ["控制旺长", "提蔓（不翻蔓）", "排涝"], "notes": "防止茎叶徒长消耗养分"},
+    {"stage": "块根膨大期", "duration_days": 55, "key_tasks": ["保持土壤湿润", "追施钾肥", "防治食叶害虫"], "notes": "产量形成的关键时期"},
+    {"stage": "成熟收获期", "duration_days": 15, "key_tasks": ["控水促熟", "适时收获", "安全贮藏"], "notes": "气温降至15℃以下前务必收获"}
+  ],
+  "fertilization_guide": [
+    {"time": "整地时（基肥）", "type": "有机肥+钾肥", "amount": "有机肥2000-3000kg/亩，硫酸钾15-20kg/亩", "method": "起垄前集中施入垄心"},
+    {"time": "分枝结薯期（追肥）", "type": "复合肥", "amount": "复合肥(10-10-20)15-20kg/亩", "method": "垄侧开沟施入"},
+    {"time": "块根膨大期（叶面肥）", "type": "磷酸二氢钾+微量元素", "amount": "0.3%磷酸二氢钾+0.2%硼砂溶液", "method": "叶面喷施2-3次，间隔7-10天"}
+  ],
+  "irrigation_guide": [
+    {"stage": "扦插定植", "purpose": "确保成活", "amount": "浇足定根水"},
+    {"stage": "分枝结薯期", "purpose": "促进分枝", "amount": "保持土壤见干见湿"},
+    {"stage": "块根膨大期", "purpose": "促进膨大", "amount": "保持土壤湿润，忌积水"},
+    {"stage": "成熟期", "purpose": "促进成熟", "amount": "停止灌溉，防止烂薯"}
+  ],
+  "common_diseases": [
+    {"name": "甘薯黑斑病", "symptoms": "薯块出现黑色凹陷病斑，味苦有毒", "prevention": "选用无病种薯，高剪苗，药剂浸苗", "occurrence_stage": "贮藏期和苗期"},
+    {"name": "甘薯根腐病", "symptoms": "根部腐烂变褐，植株枯萎", "prevention": "轮作3年以上，选用抗病品种", "occurrence_stage": "分枝结薯期"},
+    {"name": "甘薯软腐病", "symptoms": "薯块软化腐烂，流出黄水", "prevention": "收获运输避免创伤，入窖前消毒", "occurrence_stage": "贮藏期"}
+  ],
+  "common_pests": [
+    {"name": "甘薯天蛾", "symptoms": "幼虫暴食叶片，可吃光全田", "control": "灯光诱杀成虫，幼虫期喷BT乳剂"},
+    {"name": "蛴螬", "symptoms": "幼虫啃食薯块造成虫孔", "control": "播前土壤处理，生长季灌根防治"}
+  ],
+  "yield_info": {
+    "low_yield": "1500-2000kg/亩（鲜薯）",
+    "medium_yield": "2500-3500kg/亩（鲜薯）",
+    "high_yield": "4000-6000kg/亩（鲜薯）",
+    "factors": ["品种（淀粉型/鲜食型）", "栽插密度", "钾肥施用", "病虫害防治", "收获期"]
+  },
+  "market_info": {
+    "peak_season": "10月至次年3月",
+    "price_factors": ["品种（鲜食/加工/淀粉）", "薯形外观", "口感甜度", "市场需求"],
+    "storage_tips": "收获后晾干表皮，在10-15℃、湿度85-90%条件下贮藏"
+  }
+}

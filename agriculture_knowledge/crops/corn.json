@@ -1,0 +1,173 @@
+{
+  "crop_name": "玉米",
+  "aliases": ["玉蜀黍", "苞米", "包谷", "棒子"],
+  "suitable_regions": ["全国", "东北", "华北", "黄淮海", "西南"],
+  "planting_seasons": {
+    "spring_corn": {
+      "name": "春玉米",
+      "sowing_time": "4月中旬-5月上旬",
+      "harvest_time": "8月-9月",
+      "suitable_climate": "北方一季作区",
+      "notes": "生育期100-120天"
+    },
+    "summer_corn": {
+      "name": "夏玉米",
+      "sowing_time": "6月上旬-6月中旬（麦收后）",
+      "harvest_time": "9月下旬-10月上旬",
+      "suitable_climate": "黄淮海麦玉两熟区",
+      "notes": "生育期90-100天"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["壤土", "砂壤土", "轻粘土"],
+    "ph_range": "6.0-7.0",
+    "fertility": "高肥力",
+    "notes": "不耐盐碱，忌连作"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "10-12℃",
+      "growth": "24-28℃",
+      "optimal": "25-28℃"
+    },
+    "water": {
+      "annual_rainfall": "500-800mm",
+      "critical_period": "抽雄前后（大喇叭口期）需水最多"
+    },
+    "light": "短日照作物，每天需要8-10小时光照"
+  },
+  "growth_stages": [
+    {
+      "stage": "播种期",
+      "duration_days": 7,
+      "key_tasks": ["整地", "施基肥", "播种", "镇压"],
+      "notes": "播种深度3-5厘米，密度3500-4500株/亩"
+    },
+    {
+      "stage": "苗期",
+      "duration_days": 30,
+      "key_tasks": ["查苗补苗", "间苗定苗", "中耕除草"],
+      "notes": "培育壮苗，防地下害虫"
+    },
+    {
+      "stage": "拔节期",
+      "duration_days": 25,
+      "key_tasks": ["追肥", "培土", "浇水"],
+      "notes": "营养生长旺盛期"
+    },
+    {
+      "stage": "大喇叭口期",
+      "duration_days": 15,
+      "key_tasks": ["重施攻穗肥", "浇水", "病虫害防治"],
+      "notes": "需肥水高峰期，决定穗数的关键期"
+    },
+    {
+      "stage": "抽雄扬花期",
+      "duration_days": 10,
+      "key_tasks": ["人工辅助授粉", "防高温热害"],
+      "notes": "决定穗粒数的关键时期，需要充足水分"
+    },
+    {
+      "stage": "灌浆期",
+      "duration_days": 35,
+      "key_tasks": ["养根护叶", "防早衰", "防虫鸟"],
+      "notes": "决定粒重的关键期"
+    },
+    {
+      "stage": "成熟期",
+      "duration_days": 10,
+      "key_tasks": ["适时晚收", "晾晒", "脱粒储存"],
+      "notes": "籽粒乳线消失、黑层出现为收获标准"
+    }
+  ],
+  "fertilization_guide": [
+    {
+      "time": "播种前",
+      "type": "有机肥+磷钾肥",
+      "amount": "有机肥2000-3000kg/亩，过磷酸钙30-50kg/亩",
+      "method": "底肥深施"
+    },
+    {
+      "time": "拔节期",
+      "type": "尿素",
+      "amount": "15-20kg/亩",
+      "method": "沟施或穴施"
+    },
+    {
+      "time": "大喇叭口期",
+      "type": "尿素",
+      "amount": "20-25kg/亩",
+      "method": "结合培土追施"
+    }
+  ],
+  "irrigation_guide": [
+    {
+      "stage": "播种前",
+      "purpose": "造墒",
+      "amount": "充足底墒"
+    },
+    {
+      "stage": "大喇叭口期",
+      "purpose": "攻穗",
+      "amount": "25-35m³/亩"
+    },
+    {
+      "stage": "抽雄期",
+      "purpose": "保授粉",
+      "amount": "20-30m³/亩"
+    },
+    {
+      "stage": "灌浆期",
+      "purpose": "养根护叶",
+      "amount": "15-20m³/亩"
+    }
+  ],
+  "common_diseases": [
+    {
+      "name": "玉米大斑病",
+      "symptoms": "叶片出现长梭形褐色病斑，严重时叶片枯死",
+      "prevention": "选用抗病品种，合理密植，发病初期喷施代森锰锌",
+      "occurrence_stage": "抽雄至灌浆期"
+    },
+    {
+      "name": "玉米小斑病",
+      "symptoms": "叶片出现椭圆形或纺锤形病斑",
+      "prevention": "选用抗病品种，轮作倒茬",
+      "occurrence_stage": "全生育期"
+    },
+    {
+      "name": "玉米锈病",
+      "symptoms": "叶片出现黄色或褐色粉状孢子堆",
+      "prevention": "选用抗病品种，喷施三唑酮",
+      "occurrence_stage": "灌浆期"
+    }
+  ],
+  "common_pests": [
+    {
+      "name": "玉米螟",
+      "symptoms": "心叶出现排孔，茎秆被蛀",
+      "control": "心叶末期撒施颗粒剂，释放赤眼蜂"
+    },
+    {
+      "name": "蚜虫",
+      "symptoms": "叶片卷曲，传播病毒",
+      "control": "喷施吡虫啉"
+    },
+    {
+      "name": "地下害虫",
+      "symptoms": "缺苗断垄，根部被咬断",
+      "control": "播种前土壤处理，种子包衣"
+    }
+  ],
+  "yield_info": {
+    "low_yield": "400-500kg/亩",
+    "medium_yield": "600-700kg/亩",
+    "high_yield": "800-1000kg/亩",
+    "factors": ["密度", "水肥", "病虫害", "品种"]
+  },
+  "market_info": {
+    "peak_season": "9-10月",
+    "price_factors": ["产量", "品质", "深加工需求"],
+    "storage_tips": "籽粒含水率≤14%入库"
+  }
+}

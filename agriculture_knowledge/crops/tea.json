@@ -1,0 +1,77 @@
+{
+  "crop_name": "茶叶",
+  "aliases": ["茶", "茶树", "绿茶", "红茶", "乌龙茶"],
+  "suitable_regions": ["华东", "华南", "西南", "华中"],
+  "planting_seasons": {
+    "spring": {
+      "name": "春季种植",
+      "sowing_time": "2月下旬-3月下旬（移栽）",
+      "harvest_time": "多年生，种植后第3年开始采收",
+      "suitable_climate": "气温回升至10℃以上",
+      "notes": "春季移栽成活率最高"
+    },
+    "autumn": {
+      "name": "秋季种植",
+      "sowing_time": "10月中旬-11月中旬（移栽）",
+      "harvest_time": "多年生，种植后第3年开始采收",
+      "suitable_climate": "秋雨充沛，气温适宜",
+      "notes": "秋季移栽次年春季即可少量采摘"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["沙壤土", "红壤", "黄壤"],
+    "ph_range": "4.5-6.5",
+    "fertility": "有机质含量≥1.5%，土层深厚（≥60cm）",
+    "drainage": "要求排水良好，坡度≤25°为宜",
+    "notes": "喜酸性土壤，忌石灰性土壤和积水"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "10℃以上开始萌芽",
+      "growth": "20-30℃最适生长",
+      "cold_resistance": "灌木型中小叶种可耐-12℃低温，乔木型大叶种不耐寒"
+    },
+    "water": {
+      "critical_period": "春茶萌发期和夏茶生长期",
+      "requirement": "年降雨量1000-1500mm，分布均匀"
+    },
+    "light": "喜漫射光，适度遮荫（30-50%）利于品质提升"
+  },
+  "growth_stages": [
+    {"stage": "幼龄期（1-3年）", "duration_days": 1095, "key_tasks": ["定型修剪", "施肥促长", "覆盖防草"], "notes": "培养骨干枝和树冠结构"},
+    {"stage": "投产初期（4-5年）", "duration_days": 730, "key_tasks": ["轻修剪", "以养为主", "合理采摘"], "notes": "逐步增加采摘量"},
+    {"stage": "盛产期（6-30年）", "duration_days": 9125, "key_tasks": ["分批多次采摘", "修剪更新", "配方施肥"], "notes": "茶园产量和品质的黄金期"},
+    {"stage": "衰老更新期", "duration_days": 3650, "key_tasks": ["重修剪或台刈", "深翻改土", "复壮管理"], "notes": "更新复壮后可重回盛产"}
+  ],
+  "fertilization_guide": [
+    {"time": "春茶前（基肥）", "type": "有机肥+复合肥", "amount": "有机肥1500-2000kg/亩，茶叶专用肥（高氮）40-50kg/亩", "method": "茶行间开沟施入"},
+    {"time": "春茶后（追肥）", "type": "尿素+钾肥", "amount": "尿素15-20kg/亩，硫酸钾8-10kg/亩", "method": "雨后撒施或兑水浇施"},
+    {"time": "夏茶后（追肥）", "type": "复合肥", "amount": "复合肥(20-10-10)15-20kg/亩", "method": "开沟施入"},
+    {"time": "秋冬（基肥）", "type": "有机肥+磷肥", "amount": "有机肥2000-3000kg/亩，过磷酸钙30kg/亩", "method": "深施30cm结合深耕"}
+  ],
+  "irrigation_guide": [
+    {"stage": "全年", "purpose": "保持茶园湿润", "amount": "伏天干旱需灌溉（喷灌或滴灌），保持土壤含水量60-70%"},
+    {"stage": "春茶萌发期", "purpose": "促进芽叶萌发", "amount": "遇春旱需灌溉催芽"},
+    {"stage": "夏秋季", "purpose": "抗旱降温", "amount": "高温干旱时及时灌溉，铺草覆盖保墒"}
+  ],
+  "common_diseases": [
+    {"name": "茶饼病", "symptoms": "嫩叶出现圆形凹陷病斑，正面黄褐色背面白色粉状", "prevention": "修剪通风降低湿度，发病时喷多菌灵", "occurrence_stage": "春茶期高湿季节"},
+    {"name": "茶炭疽病", "symptoms": "成叶出现褐色不规则病斑", "prevention": "增施钾肥提高抗性，发病时喷苯醚甲环唑", "occurrence_stage": "夏秋季高温多雨"},
+    {"name": "茶白星病", "symptoms": "嫩叶出现针尖大小白色斑点", "prevention": "合理采摘减少病源，发病初期喷波尔多液", "occurrence_stage": "春茶期低温多湿"}
+  ],
+  "common_pests": [
+    {"name": "茶小绿叶蝉", "symptoms": "若虫和成虫刺吸嫩芽嫩叶汁液，芽叶卷曲焦枯", "control": "黄板诱杀，生物农药（印楝素/鱼藤酮）喷雾"},
+    {"name": "茶尺蠖", "symptoms": "幼虫啃食叶片成孔洞缺刻，暴发时可吃光全树", "control": "灯光诱杀成虫，幼虫期喷BT乳剂或核型多角体病毒"}
+  ],
+  "yield_info": {
+    "low_yield": "30-50kg/亩（干毛茶）",
+    "medium_yield": "80-150kg/亩（干毛茶）",
+    "high_yield": "200-300kg/亩（干毛茶）",
+    "factors": ["品种（大叶种/中小叶种）", "树龄", "水肥管理", "采摘标准", "加工工艺"]
+  },
+  "market_info": {
+    "peak_season": "3-5月（春茶/明前茶/雨前茶）最贵，6-8月（夏秋茶）产量大",
+    "price_factors": ["采摘季节（春茶最贵）", "茶叶等级", "产地品牌", "加工工艺（绿茶/红茶/乌龙茶等）", "市场需求"],
+    "storage_tips": "密封避光防潮，低温（0-5℃）冷藏保存，远离异味源"
+  }
+}

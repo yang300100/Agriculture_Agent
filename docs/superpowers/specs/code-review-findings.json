@@ -1,0 +1,107 @@
+[
+  {
+    "severity": "CRITICAL",
+    "file": "app/api_routes.py",
+    "line": 805,
+    "summary": "Frontend-API params 契约断裂：FastAPI POST 端点参数无 Body() 注解，默认从 query string 读取，导致前端发送的 command/params 被静默忽略",
+    "failure_scenario": "用户在仪表盘点「浇水30分钟」→ 前端发送 JSON body → FastAPI 从 query string 读取 params 默认值 '{}' → 设备以空参数启动，duration 被丢弃"
+  },
+  {
+    "severity": "CRITICAL",
+    "file": "app/agent/agents/device_agent.py",
+    "line": 184,
+    "summary": "DeviceAgent._do_execute() 只注册 SimulatorDriver，用户自定义的 MQTT/HTTP/Modbus 设备在 Agent 对话控制中完全不可见",
+    "failure_scenario": "用户注册 MQTT 水泵后对话中说「给水泵浇30分钟水」→ DeviceAgent 创建仅含 SimulatorDriver 的 registry → execute() 返回 DEVICE_NOT_FOUND"
+  },
+  {
+    "severity": "CRITICAL",
+    "file": "app/api_routes.py",
+    "line": 939,
+    "summary": "confirm_action 端点创建 registry 后未调用 discover_all()，_device_map 为空导致确认执行永远返回 DEVICE_NOT_FOUND",
+    "failure_scenario": "用户在设备仪表盘对 pending 操作点击「确认执行」→ registry._device_map 为空 → get_driver() 返回 None → 操作确认失败"
+  },
+  {
+    "severity": "HIGH",
+    "file": "app/api_routes.py",
+    "line": 631,
+    "summary": "事件循环泄漏：_setup_registry() 每次 API 请求创建新 asyncio.new_event_loop() 从不 close()，同时 set_event_loop() 覆盖 FastAPI 主循环",
+    "failure_scenario": "服务器运行数天后处理数千请求 → 每个请求泄漏一个 event loop(持有 IOCP/epoll fd) → OSError: too many open files → 服务崩溃"
+  },
+  {
+    "severity": "HIGH",
+    "file": "core/device_rule_engine.py",
+    "line": 156,
+    "summary": "RuleEngine 执行历史在实例间隔离：_execution_history 和 _daily_duration 只存内存不持久化，每日限制和最小间隔检查形同虚设",
+    "failure_scenario": "用户设定每日灌溉上限 180 分钟 → DeviceAgent 创建 4 个 RuleEngine 实例各自从空历史开始 → 每天实际可无限灌溉"
+  },
+  {
+    "severity": "HIGH",
+    "file": "devices/mqtt_driver.py",
+    "line": 133,
+    "summary": "MQTTDriver.connect() 无条件设 _connected=True 后 sleep(0.5) 即返回，_on_connect 回调成功时从未设 _connected=True",
+    "failure_scenario": "MQTT Broker 未启动或 IP 错误 → connect() 返回 True → 后续 execute() 发布消息失败 → 用户看到设备在线但浇水指令静默丢失"
+  },
+  {
+    "severity": "HIGH",
+    "file": "app/agent/agents/device_agent.py",
+    "line": 95,
+    "summary": "关键词回退解析中 duration 提取正则是死代码：所有关键词分支提前 return，用户指定的分钟数被硬编码默认值覆盖",
+    "failure_scenario": "LLM API 不可用时用户输入「浇60分钟水」→ 关键词「浇水」命中 → 直接返回 duration=30(硬编码) → 60 分钟被忽略"
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "devices/http_driver.py",
+    "line": 92,
+    "summary": "HTTPDriver 在 async def 方法中使用同步 requests.get/post 阻塞事件循环，每个不可达设备阻塞最多 10 秒",
+    "failure_scenario": "注册 3 个 HTTP 设备其中 2 个离线 → connect() 逐个同步 HTTP 请求 → 阻塞 20 秒 → /api/devices 请求挂起直到超时"
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "core/device_rule_engine.py",
+    "line": 229,
+    "summary": "用户配置的 min_interval_minutes 约束从未被 _check_constraints 读取和执行，只有硬编码的 min_interval_seconds=10 生效",
+    "failure_scenario": "用户在规则中设 min_interval_minutes=60 → 系统只检查硬编码的 10 秒 → 灌溉可任意频繁触发"
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "core/device_rule_engine.py",
+    "line": 190,
+    "summary": "_compare() 中 '==' 操作符对浮点数做精确比较无容差，传感器有浮点噪声永远不可能精确命中",
+    "failure_scenario": "用户创建规则「soil_moisture == 30 时施肥」→ 传感器返回 29.8 或 30.1 → 永远不等于 30 → 规则永不触发"
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "core/device_rule_engine.py",
+    "line": 230,
+    "summary": "Falsy-zero bug：max_duration=0 时 if max_dur and 短路跳过检查，用户配置 0 意为「禁止所有操作」但被静默忽略",
+    "failure_scenario": "通过 API 设 max_duration_per_use=0 → bool(0)==False → 约束检查被跳过 → 设备不受任何时长限制"
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "app/api_routes.py",
+    "line": 275,
+    "summary": "delete_task 端点丢失 username 参数(Python 现有 bug，非本 PR 引入)：多用户场景下非 default 用户无法删除自己的任务",
+    "failure_scenario": "用户 'zhangsan' 删除自己的任务 → PlantingTracker() 默认使用 'default' 目录 → 误删他人或不存在的数据"
+  },
+  {
+    "severity": "MEDIUM",
+    "file": "core/device_rule_engine.py",
+    "line": 196,
+    "summary": "_compare() 中 between 操作符用字符串比较时间，跨午夜区间(如 22:00-06:00)因字符串序 '22'>'06' 而永远返回 False",
+    "failure_scenario": "用户设规则「22:00-06:00 禁止灌溉」→ 凌晨 3:00 触发检查 → 字符串比较：'03:00'<'22:00'为 True 但不在 ['22:00','06:00'] → 禁止规则失效"
+  },
+  {
+    "severity": "LOW",
+    "file": "app/api_routes.py",
+    "line": 701,
+    "summary": "Modbus 多设备同串口时每个设备创建独立 Driver 实例争抢同一文件描述符，后续设备静默失败",
+    "failure_scenario": "同一 RS485 总线上注册 3 个 Modbus 传感器 → 创建 3 个 ModbusDriver → 第 2、3 个打开串口失败 → 静默跳过无日志"
+  },
+  {
+    "severity": "LOW",
+    "file": "core/device_rule_engine.py",
+    "line": 274,
+    "summary": "_eval_confirm_expr 使用 except Exception: pass 裸吞异常，畸形表达式被静默忽略无错误反馈",
+    "failure_scenario": "用户手误设 confirm_if 为 'duration > 10 > 5' → split unpack 失败 → except 吞掉异常 → 规则静默不生效无从排查"
+  }
+]

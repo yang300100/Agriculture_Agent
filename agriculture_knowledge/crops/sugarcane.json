@@ -1,0 +1,79 @@
+{
+  "crop_name": "甘蔗",
+  "aliases": ["糖蔗", "果蔗", "竹蔗"],
+  "suitable_regions": ["华南", "西南"],
+  "planting_seasons": {
+    "spring": {
+      "name": "春植蔗",
+      "sowing_time": "2月中旬-3月下旬",
+      "harvest_time": "次年1月-3月",
+      "suitable_climate": "气温稳定在10℃以上",
+      "notes": "主栽模式，生育期10-14个月"
+    },
+    "autumn": {
+      "name": "秋植蔗",
+      "sowing_time": "8月下旬-9月下旬",
+      "harvest_time": "次年10月-12月",
+      "suitable_climate": "秋季高温多湿，适合萌芽",
+      "notes": "生育期13-15个月，产量较高"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["壤土", "沙壤土", "黏壤土"],
+    "ph_range": "6.0-7.5",
+    "fertility": "中上等肥力，有机质含量≥1.5%",
+    "drainage": "要求排水良好，忌长期积水",
+    "notes": "土层深厚（≥60cm）有利于根系发育"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "10℃以上发芽，30-32℃最适",
+      "growth": "25-35℃",
+      "maturity": "昼夜温差＞10℃有利于糖分积累"
+    },
+    "water": {
+      "critical_period": "伸长期需水量最大",
+      "requirement": "全生育期需水1500-2000mm"
+    },
+    "light": "C4作物，喜强光照，光饱和点高"
+  },
+  "growth_stages": [
+    {"stage": "萌芽期", "duration_days": 30, "key_tasks": ["精细整地", "施足基肥", "种茎处理"], "notes": "确保萌芽整齐一致"},
+    {"stage": "幼苗期", "duration_days": 45, "key_tasks": ["查苗补苗", "中耕除草", "防治螟虫"], "notes": "促进分蘖和根系发育"},
+    {"stage": "分蘖期", "duration_days": 40, "key_tasks": ["追施苗肥", "培土", "间苗定苗"], "notes": "控制有效茎数"},
+    {"stage": "伸长期", "duration_days": 150, "key_tasks": ["大培土", "重施攻茎肥", "灌溉", "防倒伏"], "notes": "产量形成的关键期，需水需肥量最大"},
+    {"stage": "成熟期", "duration_days": 60, "key_tasks": ["控水促熟", "剥叶通风", "适时砍收"], "notes": "蔗糖分达到最高值时收获"}
+  ],
+  "fertilization_guide": [
+    {"time": "种植时（基肥）", "type": "有机肥+磷钾肥", "amount": "有机肥2000-3000kg/亩，过磷酸钙50kg/亩，硫酸钾15kg/亩", "method": "植沟内集中施入"},
+    {"time": "分蘖期（苗肥）", "type": "尿素", "amount": "尿素10-15kg/亩", "method": "结合小培土施入"},
+    {"time": "伸长期（攻茎肥）", "type": "尿素+复合肥", "amount": "尿素25-30kg/亩，复合肥20-25kg/亩", "method": "结合大培土集中施入"},
+    {"time": "伸长期（叶面肥）", "type": "磷酸二氢钾", "amount": "0.3%溶液喷施2-3次", "method": "叶面喷施"}
+  ],
+  "irrigation_guide": [
+    {"stage": "萌芽期", "purpose": "促进发芽", "amount": "保持土壤湿润"},
+    {"stage": "分蘖期", "purpose": "促进分蘖", "amount": "适量灌溉"},
+    {"stage": "伸长期", "purpose": "促进茎伸长", "amount": "充足灌溉，保持田间持水量70-80%"},
+    {"stage": "成熟期", "purpose": "促进糖分积累", "amount": "停止灌溉，保持适当干旱"}
+  ],
+  "common_diseases": [
+    {"name": "甘蔗黑穗病", "symptoms": "心叶抽出鞭状黑色物，植株矮化", "prevention": "选用抗病品种，种茎热水处理", "occurrence_stage": "伸长期"},
+    {"name": "甘蔗凤梨病", "symptoms": "种茎切口变红发黑腐烂，有凤梨味", "prevention": "种茎切口消毒，适时下种防低温", "occurrence_stage": "萌芽期"},
+    {"name": "甘蔗梢腐病", "symptoms": "梢部腐烂枯死，叶片出现红色条纹", "prevention": "合理施肥避免氮过量，发病时喷多菌灵", "occurrence_stage": "伸长期"}
+  ],
+  "common_pests": [
+    {"name": "甘蔗螟虫", "symptoms": "幼虫钻入茎秆造成枯心和螟害节", "control": "拔节前撒施颗粒剂，释放赤眼蜂"},
+    {"name": "甘蔗绵蚜", "symptoms": "密集叶片背面吸食，分泌蜜露诱发煤污病", "control": "乐果或啶虫脒喷雾，保护瓢虫天敌"}
+  ],
+  "yield_info": {
+    "low_yield": "4000-5000kg/亩",
+    "medium_yield": "6000-8000kg/亩",
+    "high_yield": "10000-12000kg/亩",
+    "factors": ["品种（糖蔗/果蔗）", "水肥管理", "病虫害防治", "收获时机", "宿根年限"]
+  },
+  "market_info": {
+    "peak_season": "11月至次年3月（榨季）",
+    "price_factors": ["含糖量", "品种（糖蔗/果蔗）", "国际糖价", "收购政策"],
+    "storage_tips": "现砍现运现榨最佳，堆放不超过3天以免糖分损失"
+  }
+}

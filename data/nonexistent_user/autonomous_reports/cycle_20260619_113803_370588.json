@@ -1,0 +1,16 @@
+{
+  "cycle_id": "cycle_20260619_113803_370588",
+  "username": "nonexistent_user",
+  "region": "不存在的区域",
+  "timestamp": "2026-06-19T11:38:03.410534",
+  "farm_state": {
+    "region": "",
+    "camera_count": 0,
+    "sensor_count": 0
+  },
+  "decision_plan": null,
+  "execution_results": [],
+  "fallback_used": false,
+  "summary": "周期异常: 未检测到 LLM_API_KEY 环境变量！",
+  "duration_ms": 126
+}

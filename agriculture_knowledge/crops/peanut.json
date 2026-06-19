@@ -1,0 +1,78 @@
+{
+  "crop_name": "花生",
+  "aliases": ["落花生", "地豆", "长生果"],
+  "suitable_regions": ["华北", "黄淮海", "东北", "华东"],
+  "planting_seasons": {
+    "spring": {
+      "name": "春花生",
+      "sowing_time": "4月下旬-5月上旬",
+      "harvest_time": "8月下旬-9月下旬",
+      "suitable_climate": "气温稳定在15℃以上，土壤5cm地温≥12℃",
+      "notes": "北方主栽模式，生育期120-150天"
+    },
+    "summer": {
+      "name": "夏花生",
+      "sowing_time": "6月上旬-6月中旬",
+      "harvest_time": "9月下旬-10月中旬",
+      "suitable_climate": "麦茬后抢时早播，利用夏季高温多雨",
+      "notes": "麦套或麦后直播，生育期100-120天"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["沙壤土", "轻壤土"],
+    "ph_range": "6.0-7.5",
+    "fertility": "中等肥力，有机质含量≥1%",
+    "drainage": "要求疏松透气，排水良好",
+    "notes": "忌重茬连作，宜与禾本科作物轮作"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "12-15℃（最低），25-37℃（最适）",
+      "growth": "25-35℃",
+      "pod_development": "15-30℃，<12℃停止发育"
+    },
+    "water": {
+      "critical_period": "开花下针期和结荚期需水量最大",
+      "requirement": "全生育期需水450-600mm，耐旱但不耐涝"
+    },
+    "light": "短日照作物，充足光照促进开花结荚"
+  },
+  "growth_stages": [
+    {"stage": "播种出苗期", "duration_days": 10, "key_tasks": ["精细整地", "施足基肥", "种子处理"], "notes": "确保土壤墒情适宜"},
+    {"stage": "幼苗期", "duration_days": 25, "key_tasks": ["查苗补苗", "中耕松土", "防治蚜虫"], "notes": "促进根系发育"},
+    {"stage": "开花下针期", "duration_days": 30, "key_tasks": ["培土迎针", "追施钙肥", "灌溉"], "notes": "果针入土的关键时期"},
+    {"stage": "结荚期", "duration_days": 35, "key_tasks": ["保持土壤湿润", "叶面追肥", "防治叶斑病"], "notes": "荚果膨大期需水需肥"},
+    {"stage": "饱果成熟期", "duration_days": 30, "key_tasks": ["控制水分", "防早衰", "适时收获"], "notes": "上部叶片变黄即可收获"}
+  ],
+  "fertilization_guide": [
+    {"time": "播种前（基肥）", "type": "有机肥+复合肥", "amount": "有机肥2000-3000kg/亩，复合肥(15-15-15)30-40kg/亩", "method": "耕地前撒施翻入"},
+    {"time": "开花下针期（追肥）", "type": "钙镁磷肥+硼肥", "amount": "钙镁磷肥20-30kg/亩，硼砂0.5kg/亩", "method": "结合培土施入"},
+    {"time": "结荚期（叶面肥）", "type": "磷酸二氢钾", "amount": "0.3%磷酸二氢钾溶液喷施2-3次", "method": "叶面喷施，每次间隔7-10天"}
+  ],
+  "irrigation_guide": [
+    {"stage": "播种期", "purpose": "造墒", "amount": "播种前浇足底墒水"},
+    {"stage": "开花下针期", "purpose": "促进果针入土", "amount": "保持土壤含水量60-70%"},
+    {"stage": "结荚膨大期", "purpose": "促进荚果发育", "amount": "保持土壤湿润，忌积水"},
+    {"stage": "饱果成熟期", "purpose": "促进成熟", "amount": "适当控水，防止烂果"}
+  ],
+  "common_diseases": [
+    {"name": "花生叶斑病", "symptoms": "叶片出现褐色圆形斑点，严重时叶片脱落", "prevention": "轮作倒茬，发病初期喷施苯醚甲环唑", "occurrence_stage": "结荚期至饱果期"},
+    {"name": "花生青枯病", "symptoms": "植株突然萎蔫呈青枯状，根部变褐", "prevention": "选用抗病品种，酸性土壤施石灰改良", "occurrence_stage": "开花下针期"},
+    {"name": "花生根腐病", "symptoms": "根部腐烂变褐，地上部黄化枯死", "prevention": "种子包衣处理，避免连作", "occurrence_stage": "苗期至开花期"}
+  ],
+  "common_pests": [
+    {"name": "蚜虫", "symptoms": "聚集嫩叶和花器吸食汁液，传播病毒", "control": "吡虫啉或啶虫脒喷雾，释放瓢虫天敌"},
+    {"name": "蛴螬", "symptoms": "幼虫啃食根部和荚果，造成空壳", "control": "播种前土壤处理（辛硫磷颗粒剂），灯光诱杀成虫"}
+  ],
+  "yield_info": {
+    "low_yield": "200-250kg/亩",
+    "medium_yield": "300-400kg/亩",
+    "high_yield": "500-600kg/亩",
+    "factors": ["品种选择", "水肥管理", "病虫害防治", "轮作制度", "收获时机"]
+  },
+  "market_info": {
+    "peak_season": "9-11月（新花生上市旺季）",
+    "price_factors": ["出油率", "品种（大花生/小花生）", "市场需求", "进出口政策"],
+    "storage_tips": "干燥至含水量≤8%，通风阴凉储存，防虫蛀防霉变"
+  }
+}

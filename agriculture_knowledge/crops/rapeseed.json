@@ -1,0 +1,80 @@
+{
+  "crop_name": "油菜",
+  "aliases": ["菜籽", "油菜籽", "芸薹"],
+  "suitable_regions": ["长江流域", "华东", "西北", "西南"],
+  "planting_seasons": {
+    "winter": {
+      "name": "冬油菜",
+      "sowing_time": "9月中旬-10月中旬",
+      "harvest_time": "次年5月上旬-5月下旬",
+      "suitable_climate": "冬季最低气温不低于-5℃的地区",
+      "notes": "中国油菜主栽类型，占种植面积90%以上"
+    },
+    "spring": {
+      "name": "春油菜",
+      "sowing_time": "4月中旬-5月上旬",
+      "harvest_time": "8月下旬-9月中旬",
+      "suitable_climate": "高纬度或高海拔无霜期较短地区",
+      "notes": "西北、东北和青藏高原地区种植"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["壤土", "黏壤土"],
+    "ph_range": "6.0-7.5",
+    "fertility": "中上等肥力，有机质含量≥1.5%",
+    "drainage": "要求排水良好，忌渍水",
+    "notes": "需硼元素丰富，缺硼易花而不实"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "3-5℃（最低），15-25℃（最适）",
+      "growth": "15-20℃",
+      "cold_resistance": "壮苗可耐-5℃低温（冬油菜）"
+    },
+    "water": {
+      "critical_period": "抽薹开花期需水量最大",
+      "requirement": "全生育期需水350-500mm（冬油菜）"
+    },
+    "light": "长日照作物，充足光照促进开花结荚"
+  },
+  "growth_stages": [
+    {"stage": "播种出苗期", "duration_days": 10, "key_tasks": ["精细整地", "施足基肥", "开沟作畦"], "notes": "确保苗齐苗匀"},
+    {"stage": "苗期（越冬前）", "duration_days": 60, "key_tasks": ["间苗定苗", "中耕松土", "追施苗肥", "防治蚜虫"], "notes": "培育壮苗安全越冬"},
+    {"stage": "越冬期", "duration_days": 80, "key_tasks": ["冬灌防冻", "覆盖防寒"], "notes": "冬油菜特有的休眠阶段"},
+    {"stage": "返青抽薹期", "duration_days": 25, "key_tasks": ["追施薹肥", "清沟排水", "中耕"], "notes": "快速生长期，需水需肥急增"},
+    {"stage": "开花结荚期", "duration_days": 40, "key_tasks": ["叶面喷硼", "防治菌核病", "保持土壤湿润"], "notes": "决定产量和含油率的关键期"},
+    {"stage": "成熟收获期", "duration_days": 20, "key_tasks": ["适时收获", "晾晒脱粒"], "notes": "角果70%变黄时收获"}
+  ],
+  "fertilization_guide": [
+    {"time": "播种前（基肥）", "type": "有机肥+复合肥+硼肥", "amount": "有机肥1500-2000kg/亩，复合肥30-40kg/亩，硼砂1kg/亩", "method": "耕地前撒施翻入"},
+    {"time": "苗期（追肥）", "type": "尿素", "amount": "尿素5-8kg/亩", "method": "结合间苗施入"},
+    {"time": "抽薹期（薹肥）", "type": "尿素+钾肥", "amount": "尿素10-15kg/亩，氯化钾5-8kg/亩", "method": "雨后撒施或兑水浇施"},
+    {"time": "开花期（叶面肥）", "type": "硼肥+磷酸二氢钾", "amount": "0.2%硼砂+0.3%磷酸二氢钾溶液", "method": "叶面喷施1-2次"}
+  ],
+  "irrigation_guide": [
+    {"stage": "播种期", "purpose": "确保出苗", "amount": "浇足底墒水"},
+    {"stage": "越冬期", "purpose": "防冻保苗", "amount": "冬灌1次（封冻前）"},
+    {"stage": "返青抽薹期", "purpose": "促进生长", "amount": "灌水1-2次，保持土壤湿润"},
+    {"stage": "开花结荚期", "purpose": "促进结实", "amount": "保持土壤含水量70%左右"}
+  ],
+  "common_diseases": [
+    {"name": "油菜菌核病", "symptoms": "茎秆出现白霉和黑色菌核，植株枯死", "prevention": "轮作2-3年，花期喷施多菌灵或嘧霉胺", "occurrence_stage": "开花结荚期"},
+    {"name": "油菜霜霉病", "symptoms": "叶片出现黄色斑点，背面有白色霉层", "prevention": "清沟排水降低湿度，发病初喷甲霜灵", "occurrence_stage": "苗期至抽薹期"},
+    {"name": "油菜病毒病", "symptoms": "叶片花叶皱缩，植株矮化", "prevention": "防治蚜虫传播，选用抗病品种", "occurrence_stage": "苗期至开花期"}
+  ],
+  "common_pests": [
+    {"name": "蚜虫", "symptoms": "聚集嫩叶嫩茎吸食，传播病毒病", "control": "吡虫啉或啶虫脒喷雾"},
+    {"name": "菜青虫", "symptoms": "幼虫啃食叶片造成孔洞缺刻", "control": "BT乳剂生物防治，高效氯氰菊酯喷雾"}
+  ],
+  "yield_info": {
+    "low_yield": "100-150kg/亩",
+    "medium_yield": "180-250kg/亩",
+    "high_yield": "300-400kg/亩",
+    "factors": ["品种（杂交种/常规种）", "播种期", "硼肥施用", "菌核病防治", "收获时机"]
+  },
+  "market_info": {
+    "peak_season": "5-6月（冬油菜）和9-10月（春油菜）",
+    "price_factors": ["出油率", "国际油脂价格", "国内供需", "政策收购价"],
+    "storage_tips": "干燥至含水量≤9%，通风阴凉储存，防霉变防虫蛀"
+  }
+}

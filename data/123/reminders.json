@@ -1,0 +1,163 @@
+[
+  {
+    "id": "3218d331",
+    "user_id": "default",
+    "crop": "玉米",
+    "reminder_type": "整地",
+    "task_description": "播种期 - 整地",
+    "growth_stage": "播种期",
+    "start_date": "2026-05-27",
+    "frequency": "单次",
+    "interval_days": 0,
+    "specific_days": [],
+    "time_of_day": "09:00",
+    "advance_hours": 0,
+    "channels": [
+      "app"
+    ],
+    "status": "active",
+    "created_at": "2026-05-27 19:16:48",
+    "last_triggered": null,
+    "next_trigger": "2026-05-27 09:00",
+    "completed_count": 0,
+    "skipped_count": 0
+  },
+  {
+    "id": "766fa62d",
+    "user_id": "default",
+    "crop": "玉米",
+    "reminder_type": "查苗补苗",
+    "task_description": "苗期 - 查苗补苗",
+    "growth_stage": "苗期",
+    "start_date": "2026-06-03",
+    "frequency": "单次",
+    "interval_days": 0,
+    "specific_days": [],
+    "time_of_day": "09:00",
+    "advance_hours": 0,
+    "channels": [
+      "app"
+    ],
+    "status": "active",
+    "created_at": "2026-05-27 19:16:48",
+    "last_triggered": null,
+    "next_trigger": "2026-06-03 09:00",
+    "completed_count": 0,
+    "skipped_count": 0
+  },
+  {
+    "id": "a075ab93",
+    "user_id": "default",
+    "crop": "玉米",
+    "reminder_type": "追肥",
+    "task_description": "拔节期 - 追肥",
+    "growth_stage": "拔节期",
+    "start_date": "2026-07-03",
+    "frequency": "单次",
+    "interval_days": 0,
+    "specific_days": [],
+    "time_of_day": "09:00",
+    "advance_hours": 0,
+    "channels": [
+      "app"
+    ],
+    "status": "active",
+    "created_at": "2026-05-27 19:16:48",
+    "last_triggered": null,
+    "next_trigger": "2026-07-03 09:00",
+    "completed_count": 0,
+    "skipped_count": 0
+  },
+  {
+    "id": "0d3379fc",
+    "user_id": "default",
+    "crop": "玉米",
+    "reminder_type": "重施攻穗肥",
+    "task_description": "大喇叭口期 - 重施攻穗肥",
+    "growth_stage": "大喇叭口期",
+    "start_date": "2026-07-28",
+    "frequency": "单次",
+    "interval_days": 0,
+    "specific_days": [],
+    "time_of_day": "09:00",
+    "advance_hours": 0,
+    "channels": [
+      "app"
+    ],
+    "status": "active",
+    "created_at": "2026-05-27 19:16:48",
+    "last_triggered": null,
+    "next_trigger": "2026-07-28 09:00",
+    "completed_count": 0,
+    "skipped_count": 0
+  },
+  {
+    "id": "0d22f33b",
+    "user_id": "default",
+    "crop": "玉米",
+    "reminder_type": "人工辅助授粉",
+    "task_description": "抽雄扬花期 - 人工辅助授粉",
+    "growth_stage": "抽雄扬花期",
+    "start_date": "2026-08-12",
+    "frequency": "单次",
+    "interval_days": 0,
+    "specific_days": [],
+    "time_of_day": "09:00",
+    "advance_hours": 0,
+    "channels": [
+      "app"
+    ],
+    "status": "active",
+    "created_at": "2026-05-27 19:16:48",
+    "last_triggered": null,
+    "next_trigger": "2026-08-12 09:00",
+    "completed_count": 0,
+    "skipped_count": 0
+  },
+  {
+    "id": "9a4a425a",
+    "user_id": "default",
+    "crop": "玉米",
+    "reminder_type": "养根护叶",
+    "task_description": "灌浆期 - 养根护叶",
+    "growth_stage": "灌浆期",
+    "start_date": "2026-08-22",
+    "frequency": "单次",
+    "interval_days": 0,
+    "specific_days": [],
+    "time_of_day": "09:00",
+    "advance_hours": 0,
+    "channels": [
+      "app"
+    ],
+    "status": "active",
+    "created_at": "2026-05-27 19:16:48",
+    "last_triggered": null,
+    "next_trigger": "2026-08-22 09:00",
+    "completed_count": 0,
+    "skipped_count": 0
+  },
+  {
+    "id": "2aa4fafe",
+    "user_id": "default",
+    "crop": "玉米",
+    "reminder_type": "适时晚收",
+    "task_description": "成熟期 - 适时晚收",
+    "growth_stage": "成熟期",
+    "start_date": "2026-09-26",
+    "frequency": "单次",
+    "interval_days": 0,
+    "specific_days": [],
+    "time_of_day": "09:00",
+    "advance_hours": 0,
+    "channels": [
+      "app"
+    ],
+    "status": "active",
+    "created_at": "2026-05-27 19:16:48",
+    "last_triggered": null,
+    "next_trigger": "2026-09-26 09:00",
+    "completed_count": 0,
+    "skipped_count": 0
+  }
+]

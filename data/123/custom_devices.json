@@ -1,0 +1,83 @@
+[
+  {
+    "device_id": "213",
+    "name": "12312",
+    "capabilities": [
+      "irrigate"
+    ],
+    "sensors": [
+      "12"
+    ],
+    "location": "123",
+    "driver": "modbus",
+    "initial_state": {
+      "power": false,
+      "status": "idle"
+    },
+    "connection": {
+      "mode": "rtu",
+      "port": "/dev/ttyUSB0",
+      "slave_id": 1
+    }
+  },
+  {
+    "device_id": "pump1",
+    "name": "测试灌溉阀",
+    "capabilities": [
+      "irrigate"
+    ],
+    "sensors": [],
+    "location": "大棚A",
+    "driver": "mqtt",
+    "initial_state": {
+      "power": false,
+      "status": "idle"
+    },
+    "connection": {
+      "host": "localhost",
+      "port": 1883,
+      "control_topic": "devices/pump1/control",
+      "state_topic": null
+    }
+  },
+  {
+    "device_id": "测试1",
+    "name": "水泵1",
+    "capabilities": [
+      "irrigate"
+    ],
+    "sensors": [],
+    "location": "大棚",
+    "driver": "mqtt",
+    "initial_state": {
+      "power": false,
+      "status": "idle"
+    },
+    "connection": {
+      "host": "localhost",
+      "port": 1883,
+      "control_topic": "",
+      "state_topic": null
+    }
+  },
+  {
+    "device_id": "pump2",
+    "name": "测试灌溉阀",
+    "capabilities": [
+      "irrigate"
+    ],
+    "sensors": [],
+    "location": "大棚A",
+    "driver": "mqtt",
+    "initial_state": {
+      "power": false,
+      "status": "idle"
+    },
+    "connection": {
+      "host": "localhost",
+      "port": 1883,
+      "control_topic": "devices/pump1/control",
+      "state_topic": null
+    }
+  }
+]

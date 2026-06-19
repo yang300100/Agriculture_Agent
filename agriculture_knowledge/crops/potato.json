@@ -1,0 +1,178 @@
+{
+  "crop_name": "土豆",
+  "aliases": ["马铃薯", "洋芋", "山药蛋"],
+  "suitable_regions": ["西南", "西北", "东北", "华北", "华东"],
+  "planting_seasons": {
+    "spring_potato": {
+      "name": "春马铃薯",
+      "sowing_time": "2月下旬-3月中旬（南方），3月下旬-4月下旬（北方）",
+      "harvest_time": "6月-7月",
+      "suitable_climate": "冷凉气候，土温7-8℃即可播种",
+      "notes": "生育期80-100天，北方主栽类型"
+    },
+    "autumn_potato": {
+      "name": "秋马铃薯",
+      "sowing_time": "8月上旬-8月下旬",
+      "harvest_time": "10月下旬-11月上旬",
+      "suitable_climate": "秋季凉爽，昼夜温差大",
+      "notes": "生育期70-90天，需注意秋旱和早霜"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["砂壤土", "壤土", "轻黏土"],
+    "ph_range": "5.0-6.5（偏酸性为佳）",
+    "fertility": "有机质丰富，疏松透气",
+    "drainage": "土层深厚，排水良好"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "7-8℃（最低），18-22℃（最适）",
+      "growth": "16-20℃（茎叶），16-18℃（块茎膨大最适）",
+      "cold_resistance": "幼苗耐-1℃短时低温，块茎膨大期怕高温（>25℃停止膨大）"
+    },
+    "water": {
+      "annual_rainfall": "400-600mm（或灌溉补充）",
+      "critical_period": "现蕾期至盛花期（块茎形成与膨大期）需水最多"
+    },
+    "light": "长日照促进茎叶生长，短日照促进块茎形成，喜充足光照"
+  },
+  "growth_stages": [
+    {
+      "stage": "播种期",
+      "duration_days": 15,
+      "key_tasks": ["切种薯", "种薯处理（催芽）", "整地施基肥", "播种"],
+      "notes": "种薯切块每块带1-2个芽眼，播种深度8-12cm"
+    },
+    {
+      "stage": "出苗期",
+      "duration_days": 15,
+      "key_tasks": ["查苗补苗", "中耕松土"],
+      "notes": "从播种到出苗约20-30天（未催芽需30-40天）"
+    },
+    {
+      "stage": "苗期（团棵期）",
+      "duration_days": 20,
+      "key_tasks": ["中耕除草", "培土", "追施苗肥"],
+      "notes": "蹲苗促根，控制地上部徒长"
+    },
+    {
+      "stage": "块茎形成期",
+      "duration_days": 15,
+      "key_tasks": ["浇水", "追肥", "培土", "防治晚疫病"],
+      "notes": "匍匐茎顶端开始膨大，需水肥增加"
+    },
+    {
+      "stage": "块茎膨大期",
+      "duration_days": 30,
+      "key_tasks": ["浇水", "叶面喷肥", "病虫害防治"],
+      "notes": "块茎快速膨大，需水肥高峰期，保持土壤湿润"
+    },
+    {
+      "stage": "成熟收获期",
+      "duration_days": 10,
+      "key_tasks": ["控水", "割秧", "适时收获", "晾晒", "储存"],
+      "notes": "茎叶变黄枯萎时收获，避免损伤薯皮"
+    }
+  ],
+  "fertilization_guide": [
+    {
+      "time": "基肥（播种前）",
+      "type": "有机肥+复合肥（高钾型）",
+      "amount": "有机肥3000-4000kg/亩，复合肥50-60kg/亩",
+      "method": "撒施后深耕翻入土"
+    },
+    {
+      "time": "苗期追肥",
+      "type": "尿素",
+      "amount": "10-15kg/亩",
+      "method": "结合第一次培土追施"
+    },
+    {
+      "time": "块茎膨大肥",
+      "type": "硫酸钾",
+      "amount": "15-20kg/亩",
+      "method": "结合培土追施，钾肥促块茎膨大"
+    },
+    {
+      "time": "叶面肥",
+      "type": "磷酸二氢钾",
+      "amount": "0.2-0.3%溶液喷施",
+      "method": "块茎膨大期喷施2-3次"
+    }
+  ],
+  "irrigation_guide": [
+    {
+      "stage": "播种前",
+      "purpose": "造墒",
+      "amount": "播种时土壤含水量60-70%"
+    },
+    {
+      "stage": "苗期",
+      "purpose": "蹲苗",
+      "amount": "适当控水，不旱不浇"
+    },
+    {
+      "stage": "块茎形成期",
+      "purpose": "促块茎形成",
+      "amount": "保持土壤湿润"
+    },
+    {
+      "stage": "块茎膨大期",
+      "purpose": "促薯块膨大",
+      "amount": "充足均匀供水，避免干湿交替"
+    },
+    {
+      "stage": "收获前",
+      "purpose": "促薯皮老化",
+      "amount": "收获前7-10天停止浇水"
+    }
+  ],
+  "common_diseases": [
+    {
+      "name": "晚疫病",
+      "symptoms": "叶片出现水渍状斑点，湿度大时背面有白色霉层，薯块腐烂",
+      "prevention": "选用抗病品种，合理轮作，预防性喷施霜脲·锰锌或嘧菌酯",
+      "occurrence_stage": "开花期至块茎膨大期，多雨年份重发"
+    },
+    {
+      "name": "早疫病",
+      "symptoms": "叶片出现同心轮纹褐色斑点，严重时叶片干枯",
+      "prevention": "增施有机肥，喷施代森锰锌或苯醚甲环唑",
+      "occurrence_stage": "块茎膨大期"
+    },
+    {
+      "name": "环腐病",
+      "symptoms": "植株萎蔫，薯块维管束变黄褐色呈环状腐烂",
+      "prevention": "切刀消毒（75%酒精），选用无病种薯，轮作",
+      "occurrence_stage": "块茎形成期至收获期"
+    }
+  ],
+  "common_pests": [
+    {
+      "name": "马铃薯甲虫",
+      "symptoms": "成虫和幼虫大量取食叶片，严重时仅剩茎秆",
+      "control": "轮作倒茬，成虫出土期喷施高效氯氟氰菊酯"
+    },
+    {
+      "name": "蚜虫",
+      "symptoms": "叶片卷曲，传播马铃薯卷叶病毒等",
+      "control": "喷施吡虫啉或啶虫脒，银灰色地膜驱避"
+    },
+    {
+      "name": "地下害虫（蛴螬、地老虎）",
+      "symptoms": "咬食种薯和薯块，造成缺苗断垄和虫伤薯块",
+      "control": "播种时沟施辛硫磷颗粒剂，土壤处理"
+    }
+  ],
+  "yield_info": {
+    "low_yield": "1500-2000kg/亩",
+    "medium_yield": "2000-3000kg/亩",
+    "high_yield": "3000-5000kg/亩",
+    "factors": ["品种", "种薯质量", "水肥管理", "病虫害防治", "培土"]
+  },
+  "market_info": {
+    "peak_season": "6-7月（春马铃薯），10-11月（秋马铃薯）",
+    "price_factors": ["季节供应", "品种品质", "蔬菜行情", "加工需求"],
+    "storage_tips": "黑暗低温（2-5℃）储存，避光防绿变，保持通风"
+  }
+}

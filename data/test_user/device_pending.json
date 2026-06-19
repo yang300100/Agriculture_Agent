@@ -1,0 +1,134 @@
+[
+  {
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 45
+    },
+    "reason": "测试待确认操作",
+    "id": "pending_64c08c54",
+    "created_at": "2026-06-14T22:57:29.146777",
+    "status": "rejected"
+  },
+  {
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 45
+    },
+    "reason": "测试待确认操作",
+    "id": "pending_1e3efd3e",
+    "created_at": "2026-06-14T23:06:13.059426",
+    "status": "rejected"
+  },
+  {
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 45
+    },
+    "reason": "测试待确认操作",
+    "id": "pending_816b02a7",
+    "created_at": "2026-06-14T23:06:47.641299",
+    "status": "rejected"
+  },
+  {
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 45
+    },
+    "reason": "测试待确认操作",
+    "id": "pending_311b6032",
+    "created_at": "2026-06-14T23:25:04.486252",
+    "status": "rejected"
+  },
+  {
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 45
+    },
+    "reason": "测试待确认操作",
+    "id": "pending_a2c2f4e6",
+    "created_at": "2026-06-14T23:58:06.818366",
+    "status": "rejected"
+  },
+  {
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 45
+    },
+    "reason": "测试待确认操作",
+    "id": "pending_10a537fc",
+    "created_at": "2026-06-14T23:58:14.283946",
+    "status": "rejected"
+  },
+  {
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 45
+    },
+    "reason": "测试待确认操作",
+    "id": "pending_74b02c0f",
+    "created_at": "2026-06-15T00:05:53.730362",
+    "status": "rejected"
+  },
+  {
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 45
+    },
+    "reason": "测试待确认操作",
+    "id": "pending_85078a0a",
+    "created_at": "2026-06-15T00:21:54.693261",
+    "status": "rejected"
+  },
+  {
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 45
+    },
+    "reason": "测试待确认操作",
+    "id": "pending_22ca8f3f",
+    "created_at": "2026-06-15T00:25:25.601039",
+    "status": "rejected"
+  },
+  {
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 45
+    },
+    "reason": "测试待确认操作",
+    "id": "pending_1945ae74",
+    "created_at": "2026-06-15T10:22:45.655010",
+    "status": "rejected"
+  },
+  {
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 45
+    },
+    "reason": "测试待确认操作",
+    "id": "pending_c8db63ee",
+    "created_at": "2026-06-15T10:50:45.780602",
+    "status": "rejected"
+  },
+  {
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 45
+    },
+    "reason": "测试待确认操作",
+    "id": "pending_bb34bc26",
+    "created_at": "2026-06-15T11:07:27.367250",
+    "status": "rejected"
+  }
+]

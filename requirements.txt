@@ -50,9 +50,12 @@ tencentcloud-sdk-python>=3.0.0
 
 # ── IoT 设备驱动（可选）────────────────────────────
 # MQTT 设备接入 (ESP32/ESP8266/树莓派)
-# paho-mqtt>=1.6.0
+paho-mqtt>=1.6.0
 # Modbus 设备接入 (PLC/工业传感器)
-# pymodbus>=3.5.0
+pymodbus>=3.5.0
 
 # ── 开发 & 测试 ────────────────────────────────────
 pytest>=7.0.0
+
+opencv-python
+pyserial

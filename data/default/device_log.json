@@ -1,0 +1,32 @@
+[
+  {
+    "timestamp": "2026-06-14T23:06:29.976803",
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 20
+    },
+    "trigger": "manual",
+    "rule_id": null,
+    "decision": "auto_execute",
+    "success": true,
+    "attempts": 1,
+    "message": "[模拟] 虚拟灌溉阀#1 已启动",
+    "error_code": ""
+  },
+  {
+    "timestamp": "2026-06-14T23:06:41.041221",
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {
+      "duration": 20
+    },
+    "trigger": "manual",
+    "rule_id": null,
+    "decision": "auto_execute",
+    "success": true,
+    "attempts": 1,
+    "message": "[模拟] 虚拟灌溉阀#1 已启动",
+    "error_code": ""
+  }
+]

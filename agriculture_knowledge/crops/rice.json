@@ -1,0 +1,180 @@
+{
+  "crop_name": "水稻",
+  "aliases": ["稻谷", "大米", "稻子"],
+  "suitable_regions": ["华东", "华南", "华中", "西南", "东北"],
+  "planting_seasons": {
+    "early_rice": {
+      "name": "早稻",
+      "sowing_time": "3月下旬-4月上旬",
+      "harvest_time": "7月中下旬",
+      "suitable_climate": "温暖湿润，光照充足",
+      "notes": "生育期100-120天，需注意倒春寒"
+    },
+    "middle_rice": {
+      "name": "中稻",
+      "sowing_time": "4月下旬-5月中旬",
+      "harvest_time": "9月中下旬",
+      "suitable_climate": "水热条件好，光照充足",
+      "notes": "生育期120-150天，产量潜力最大"
+    },
+    "late_rice": {
+      "name": "晚稻",
+      "sowing_time": "6月下旬-7月上旬",
+      "harvest_time": "10月下旬-11月上旬",
+      "suitable_climate": "秋季温暖，昼夜温差大",
+      "notes": "生育期110-130天，需防范寒露风"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["壤土", "黏壤土", "砂壤土"],
+    "ph_range": "5.5-7.0",
+    "fertility": "中上等肥力，有机质丰富",
+    "drainage": "保水保肥能力强，有一定渗漏性"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "10-12℃（最低），25-32℃（最适）",
+      "growth": "25-32℃（分蘖至抽穗）",
+      "cold_resistance": "低于15℃影响开花授粉，低于10℃灌浆受阻"
+    },
+    "water": {
+      "annual_rainfall": "800-1500mm",
+      "critical_period": "分蘖期、孕穗期、抽穗扬花期需水较多，需保持水层"
+    },
+    "light": "短日照作物，每天需要8-10小时光照"
+  },
+  "growth_stages": [
+    {
+      "stage": "播种育秧期",
+      "duration_days": 25,
+      "key_tasks": ["选种浸种", "催芽", "整秧田", "播种育秧"],
+      "notes": "秧龄25-35天，培育壮秧是关键"
+    },
+    {
+      "stage": "返青分蘖期",
+      "duration_days": 30,
+      "key_tasks": ["插秧", "查苗补苗", "追施分蘖肥", "浅水灌溉"],
+      "notes": "保持3-5cm浅水层，促进分蘖早生快发"
+    },
+    {
+      "stage": "拔节孕穗期",
+      "duration_days": 25,
+      "key_tasks": ["晒田控苗", "追施穗肥", "病虫害防治"],
+      "notes": "适度晒田控制无效分蘖，复水后追穗肥"
+    },
+    {
+      "stage": "抽穗扬花期",
+      "duration_days": 10,
+      "key_tasks": ["深水灌溉", "叶面喷肥", "防病虫"],
+      "notes": "保持5-8cm水层，喷施磷酸二氢钾提高结实率"
+    },
+    {
+      "stage": "灌浆结实期",
+      "duration_days": 25,
+      "key_tasks": ["间歇灌溉", "防早衰", "防倒伏"],
+      "notes": "干湿交替灌溉，保持根系活力至黄熟"
+    },
+    {
+      "stage": "成熟收获期",
+      "duration_days": 10,
+      "key_tasks": ["排水晒田", "适时收割", "晾晒", "储存"],
+      "notes": "90%谷粒变黄时收获，含水量降至14%以下储存"
+    }
+  ],
+  "fertilization_guide": [
+    {
+      "time": "基肥（整田时）",
+      "type": "有机肥+复合肥",
+      "amount": "有机肥2000-3000kg/亩，复合肥30-40kg/亩",
+      "method": "撒施后旋耕入土"
+    },
+    {
+      "time": "分蘖肥",
+      "type": "尿素",
+      "amount": "10-15kg/亩",
+      "method": "撒施，保持浅水层"
+    },
+    {
+      "time": "穗肥",
+      "type": "尿素+氯化钾",
+      "amount": "尿素8-10kg/亩，氯化钾5-8kg/亩",
+      "method": "晒田复水后撒施"
+    },
+    {
+      "time": "粒肥（叶面肥）",
+      "type": "磷酸二氢钾",
+      "amount": "0.2%溶液喷施",
+      "method": "抽穗扬花期和灌浆期各喷1次"
+    }
+  ],
+  "irrigation_guide": [
+    {
+      "stage": "返青期",
+      "purpose": "促进活棵返青",
+      "amount": "保持3-5cm水层"
+    },
+    {
+      "stage": "分蘖期",
+      "purpose": "促分蘖早生快发",
+      "amount": "浅水3cm，促分蘖"
+    },
+    {
+      "stage": "晒田期",
+      "purpose": "控制无效分蘖",
+      "amount": "排水晒田5-7天"
+    },
+    {
+      "stage": "孕穗抽穗期",
+      "purpose": "保证需水高峰",
+      "amount": "保持5-8cm水层"
+    },
+    {
+      "stage": "灌浆期",
+      "purpose": "养根保叶",
+      "amount": "干湿交替，跑马水灌溉"
+    }
+  ],
+  "common_diseases": [
+    {
+      "name": "稻瘟病",
+      "symptoms": "叶片出现梭形褐色斑点，严重时全株枯死，穗颈瘟导致白穗",
+      "prevention": "选用抗病品种，合理施肥，发病初期喷施三环唑或稻瘟灵",
+      "occurrence_stage": "苗期至成熟期均可发生"
+    },
+    {
+      "name": "纹枯病",
+      "symptoms": "叶鞘出现水渍状病斑，后期形成菌核，植株倒伏枯死",
+      "prevention": "合理密植，晒田控苗，喷施井冈霉素",
+      "occurrence_stage": "分蘖期至灌浆期"
+    },
+    {
+      "name": "白叶枯病",
+      "symptoms": "叶缘出现黄白色波纹状病斑，严重时叶片干枯",
+      "prevention": "选用抗病品种，避免台风暴雨后淹水，喷施噻菌铜",
+      "occurrence_stage": "分蘖盛期至抽穗期"
+    }
+  ],
+  "common_pests": [
+    {
+      "name": "稻飞虱",
+      "symptoms": "群集稻株基部吸食汁液，导致枯黄倒伏",
+      "control": "喷施吡虫啉或噻虫嗪，保护天敌（蜘蛛、寄生蜂）"
+    },
+    {
+      "name": "二化螟",
+      "symptoms": "幼虫蛀入茎秆，造成枯心苗、白穗",
+      "control": "卵孵化高峰期喷施氯虫苯甲酰胺，深水灭蛹"
+    }
+  ],
+  "yield_info": {
+    "low_yield": "400-500kg/亩",
+    "medium_yield": "500-650kg/亩",
+    "high_yield": "650-800kg/亩",
+    "factors": ["品种", "水肥管理", "病虫害防治", "光照条件", "种植密度"]
+  },
+  "market_info": {
+    "peak_season": "7-11月（按早中晚稻依次上市）",
+    "price_factors": ["品种品质", "产量", "托市收购政策", "市场供需"],
+    "storage_tips": "低温干燥储存，含水量保持14%以下，防虫防霉"
+  }
+}

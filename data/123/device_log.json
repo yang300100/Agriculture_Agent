@@ -1,0 +1,67 @@
+[
+  {
+    "timestamp": "2026-06-14T23:09:37.339592",
+    "device_id": "virtual_fertigator_01",
+    "command": "start",
+    "params": {},
+    "trigger": "api",
+    "rule_id": null,
+    "decision": "auto_execute",
+    "success": true,
+    "attempts": 1,
+    "message": "[模拟] 虚拟施肥一体机#1 已启动",
+    "error_code": ""
+  },
+  {
+    "timestamp": "2026-06-14T23:09:54.972182",
+    "device_id": "virtual_ventilation_01",
+    "command": "start",
+    "params": {},
+    "trigger": "api",
+    "rule_id": null,
+    "decision": "auto_execute",
+    "success": true,
+    "attempts": 1,
+    "message": "[模拟] 虚拟通风风机#1 已启动",
+    "error_code": ""
+  },
+  {
+    "timestamp": "2026-06-14T23:10:21.439411",
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {},
+    "trigger": "api",
+    "rule_id": null,
+    "decision": "auto_execute",
+    "success": true,
+    "attempts": 1,
+    "message": "[模拟] 虚拟灌溉阀#1 已启动",
+    "error_code": ""
+  },
+  {
+    "timestamp": "2026-06-14T23:11:45.072569",
+    "device_id": "virtual_light_01",
+    "command": "start",
+    "params": {},
+    "trigger": "api",
+    "rule_id": null,
+    "decision": "auto_execute",
+    "success": true,
+    "attempts": 1,
+    "message": "[模拟] 虚拟补光灯#1 已启动",
+    "error_code": ""
+  },
+  {
+    "timestamp": "2026-06-14T23:15:35.021586",
+    "device_id": "virtual_irrigation_01",
+    "command": "start",
+    "params": {},
+    "trigger": "api",
+    "rule_id": null,
+    "decision": "auto_execute",
+    "success": true,
+    "attempts": 1,
+    "message": "[模拟] 虚拟灌溉阀#1 已启动",
+    "error_code": ""
+  }
+]

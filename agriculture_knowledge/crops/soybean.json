@@ -1,0 +1,173 @@
+{
+  "crop_name": "大豆",
+  "aliases": ["黄豆", "毛豆", "青豆"],
+  "suitable_regions": ["东北", "黄淮海", "华北", "西北"],
+  "planting_seasons": {
+    "spring_soybean": {
+      "name": "春大豆",
+      "sowing_time": "4月下旬-5月上旬",
+      "harvest_time": "9月中下旬",
+      "suitable_climate": "温带，无霜期120天以上",
+      "notes": "东北主产区，生育期120-140天"
+    },
+    "summer_soybean": {
+      "name": "夏大豆",
+      "sowing_time": "6月上旬-6月下旬",
+      "harvest_time": "9月下旬-10月上旬",
+      "suitable_climate": "麦后复种，需抢时早播",
+      "notes": "黄淮海主产区，生育期90-110天"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["壤土", "砂壤土", "黏壤土"],
+    "ph_range": "6.0-7.5",
+    "fertility": "中等肥力即可，磷钾需求较大",
+    "drainage": "排水良好，不耐涝"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "10-12℃（最低），20-25℃（最适）",
+      "growth": "20-28℃",
+      "cold_resistance": "幼苗可耐-3℃短时低温，低于14℃开花延迟"
+    },
+    "water": {
+      "annual_rainfall": "400-800mm",
+      "critical_period": "开花结荚期需水最多，鼓粒期次之"
+    },
+    "light": "短日照作物，对日照长度敏感，需要充足光照"
+  },
+  "growth_stages": [
+    {
+      "stage": "播种期",
+      "duration_days": 7,
+      "key_tasks": ["整地", "施基肥", "种子处理（根瘤菌拌种）"],
+      "notes": "播种深度3-5cm，亩播种量4-6kg"
+    },
+    {
+      "stage": "苗期",
+      "duration_days": 25,
+      "key_tasks": ["查苗补苗", "间苗定苗", "中耕除草"],
+      "notes": "3-4片真叶时定苗，亩留苗1.2-1.8万株"
+    },
+    {
+      "stage": "花芽分化期",
+      "duration_days": 15,
+      "key_tasks": ["追肥", "浇水", "中耕培土"],
+      "notes": "追施磷钾肥促进花芽分化"
+    },
+    {
+      "stage": "开花结荚期",
+      "duration_days": 30,
+      "key_tasks": ["浇水", "追施结荚肥", "防治病虫害"],
+      "notes": "营养生长与生殖生长并进，水肥需求高峰期"
+    },
+    {
+      "stage": "鼓粒期",
+      "duration_days": 25,
+      "key_tasks": ["浇水", "叶面喷肥", "防治食心虫"],
+      "notes": "决定粒重和品质的关键期，保持土壤湿润"
+    },
+    {
+      "stage": "成熟期",
+      "duration_days": 10,
+      "key_tasks": ["适时收割", "晾晒", "脱粒", "储存"],
+      "notes": "叶片脱落、豆荚变褐色时收获"
+    }
+  ],
+  "fertilization_guide": [
+    {
+      "time": "基肥（播种前）",
+      "type": "有机肥+磷钾肥",
+      "amount": "有机肥1500-2000kg/亩，过磷酸钙30-40kg/亩",
+      "method": "撒施后翻耕入土"
+    },
+    {
+      "time": "苗期追肥",
+      "type": "尿素",
+      "amount": "5-8kg/亩",
+      "method": "弱苗田追施，壮苗田可不追"
+    },
+    {
+      "time": "开花结荚期",
+      "type": "复合肥或磷酸二铵",
+      "amount": "10-15kg/亩",
+      "method": "结合中耕培土追施"
+    },
+    {
+      "time": "鼓粒期（叶面肥）",
+      "type": "磷酸二氢钾+硼肥",
+      "amount": "0.2%磷酸二氢钾+0.1%硼砂溶液喷施",
+      "method": "叶面喷施1-2次"
+    }
+  ],
+  "irrigation_guide": [
+    {
+      "stage": "播种前",
+      "purpose": "造墒",
+      "amount": "播种时土壤含水量70-80%"
+    },
+    {
+      "stage": "苗期",
+      "purpose": "蹲苗促根",
+      "amount": "适当控水，不旱不浇"
+    },
+    {
+      "stage": "开花结荚期",
+      "purpose": "促进开花结荚",
+      "amount": "保持土壤湿润，遇旱及时浇水"
+    },
+    {
+      "stage": "鼓粒期",
+      "purpose": "增粒重",
+      "amount": "保持水分充足，浇鼓粒水"
+    }
+  ],
+  "common_diseases": [
+    {
+      "name": "霜霉病",
+      "symptoms": "叶片出现黄绿色斑点，背面有灰白色霉层",
+      "prevention": "选用抗病品种，合理轮作，喷施甲霜灵或霜脲氰",
+      "occurrence_stage": "苗期至开花期"
+    },
+    {
+      "name": "灰斑病",
+      "symptoms": "叶片出现灰褐色不规则病斑，严重时落叶",
+      "prevention": "合理施肥，增强植株抗性，喷施多菌灵或戊唑醇",
+      "occurrence_stage": "开花结荚期至鼓粒期"
+    },
+    {
+      "name": "根腐病",
+      "symptoms": "根部变褐腐烂，植株萎蔫枯死",
+      "prevention": "轮作倒茬，种子处理，发病初期灌根（恶霉灵）",
+      "occurrence_stage": "苗期至开花期"
+    }
+  ],
+  "common_pests": [
+    {
+      "name": "大豆蚜虫",
+      "symptoms": "叶片卷曲，生长受阻，传播病毒病",
+      "control": "喷施吡虫啉或啶虫脒，保护瓢虫等天敌"
+    },
+    {
+      "name": "大豆食心虫",
+      "symptoms": "幼虫蛀入豆荚取食豆粒，造成虫口豆",
+      "control": "成虫盛发期喷施高效氯氰菊酯，深翻灭蛹"
+    },
+    {
+      "name": "豆荚螟",
+      "symptoms": "幼虫蛀食花蕾和豆荚，造成落花落荚",
+      "control": "卵孵化盛期喷施甲维盐或茚虫威"
+    }
+  ],
+  "yield_info": {
+    "low_yield": "150-200kg/亩",
+    "medium_yield": "200-300kg/亩",
+    "high_yield": "300-400kg/亩",
+    "factors": ["品种", "水肥管理", "种植密度", "病虫害防治", "轮作制度"]
+  },
+  "market_info": {
+    "peak_season": "9-10月",
+    "price_factors": ["进口量", "国产量", "品质", "政策收储"],
+    "storage_tips": "干燥通风，含水量12%以下，防止生虫发霉"
+  }
+}

@@ -1,0 +1,50 @@
+[
+  {
+    "file": "app/agent/agents/device_agent.py",
+    "line": 191,
+    "summary": "setup_registry() 调用缺少 username 参数，非 default 用户时 Agent 加载错误用户的设备配置",
+    "failure_scenario": "用户 'zhangsan' 注册了 MQTT 水泵 → 对话中说「浇水」→ DeviceAgent 调用 setup_registry() 默认 username='default' → 加载的是 default 用户的设备列表 → zhangsan 的水泵找不到 → DEVICE_NOT_FOUND"
+  },
+  {
+    "file": "app/api_routes.py",
+    "line": 791,
+    "summary": "test_rule 端点创建事件循环后未关闭，每次调用泄漏一个 event loop（其他 5 个端点均已修复，唯独漏了这一个）",
+    "failure_scenario": "用户反复点击「测试规则」→ 每次 /api/rules/{id}/test 创建新 loop 不关闭 → 长时间运行后 fd 耗尽 → OSError: too many open files"
+  },
+  {
+    "file": "core/device_rule_engine.py",
+    "line": 213,
+    "summary": "between 操作符用字符串字典序比较代替数值比较，对纯数字区间(如温度 10-25)会判断错误，且跨夜逻辑对数字类型完全失效",
+    "failure_scenario": "规则条件 between [10, 25] 判断温度 → str(100) < str(25) 字典序下为 True→ 100°C 被判定在 [10,25] 区间内 → 规则误触发"
+  },
+  {
+    "file": "devices/http_driver.py",
+    "line": 261,
+    "summary": "_async_request 方法路由只区分 GET/POST，PUT/DELETE/PATCH 等静默降级为 POST",
+    "failure_scenario": "未来设备端要求 PUT /command 更新参数 → _async_request('PUT', url, ...) → 实际发出 POST 请求 → 设备返回 405 Method Not Allowed → 操作失败无日志"
+  },
+  {
+    "file": "core/device_rule_engine.py",
+    "line": 167,
+    "summary": "_global_history 写回操作存在 TOCTOU 隐患：多线程下可能用旧引用覆盖新数据",
+    "failure_scenario": "线程A创建 RuleEngine → 线程B重建 _global_history[user] → 线程A record_execution 写回旧引用 → 线程B 的数据被覆盖丢失"
+  },
+  {
+    "file": "app/api_routes.py",
+    "line": 646,
+    "summary": "create_device 中 builtin_ids 硬编码了 6 个虚拟设备 ID，与 device_registry_factory.py 中 SimulatorDriver 的内置设备重复维护",
+    "failure_scenario": "SimulatorDriver 新增虚拟设备 → 忘记同步更新 builtin_ids → 用户可以注册一个与内置设备 ID 重复的自定义设备 → 行为不确定"
+  },
+  {
+    "file": "core/device_registry_factory.py",
+    "line": 153,
+    "summary": "close_registry 只调用 loop.close()，不清理之前 set_event_loop 的全局设置",
+    "failure_scenario": "setup_registry 执行 set_event_loop(loop) → 之后 loop 被 close → 同线程后续代码调用 asyncio.get_event_loop() → 拿到已关闭的 loop → RuntimeError"
+  },
+  {
+    "file": "core/device_rule_engine.py",
+    "line": 15,
+    "summary": "_global_history 模块级字典在进程生命周期内持续增长无清理机制，长期运行可能内存膨胀",
+    "failure_scenario": "server 运行数周 → 用户频繁操作设备 → _execution_history 每个 device_id 的列表持续 append → 内存缓慢增长 → 最终 OOM"
+  }
+]

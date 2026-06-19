@@ -1,0 +1,180 @@
+{
+  "crop_name": "小麦",
+  "aliases": ["麦子", "冬小麦", "春小麦"],
+  "suitable_regions": ["华北", "黄淮海", "西北", "东北"],
+  "planting_seasons": {
+    "winter_wheat": {
+      "name": "冬小麦",
+      "sowing_time": "9月下旬-10月上旬",
+      "harvest_time": "次年5-6月",
+      "suitable_climate": "温带半干旱、半湿润地区",
+      "notes": "需要越冬，耐寒性较强"
+    },
+    "spring_wheat": {
+      "name": "春小麦",
+      "sowing_time": "3月-4月",
+      "harvest_time": "7月-8月",
+      "suitable_climate": "寒冷地区，无霜期短",
+      "notes": "生育期较短"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["壤土", "砂壤土"],
+    "ph_range": "6.0-7.5",
+    "fertility": "中上等肥力",
+    "drainage": "良好排水"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "15-20℃",
+      "growth": "15-22℃",
+      "cold_resistance": "幼苗可耐-18℃低温"
+    },
+    "water": {
+      "annual_rainfall": "400-800mm",
+      "critical_period": "拔节期、抽穗期需水较多"
+    },
+    "light": "长日照作物，每天需要8-12小时光照"
+  },
+  "growth_stages": [
+    {
+      "stage": "播种期",
+      "duration_days": 7,
+      "key_tasks": ["整地", "施基肥", "播种", "镇压"],
+      "notes": "播种深度3-5厘米，亩播种量15-20斤"
+    },
+    {
+      "stage": "苗期",
+      "duration_days": 60,
+      "key_tasks": ["查苗补苗", "间苗定苗", "除草"],
+      "notes": "培育壮苗，促进分蘖"
+    },
+    {
+      "stage": "越冬期",
+      "duration_days": 100,
+      "key_tasks": ["冬灌", "防寒", "镇压保墒"],
+      "notes": "仅冬小麦有越冬期"
+    },
+    {
+      "stage": "返青期",
+      "duration_days": 15,
+      "key_tasks": ["追肥", "浇水", "划锄"],
+      "notes": "春季返青，恢复生长"
+    },
+    {
+      "stage": "拔节期",
+      "duration_days": 20,
+      "key_tasks": ["追肥", "浇水", "病虫害防治"],
+      "notes": "营养生长与生殖生长并进，需肥水高峰期"
+    },
+    {
+      "stage": "抽穗扬花期",
+      "duration_days": 15,
+      "key_tasks": ["浇水", "防治赤霉病", "防干热风"],
+      "notes": "决定穗粒数的关键时期"
+    },
+    {
+      "stage": "灌浆期",
+      "duration_days": 30,
+      "key_tasks": ["叶面喷肥", "防治病虫害", "防倒伏"],
+      "notes": "决定千粒重的关键时期"
+    },
+    {
+      "stage": "成熟期",
+      "duration_days": 10,
+      "key_tasks": ["适时收割", "晾晒", "储存"],
+      "notes": "蜡熟末期至完熟初期为最佳收获期"
+    }
+  ],
+  "fertilization_guide": [
+    {
+      "time": "播种前（基肥）",
+      "type": "有机肥+复合肥",
+      "amount": "有机肥3000-4000kg/亩，复合肥40-50kg/亩",
+      "method": "撒施后深耕"
+    },
+    {
+      "time": "返青期",
+      "type": "尿素",
+      "amount": "10-15kg/亩",
+      "method": "撒施或穴施"
+    },
+    {
+      "time": "拔节期",
+      "type": "尿素+钾肥",
+      "amount": "尿素15-20kg/亩，钾肥5-10kg/亩",
+      "method": "结合浇水追施"
+    },
+    {
+      "time": "抽穗期（叶面肥）",
+      "type": "磷酸二氢钾",
+      "amount": "0.2%溶液喷施",
+      "method": "叶面喷施1-2次"
+    }
+  ],
+  "irrigation_guide": [
+    {
+      "stage": "播种前",
+      "purpose": "造墒",
+      "amount": "充足底墒水"
+    },
+    {
+      "stage": "越冬前",
+      "purpose": "防冻保苗",
+      "amount": "适量冬灌水"
+    },
+    {
+      "stage": "拔节期",
+      "purpose": "促进生长",
+      "amount": "20-30m³/亩"
+    },
+    {
+      "stage": "抽穗扬花期",
+      "purpose": "保证授粉",
+      "amount": "15-20m³/亩"
+    }
+  ],
+  "common_diseases": [
+    {
+      "name": "白粉病",
+      "symptoms": "叶片出现白色粉状物，后期变黄枯焦",
+      "prevention": "选用抗病品种，合理密植，发病初期喷施三唑酮",
+      "occurrence_stage": "拔节期至灌浆期"
+    },
+    {
+      "name": "锈病",
+      "symptoms": "叶片出现黄褐色或黑褐色粉状孢子堆",
+      "prevention": "选用抗病品种，及时清除病残体，喷施粉锈宁",
+      "occurrence_stage": "抽穗期至灌浆期"
+    },
+    {
+      "name": "赤霉病",
+      "symptoms": "穗部出现粉红色霉层，籽粒发红",
+      "prevention": "扬花期喷施多菌灵或戊唑醇，避开阴雨天气",
+      "occurrence_stage": "抽穗扬花期"
+    }
+  ],
+  "common_pests": [
+    {
+      "name": "蚜虫",
+      "symptoms": "叶片卷曲，蜜露分泌，传播病毒",
+      "control": "喷施吡虫啉或啶虫脒，保护瓢虫等天敌"
+    },
+    {
+      "name": "麦蜘蛛",
+      "symptoms": "叶片出现黄白色小点，严重时干枯",
+      "control": "喷施阿维菌素，加强田间管理"
+    }
+  ],
+  "yield_info": {
+    "low_yield": "300-400kg/亩",
+    "medium_yield": "400-500kg/亩",
+    "high_yield": "500-600kg/亩",
+    "factors": ["品种", "水肥管理", "病虫害防治", "气候条件"]
+  },
+  "market_info": {
+    "peak_season": "6-7月",
+    "price_factors": ["产量", "品质", "市场需求", "政策"],
+    "storage_tips": "干燥通风，防虫防霉"
+  }
+}

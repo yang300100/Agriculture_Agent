@@ -1,0 +1,79 @@
+{
+  "crop_name": "烟草",
+  "aliases": ["烟叶", "烤烟", "晒烟"],
+  "suitable_regions": ["西南", "黄淮海", "华中", "东北"],
+  "planting_seasons": {
+    "spring": {
+      "name": "春烟",
+      "sowing_time": "2月中旬-3月上旬（育苗），4月中旬-5月中旬（移栽）",
+      "harvest_time": "7月上旬-9月上旬",
+      "suitable_climate": "移栽时气温稳定在12-13℃以上",
+      "notes": "全国主栽模式，大田生育期100-120天"
+    },
+    "summer": {
+      "name": "夏烟",
+      "sowing_time": "4月上旬-5月上旬（育苗），6月上旬-7月上旬（移栽）",
+      "harvest_time": "9月中旬-10月下旬",
+      "suitable_climate": "麦茬后移栽",
+      "notes": "黄淮海地区，生育期90-110天"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["壤土", "沙壤土"],
+    "ph_range": "5.5-7.0",
+    "fertility": "中等肥力，有机质含量1-2%",
+    "drainage": "要求排水良好，忌渍水",
+    "notes": "含氯量低的土壤有利于烟叶燃烧品质"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "10-12℃（最低），25-28℃（最适）",
+      "growth": "22-28℃",
+      "maturity": "成熟期以20-26℃为宜，昼夜温差大利于品质"
+    },
+    "water": {
+      "critical_period": "旺长期需水最多",
+      "requirement": "大田期需水400-600mm，怕涝不怕旱"
+    },
+    "light": "喜光作物，充足日照有利于香气物质形成"
+  },
+  "growth_stages": [
+    {"stage": "苗床期", "duration_days": 55, "key_tasks": ["精细播种", "苗床管理", "剪叶炼苗"], "notes": "培育壮苗是基础"},
+    {"stage": "移栽还苗期", "duration_days": 10, "key_tasks": ["浇足定根水", "查苗补苗", "浅中耕"], "notes": "快速缓苗成活"},
+    {"stage": "伸根期", "duration_days": 25, "key_tasks": ["深中耕", "追施提苗肥", "培土"], "notes": "促进根系深扎"},
+    {"stage": "旺长期", "duration_days": 35, "key_tasks": ["追施旺长肥", "灌溉", "防治病虫"], "notes": "茎叶快速生长，是产量形成关键期"},
+    {"stage": "成熟期", "duration_days": 40, "key_tasks": ["打顶抹杈", "下部叶开始采收", "控制水分"], "notes": "自下而上分层采收"}
+  ],
+  "fertilization_guide": [
+    {"time": "移栽前（基肥）", "type": "有机肥+烟草专用复合肥", "amount": "有机肥1000-1500kg/亩，烟草专用肥（10-10-20）30-40kg/亩", "method": "起垄时条施"},
+    {"time": "移栽后7天（提苗肥）", "type": "硝酸钾", "amount": "硝酸钾5-8kg/亩", "method": "兑水浇施"},
+    {"time": "旺长期（追肥）", "type": "硫酸钾", "amount": "硫酸钾10-15kg/亩", "method": "结合培土施入"},
+    {"time": "打顶后（叶面肥）", "type": "磷酸二氢钾", "amount": "0.3%溶液喷施1-2次", "method": "叶面喷施"}
+  ],
+  "irrigation_guide": [
+    {"stage": "移栽期", "purpose": "确保成活", "amount": "浇足定根水"},
+    {"stage": "伸根期", "purpose": "促进根系生长", "amount": "适当控水蹲苗"},
+    {"stage": "旺长期", "purpose": "促进茎叶生长", "amount": "保持土壤湿润，遇旱灌溉"},
+    {"stage": "成熟期", "purpose": "促进落黄成熟", "amount": "控水，保持土壤偏干"}
+  ],
+  "common_diseases": [
+    {"name": "烟草黑胫病", "symptoms": "茎基部变黑腐烂，植株枯萎", "prevention": "轮作3年以上，起垄栽培，发病时灌根甲霜灵", "occurrence_stage": "旺长期至成熟期"},
+    {"name": "烟草花叶病毒病", "symptoms": "叶片出现黄绿相间花斑，严重畸形", "prevention": "选用抗病品种，操作前洗手消毒，防蚜虫传播", "occurrence_stage": "全生育期"},
+    {"name": "烟草赤星病", "symptoms": "叶片出现褐色同心轮纹斑点", "prevention": "合理密植，成熟期控氮，发病时喷嘧菌酯", "occurrence_stage": "成熟期"}
+  ],
+  "common_pests": [
+    {"name": "烟蚜", "symptoms": "密集嫩叶嫩茎吸食，传播病毒", "control": "吡虫啉或啶虫脒喷雾，释放草蛉天敌"},
+    {"name": "烟青虫", "symptoms": "幼虫蛀食嫩叶和花蕾", "control": "BT乳剂生物防治，高效氯氰菊酯喷雾"}
+  ],
+  "yield_info": {
+    "low_yield": "100-130kg/亩（干烟叶）",
+    "medium_yield": "150-180kg/亩（干烟叶）",
+    "high_yield": "200-250kg/亩（干烟叶）",
+    "factors": ["品种（烤烟/晒烟/白肋烟）", "施肥水平", "打顶抹杈", "采收成熟度", "烘烤技术"]
+  },
+  "market_info": {
+    "peak_season": "8-11月（新烟上市）",
+    "price_factors": ["烟叶等级（上中下）", "品种香型", "国家收购政策", "国际市场需求"],
+    "storage_tips": "严格控制含水量（12-16%），密封防潮，防虫防霉，醇化储存提升品质"
+  }
+}

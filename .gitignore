@@ -1,0 +1,9 @@
+.env
+/.claude/
+/.idea/
+/memory/
+*.md
+!README.md
+!docs/**/*.md
+CLAUDE.md
+lanqiao.py

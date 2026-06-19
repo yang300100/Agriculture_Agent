@@ -1,0 +1,78 @@
+{
+  "crop_name": "谷子",
+  "aliases": ["小米", "粟", "粟米"],
+  "suitable_regions": ["华北", "西北", "东北"],
+  "planting_seasons": {
+    "spring": {
+      "name": "春谷子",
+      "sowing_time": "4月下旬-5月中旬",
+      "harvest_time": "9月上旬-9月下旬",
+      "suitable_climate": "气温稳定在10℃以上，无霜期≥120天",
+      "notes": "北方主栽模式，生育期110-130天"
+    },
+    "summer": {
+      "name": "夏谷子",
+      "sowing_time": "6月上旬-6月下旬",
+      "harvest_time": "9月中旬-10月上旬",
+      "suitable_climate": "麦茬后抢墒早播",
+      "notes": "黄淮海地区，生育期85-100天"
+    }
+  },
+  "soil_requirements": {
+    "preferred_types": ["壤土", "沙壤土"],
+    "ph_range": "6.5-7.5",
+    "fertility": "中等肥力，有机质含量≥0.8%",
+    "drainage": "要求排水良好，不耐涝",
+    "notes": "耐旱耐瘠，适宜丘陵旱地种植"
+  },
+  "climate_requirements": {
+    "temperature": {
+      "germination": "7-8℃（最低），15-25℃（最适）",
+      "growth": "20-30℃",
+      "cold_resistance": "苗期耐低温，灌浆期怕霜冻"
+    },
+    "water": {
+      "critical_period": "拔节至抽穗期需水最多",
+      "requirement": "全生育期需水250-400mm，耐旱性极强"
+    },
+    "light": "短日照作物，对日照长度敏感，需充足阳光"
+  },
+  "growth_stages": [
+    {"stage": "播种出苗期", "duration_days": 7, "key_tasks": ["精细整地", "种子处理", "播后镇压"], "notes": "谷子粒小，精细整地是关键"},
+    {"stage": "苗期", "duration_days": 25, "key_tasks": ["查苗补苗", "中耕松土", "间苗定苗"], "notes": "及时间苗防止苗荒"},
+    {"stage": "拔节期", "duration_days": 20, "key_tasks": ["追施拔节肥", "深中耕培土", "灌溉"], "notes": "控上促下，壮秆防倒"},
+    {"stage": "抽穗开花期", "duration_days": 15, "key_tasks": ["保持水分", "叶面追肥", "防倒伏"], "notes": "需水临界期"},
+    {"stage": "灌浆成熟期", "duration_days": 30, "key_tasks": ["防旱防涝", "防鸟害", "适时收获"], "notes": "穗部变黄下垂时收获"}
+  ],
+  "fertilization_guide": [
+    {"time": "播种前（基肥）", "type": "有机肥+磷肥", "amount": "有机肥2000-3000kg/亩，过磷酸钙30-40kg/亩", "method": "耕地前撒施翻入"},
+    {"time": "拔节期（追肥）", "type": "尿素", "amount": "尿素10-15kg/亩", "method": "结合中耕施入"},
+    {"time": "抽穗期（叶面肥）", "type": "磷酸二氢钾", "amount": "0.2%溶液喷施1-2次", "method": "叶面喷施"}
+  ],
+  "irrigation_guide": [
+    {"stage": "播种期", "purpose": "保证出苗", "amount": "播前造墒或播后小水轻浇"},
+    {"stage": "拔节期", "purpose": "促进生长", "amount": "结合追肥灌水1次"},
+    {"stage": "抽穗期", "purpose": "保证抽穗", "amount": "保持土壤湿润，遇旱灌溉"},
+    {"stage": "灌浆期", "purpose": "增加粒重", "amount": "小水勤浇，防止倒伏"}
+  ],
+  "common_diseases": [
+    {"name": "谷子白发病", "symptoms": "叶片出现白色条纹，心叶不能展开呈白发状", "prevention": "轮作2-3年，药剂拌种，拔除病株", "occurrence_stage": "苗期至抽穗期"},
+    {"name": "谷子锈病", "symptoms": "叶片和叶鞘出现铁锈色粉末状孢子堆", "prevention": "选用抗病品种，发病时喷施三唑酮", "occurrence_stage": "灌浆期"},
+    {"name": "谷子黑穗病", "symptoms": "穗部部分或全部变为黑色粉末", "prevention": "种子消毒处理，合理轮作", "occurrence_stage": "抽穗期"}
+  ],
+  "common_pests": [
+    {"name": "粟灰螟", "symptoms": "幼虫钻入茎秆造成枯心苗", "control": "越冬期清除谷茬，苗期撒施颗粒剂"},
+    {"name": "黏虫", "symptoms": "幼虫暴食叶片，可吃光全田", "control": "糖醋液诱杀成虫，幼虫期喷高效氯氰菊酯"}
+  ],
+  "yield_info": {
+    "low_yield": "200-300kg/亩",
+    "medium_yield": "350-500kg/亩",
+    "high_yield": "600-800kg/亩",
+    "factors": ["品种选择", "播种质量", "水肥管理", "病虫害防治", "收获时机"]
+  },
+  "market_info": {
+    "peak_season": "9-11月（新米上市）",
+    "price_factors": ["品种（优质/普通）", "色泽口感", "加工品牌", "市场供需"],
+    "storage_tips": "带壳储存防变质，脱壳后密封冷藏保存风味更佳"
+  }
+}
