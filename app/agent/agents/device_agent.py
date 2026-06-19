@@ -165,8 +165,9 @@ class DeviceAgent(BaseAgent):
 
         autonomy = get_autonomy_level()
         action = rule.get("action", {})
+        device_id = action.get("device_id", "")
         proposed_params = {**action.get("params", {}), **parsed.get("params", {})}
-        decision, reason, final_params = engine.evaluate_action(rule, proposed_params, {"device_id": action.get("device_id", "")})
+        decision, reason, final_params = engine.evaluate_action(rule, proposed_params, {"device_id": device_id})
 
         # 应用自主权级别
         decision = apply_autonomy(decision, autonomy)
@@ -175,16 +176,20 @@ class DeviceAgent(BaseAgent):
             extra = f"✅ 规则「{rule.get('name', '')}」校验通过"
             if autonomy == "high":
                 extra += "（高自主模式：自动执行）"
-            return self._do_execute(action.get("device_id", ""), action.get("command", "start"), final_params, state, engine, rule_id=rule["id"], extra=extra)
-        elif decision == "need_confirm":
-            if autonomy == "low":
-                extra_note = "\n（低自主模式：所有操作均需确认）"
-            else:
-                extra_note = ""
-            state.pending_action = {"device_id": action.get("device_id"), "command": action.get("command", "start"), "params": final_params, "reason": reason, "rule_id": rule["id"]}
-            return self._reply(state, f"⚠️ {reason}\n\n📋 操作预览：{action.get('device_id')} → {action.get('command')} 参数：{final_params}{extra_note}\n\n请在「设备仪表盘」中确认此操作。")
+            return self._do_execute(device_id, action.get("command", "start"), final_params, state, engine, rule_id=rule["id"], extra=extra)
         else:
-            return self._reply(state, f"❌ {reason}")
+            # 记录未执行决策（need_confirm / rejected）到执行日志
+            self._write_decision_log(state, device_id, action.get("command", "start"),
+                                     final_params, decision, reason, rule.get("id"))
+            if decision == "need_confirm":
+                if autonomy == "low":
+                    extra_note = "\n（低自主模式：所有操作均需确认）"
+                else:
+                    extra_note = ""
+                state.pending_action = {"device_id": device_id, "command": action.get("command", "start"), "params": final_params, "reason": reason, "rule_id": rule["id"]}
+                return self._reply(state, f"⚠️ {reason}\n\n📋 操作预览：{device_id} → {action.get('command')} 参数：{final_params}{extra_note}\n\n请在「设备仪表盘」中确认此操作。")
+            else:
+                return self._reply(state, f"❌ {reason}")
 
     def _execute_direct(self, parsed: Dict, state: AgentState, engine) -> AgentState:
         """无匹配规则时的直接执行"""
@@ -205,12 +210,56 @@ class DeviceAgent(BaseAgent):
         decision = apply_autonomy(decision, autonomy)
 
         if decision == RuleDecision.REJECTED:
+            self._write_decision_log(state, device_id, "start", final_params, "rejected", reason, None)
             return self._reply(state, f"❌ {reason}")
         elif decision == RuleDecision.NEED_CONFIRM:
+            self._write_decision_log(state, device_id, "start", final_params, "need_confirm", reason, None)
             state.pending_action = {"device_id": device_id, "command": "start", "params": final_params, "reason": reason}
             return self._reply(state, f"⚠️ {reason}\n\n请在「设备仪表盘」中确认此操作。")
 
         return self._do_execute(device_id, "start", final_params, state, engine)
+
+    def _write_decision_log(self, state: AgentState, device_id: str, command: str,
+                            params: Dict, decision: str, reason: str, rule_id: str = None):
+        """将 Agent 决策写入设备执行日志（包括未执行的 need_confirm/rejected）"""
+        try:
+            from datetime import datetime
+            username = getattr(state, 'username', 'default')
+            log_path = os.path.join("data", username, "device_log.json")
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+            logs = []
+            if os.path.exists(log_path):
+                try:
+                    with open(log_path, "r", encoding="utf-8") as f:
+                        logs = json.load(f)
+                except Exception:
+                    pass
+
+            logs.append({
+                "timestamp": datetime.now().isoformat(),
+                "device_id": device_id,
+                "command": command,
+                "params": params,
+                "trigger": "agent",
+                "rule_id": rule_id,
+                "decision": decision,
+                "success": decision == "auto_execute",
+                "attempts": 1,
+                "message": reason,
+                "error_code": "",
+            })
+
+            # 最多保留 500 条
+            if len(logs) > 500:
+                logs = logs[-500:]
+
+            with open(log_path, "w", encoding="utf-8") as f:
+                json.dump(logs, f, ensure_ascii=False, indent=2)
+
+            logger.info("DeviceAgent 决策已记录: device=%s decision=%s reason=%s", device_id, decision, reason[:80])
+        except Exception as e:
+            logger.warning("DeviceAgent 写决策日志失败: %s", e)
 
     def _do_execute(self, device_id: str, command: str, params: Dict, state: AgentState, engine, rule_id: str = None, extra: str = "") -> AgentState:
         """实际执行设备指令 — 使用共享工厂加载所有驱动(含自定义设备)"""
