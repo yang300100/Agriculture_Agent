@@ -409,12 +409,12 @@ def render_nav_bar():
             st.rerun()
         return
 
-    # ── 桌面端：右侧可折叠导航（st.radio + CSS，保持会话） ──
+    # ── 桌面端：右侧可折叠导航（st.radio，直接 CSS 定位） ──
 
     nav_css = """
 <style>
-/* 将 radio group 定位到右侧 */
-.right-nav-wrapper div[role="radiogroup"] {
+/* 将 radio group 定位到右侧 — 直接选中 DOM 元素 */
+div[role="radiogroup"] {
     position: fixed !important;
     right: 0 !important;
     top: 50% !important;
@@ -433,12 +433,12 @@ def render_nav_bar():
     gap: 2px !important;
     box-shadow: -2px 0 16px rgba(20, 20, 19, 0.08) !important;
 }
-.right-nav-wrapper div[role="radiogroup"]:hover {
+div[role="radiogroup"]:hover {
     width: 140px !important;
     box-shadow: -4px 0 24px rgba(20, 20, 19, 0.12) !important;
 }
 /* 每个选项标签 */
-.right-nav-wrapper div[role="radiogroup"] label {
+div[role="radiogroup"] label {
     display: flex !important;
     align-items: center !important;
     gap: 8px !important;
@@ -456,26 +456,37 @@ def render_nav_bar():
     background: transparent !important;
     border: none !important;
 }
-.right-nav-wrapper div[role="radiogroup"] label:hover {
+div[role="radiogroup"] label:hover {
     background: #cc785c !important;
     color: #ffffff !important;
 }
 /* 隐藏 radio 圆圈 */
-.right-nav-wrapper div[role="radiogroup"] label input[type="radio"] {
+div[role="radiogroup"] label input[type="radio"] {
     display: none !important;
 }
-/* 选中状态 */
-.right-nav-wrapper div[role="radiogroup"] label[data-checked="true"],
-.right-nav-wrapper div[role="radiogroup"] label[aria-checked="true"] {
+/* 选中状态高亮 */
+div[role="radiogroup"] label[data-checked="true"],
+div[role="radiogroup"] label[aria-checked="true"] {
     background: #cc785c !important;
     color: #ffffff !important;
+}
+/* 选中标签加左边框标记 */
+div[role="radiogroup"] label[data-checked="true"]::before,
+div[role="radiogroup"] label[aria-checked="true"]::before {
+    content: "";
+    position: absolute;
+    left: 2px;
+    width: 3px;
+    height: 18px;
+    background: #ffffff;
+    border-radius: 2px;
 }
 /* 主内容区留出空间 */
 .main .block-container {
     padding-right: 64px !important;
 }
 @media screen and (max-width: 767px) {
-    .right-nav-wrapper {
+    div[role="radiogroup"] {
         display: none;
     }
     .main .block-container {
@@ -486,21 +497,18 @@ def render_nav_bar():
 """
     st.markdown(nav_css, unsafe_allow_html=True)
 
-    # 用 st.radio 包裹在 div 中 → CSS 将其定位到右侧
-    st.markdown('<div class="right-nav-wrapper">', unsafe_allow_html=True)
+    # st.radio 直接渲染到 DOM → CSS 选中唯一的 vertical radio group
     selected_label = st.radio(
         "导航", options, index=default_idx,
         label_visibility="collapsed", key="right_nav_radio",
     )
-    st.markdown('</div>', unsafe_allow_html=True)
 
-    # 处理页面切换（st.radio 触发 rerun，会话保持）
+    # 页面切换（st.radio 触发 Streamlit rerun，会话保持）
     try:
         new_idx = options.index(selected_label)
         new_id = page_ids[new_idx]
     except (ValueError, IndexError):
         new_id = current_id
-
     if new_id != current_id:
         st.session_state.current_page = new_id
         st.rerun()
