@@ -23,7 +23,7 @@ agriculture_faiss_index/
 # 文档（排除所有 .md，只保留 README 和 docs/）
 *.md
 !README.md
-!docs/**/*.md
+/docs/
 
 # 项目特定
 CLAUDE.md
