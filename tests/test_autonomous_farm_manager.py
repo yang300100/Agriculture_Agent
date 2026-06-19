@@ -216,3 +216,46 @@ class TestDecisionEngine:
         ])
         plan = mgr.validate_plan(plan, available_capabilities={"irrigate"})
         assert len(plan.actions) == 1
+
+
+class TestExecutionAndCycle:
+    """执行和编排测试"""
+
+    def test_run_cycle_returns_report_even_on_failure(self):
+        """即使采集失败，run_cycle 也应返回报告"""
+        mgr = AutonomousFarmManager()
+        report = mgr.run_cycle("nonexistent_user", "不存在的区域")
+        assert report is not None
+        assert report.cycle_id != ""
+        assert report.summary != ""
+
+    def test_cycle_report_has_duration(self):
+        mgr = AutonomousFarmManager()
+        report = mgr.run_cycle("test_user", "test_region")
+        assert report.duration_ms > 0
+
+    def test_fallback_rule_engine_empty_state(self):
+        mgr = AutonomousFarmManager()
+        state = FarmState(region="test", username="test")
+        plan = mgr._fallback_rule_engine(state, "test")
+        # 空状态可能匹配不到规则，返回 None 或空 actions
+        assert plan is None or plan.actions == []
+
+    def test_summarize_successful_report(self):
+        mgr = AutonomousFarmManager()
+        state = FarmState(region="大棚A", username="test")
+        plan = DecisionPlan(region="大棚A", actions=[
+            {"action": "irrigate", "params": {"duration": 25}, "urgency": "today", "reason": "缺水"},
+        ])
+        results = [
+            ActionResult(action="irrigate", device_id="pump1", success=True,
+                        message="执行成功", executed_params={"duration": 25}),
+        ]
+        report = CycleReport(
+            cycle_id="c1", username="test", region="大棚A",
+            timestamp="2026-06-19T14:00:00",
+            farm_state=state, decision_plan=plan,
+            execution_results=results, summary="",
+        )
+        summary = mgr._summarize(report)
+        assert "irrigate" in summary or "大棚A" in summary

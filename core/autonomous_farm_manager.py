@@ -599,3 +599,311 @@ class AutonomousFarmManager:
 
         plan.actions = valid_actions
         return plan
+
+    # ── 执行 ──────────────────────────────────────
+
+    def execute_plan(self, plan: DecisionPlan, username: str) -> List[ActionResult]:
+        """④ 执行：逐一执行决策计划中的操作"""
+        from core.device_rule_engine import RuleEngine, RuleDecision, apply_autonomy
+        from core.device_executor import DeviceExecutor
+        from core.device_registry_factory import setup_registry, close_registry
+        from devices.base import DeviceCommand
+        from app.agent.config import get_autonomy_level, AUTO_DECISION_NIGHT_MODE
+
+        results = []
+        if not plan.actions:
+            return results
+
+        autonomy = get_autonomy_level()
+        engine = RuleEngine(username=username)
+
+        registry, loop = setup_registry(username)
+        try:
+            loop.run_until_complete(registry.discover_all())
+            executor = DeviceExecutor(registry, username=username)
+
+            # 按 urgency 排序：immediate > today > this_week > routine
+            urgency_order = {"immediate": 0, "today": 1, "this_week": 2, "routine": 3}
+            sorted_actions = sorted(
+                plan.actions,
+                key=lambda a: urgency_order.get(a.get("urgency", "routine"), 99)
+            )
+
+            for action_item in sorted_actions:
+                action_type = action_item.get("action", "")
+                params = action_item.get("params", {})
+                reason = action_item.get("reason", "")
+
+                # alert 类型只记录不执行
+                if action_type == "alert":
+                    logger.info("📢 决策告警: %s", reason)
+                    results.append(ActionResult(
+                        action="alert", device_id="",
+                        success=True, message=f"告警已记录: {reason}",
+                    ))
+                    continue
+
+                device_id = action_item.get("device_id", "")
+                if not device_id:
+                    results.append(ActionResult(
+                        action=action_type, device_id="",
+                        success=False, message="缺少设备ID",
+                    ))
+                    continue
+
+                # 夜间约束检查
+                night_check = self._check_night_constraint(
+                    action_type, AUTO_DECISION_NIGHT_MODE)
+                if night_check == RuleDecision.REJECTED:
+                    results.append(ActionResult(
+                        action=action_type, device_id=device_id,
+                        success=False, message=f"夜间模式({AUTO_DECISION_NIGHT_MODE})禁止执行",
+                    ))
+                    continue
+
+                # 规则评估
+                try:
+                    temp_rule = {
+                        "id": f"auto_{action_type}",
+                        "name": f"自主决策-{action_type}",
+                        "action": {"device_id": device_id, "command": "start", "params": params},
+                        "constraints": {
+                            "max_duration_per_use": 120,
+                        },
+                    }
+                    decision, eval_reason, final_params = engine.evaluate_action(
+                        temp_rule, params, {"device_id": device_id})
+                    decision = apply_autonomy(decision, autonomy)
+
+                    if decision == RuleDecision.REJECTED:
+                        results.append(ActionResult(
+                            action=action_type, device_id=device_id,
+                            success=False, message=eval_reason,
+                        ))
+                        continue
+
+                    if decision == RuleDecision.NEED_CONFIRM:
+                        results.append(ActionResult(
+                            action=action_type, device_id=device_id,
+                            success=False,
+                            message=f"需要用户确认: {eval_reason}",
+                        ))
+                        continue
+
+                    # 执行
+                    cmd = DeviceCommand(command="start", params=final_params)
+                    result = executor.execute_sync(
+                        device_id, cmd, trigger="autonomous",
+                        rule_id=f"auto_{action_type}",
+                    )
+
+                    if result["success"]:
+                        engine.record_execution(device_id, final_params)
+                        res_obj = result.get("result")
+                        msg = res_obj.message if res_obj and hasattr(res_obj, 'message') else "执行成功"
+                    else:
+                        res_obj = result.get("result")
+                        msg = res_obj.message if res_obj and hasattr(res_obj, 'message') else "执行失败"
+
+                    results.append(ActionResult(
+                        action=action_type, device_id=device_id,
+                        success=result["success"], message=msg,
+                        rule_matched=action_type, executed_params=final_params,
+                    ))
+
+                except Exception as e:
+                    logger.warning("执行操作失败 %s/%s: %s", action_type, device_id, e)
+                    results.append(ActionResult(
+                        action=action_type, device_id=device_id,
+                        success=False, message=str(e),
+                    ))
+
+        finally:
+            close_registry(loop)
+
+        return results
+
+    # ── Fallback ──────────────────────────────────
+
+    def _fallback_rule_engine(self, state: FarmState, username: str) -> Optional[DecisionPlan]:
+        """LLM 不可用时的规则引擎兜底"""
+        try:
+            from core.device_rule_engine import RuleEngine, RuleDecision, apply_autonomy
+            from app.agent.config import get_autonomy_level
+
+            engine = RuleEngine(username=username)
+            context = {
+                "sensor_data": state.sensor_readings,
+                "weather": state.current_weather or {},
+                "crop": next((c["crop"] for c in state.active_crops), ""),
+            }
+            matched = engine.find_matching_rules(context)
+
+            if not matched:
+                return None
+
+            autonomy = get_autonomy_level()
+            actions = []
+            for rule in matched[:3]:
+                rule_action = rule.get("action", {})
+                params = rule_action.get("params", {})
+                device_id = rule_action.get("device_id", "")
+                command = rule_action.get("command", "start")
+
+                decision, reason, final_params = engine.evaluate_action(
+                    rule, params, {"device_id": device_id})
+                decision = apply_autonomy(decision, autonomy)
+
+                if decision == RuleDecision.AUTO_EXECUTE:
+                    actions.append({
+                        "action": command,
+                        "device_id": device_id,
+                        "params": final_params,
+                        "urgency": "today",
+                        "reason": f"规则引擎兜底: {rule.get('name', rule['id'])} — {reason}",
+                    })
+
+            return DecisionPlan(
+                region=state.region,
+                overall_assessment=f"LLM 决策不可用，使用规则引擎兜底。匹配到 {len(matched)} 条规则，可执行 {len(actions)} 项操作。",
+                actions=actions,
+            )
+
+        except Exception as e:
+            logger.exception("规则引擎兜底失败")
+            return None
+
+    # ── 编排 ──────────────────────────────────────
+
+    def run_cycle(self, username: str, region: str) -> CycleReport:
+        """完整闭环：收集 → 决策 → 执行 → 报告"""
+        start = datetime.now()
+        cycle_id = f"cycle_{start.strftime('%Y%m%d_%H%M%S')}_{os.urandom(3).hex()}"
+
+        report = CycleReport(
+            cycle_id=cycle_id, username=username, region=region,
+            timestamp=start.isoformat(),
+        )
+
+        try:
+            # ① 收集状态
+            state = self.collect_farm_state(username, region)
+            report.farm_state = state
+
+            # ② 构建提示 + ③ LLM 决策
+            if state.camera_views or state.sensor_readings:
+                prompt = self.build_decision_prompt(state)
+                plan = self.request_decision(prompt)
+
+                if plan is not None:
+                    # 校验
+                    capabilities = self._get_available_capabilities(state)
+                    plan = self.validate_plan(plan, capabilities)
+                    report.decision_plan = plan
+                else:
+                    # LLM 不可用 → fallback
+                    logger.info("LLM 决策失败，使用规则引擎兜底")
+                    plan = self._fallback_rule_engine(state, username)
+                    report.decision_plan = plan
+                    report.fallback_used = True
+            else:
+                report.summary = f"区域「{region}」无可用数据（无摄像头、无传感器），跳过决策"
+                report.duration_ms = int((datetime.now() - start).total_seconds() * 1000)
+                return report
+
+            # ④ 执行
+            if report.decision_plan and report.decision_plan.actions:
+                results = self.execute_plan(report.decision_plan, username)
+                report.execution_results = results
+
+            # ⑤ 生成总结
+            report.summary = self._summarize(report)
+
+        except Exception as e:
+            logger.exception("自主决策周期异常: %s/%s", username, region)
+            report.summary = f"周期异常: {e}"
+
+        report.duration_ms = int((datetime.now() - start).total_seconds() * 1000)
+        self._save_report(report)
+        self._last_run[region] = datetime.now()
+        return report
+
+    def _get_available_capabilities(self, state: FarmState) -> set:
+        """从传感器和设备状态推断可用的设备能力"""
+        caps = set()
+        for key in state.sensor_readings:
+            if "soil_moisture" in key or "humidity" in key:
+                caps.add("irrigate")
+            if "temperature" in key:
+                caps.add("ventilate")
+        # 默认可用
+        caps.update({"irrigate", "fertigate", "ventilate", "light", "heat", "cool"})
+        return caps
+
+    def _summarize(self, report: CycleReport) -> str:
+        """生成巡检总结"""
+        parts = [f"区域「{report.region}」巡检完成"]
+
+        if report.fallback_used:
+            parts.append("（使用规则引擎兜底）")
+
+        plan = report.decision_plan
+        if plan and plan.overall_assessment:
+            parts.append(f"\n评估: {plan.overall_assessment[:200]}")
+
+        if report.execution_results:
+            success = sum(1 for r in report.execution_results if r.success)
+            fail = len(report.execution_results) - success
+            parts.append(f"\n执行: {len(report.execution_results)}项操作, "
+                        f"成功{success}项, 失败{fail}项")
+            for r in report.execution_results:
+                status = "✅" if r.success else "❌"
+                parts.append(f"  {status} {r.action} → {r.device_id}: {r.message[:80]}")
+        elif plan and not plan.actions:
+            parts.append("\n无需执行任何操作")
+
+        if plan and plan.follow_up:
+            parts.append(f"\n后续: {plan.follow_up[:200]}")
+
+        return "\n".join(parts)
+
+    def _save_report(self, report: CycleReport):
+        """保存巡检报告到磁盘"""
+        try:
+            report_dir = os.path.join(
+                "data", report.username, "autonomous_reports")
+            os.makedirs(report_dir, exist_ok=True)
+
+            filepath = os.path.join(report_dir, f"{report.cycle_id}.json")
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(self._report_to_dict(report), f, ensure_ascii=False, indent=2)
+            logger.info("巡检报告已保存: %s", filepath)
+        except Exception as e:
+            logger.warning("报告保存失败: %s", e)
+
+    def _report_to_dict(self, report: CycleReport) -> Dict:
+        """将报告转为可序列化字典"""
+        return {
+            "cycle_id": report.cycle_id,
+            "username": report.username,
+            "region": report.region,
+            "timestamp": report.timestamp,
+            "farm_state": {
+                "region": report.farm_state.region if report.farm_state else "",
+                "camera_count": len(report.farm_state.camera_views) if report.farm_state else 0,
+                "sensor_count": len(report.farm_state.sensor_readings) if report.farm_state else 0,
+            },
+            "decision_plan": {
+                "overall_assessment": report.decision_plan.overall_assessment if report.decision_plan else "",
+                "actions": report.decision_plan.actions if report.decision_plan else [],
+                "follow_up": report.decision_plan.follow_up if report.decision_plan else "",
+            } if report.decision_plan else None,
+            "execution_results": [
+                {"action": r.action, "device_id": r.device_id,
+                 "success": r.success, "message": r.message}
+                for r in report.execution_results
+            ],
+            "fallback_used": report.fallback_used,
+            "summary": report.summary,
+            "duration_ms": report.duration_ms,
+        }
