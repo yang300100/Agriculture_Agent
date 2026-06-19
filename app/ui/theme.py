@@ -501,22 +501,21 @@ def render_nav_bar():
         label_visibility="collapsed", key="right_nav_radio",
     )
 
-    # JavaScript：找到包含导航 emoji 的 radio group，加上 class
-    st.markdown("""<script>
+    # JavaScript：st.html() 支持执行 script，按选项数量识别导航 radio
+    st.html("""
+<script>
 (function() {
     var groups = document.querySelectorAll('div[role="radiogroup"]');
     for (var i = 0; i < groups.length; i++) {
         var labels = groups[i].querySelectorAll('label');
-        for (var j = 0; j < labels.length; j++) {
-            var t = labels[j].textContent;
-            if (t.indexOf('🌾') >= 0) {
-                groups[i].classList.add('right-nav-radio');
-                break;
-            }
+        if (labels.length >= 10) {
+            groups[i].classList.add('right-nav-radio');
+            return;
         }
     }
 })();
-</script>""", unsafe_allow_html=True)
+</script>
+""")
 
     # 页面切换（st.radio 触发 Streamlit rerun，会话保持）
     try:
