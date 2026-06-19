@@ -328,6 +328,274 @@ class AutonomousFarmManager:
                 with open(log_path, encoding="utf-8") as f:
                     logs = json.load(f)
                     return logs[-10:] if isinstance(logs, list) else []
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("近期操作日志读取失败: %s", e)
         return []
+
+    # ── 决策引擎 ──────────────────────────────────
+
+    def build_decision_prompt(self, state: FarmState) -> str:
+        """② 聚合：将 FarmState 构造成 LLM 可理解的提示文本"""
+        parts = []
+
+        # 系统指令
+        parts.append("""你是农业自主决策专家。根据农田综合状态数据，生成结构化的操作计划。
+
+决策原则：
+1. 优先解决紧急问题（干旱 > 病虫害 > 缺肥 > 其他）
+2. 操作参数在安全范围内尽可能精确（看数据定量，不要拍脑袋）
+3. 如果一切正常，actions 为空数组即可
+4. 考虑未来天气：如果预报有雨，推迟灌溉
+5. 夜间(22:00-06:00)禁止灌溉/施肥/通风，可改为告警""")
+
+        # 硬限制
+        parts.append("""
+[硬限制 - 不可违反]
+- 单次灌溉 ≤ 120分钟
+- 单次施肥 ≤ 50kg
+- 夜间时段(22:00-06:00)禁止噪音操作""")
+
+        # 区域信息
+        parts.append(f"\n[当前农场状态]")
+        parts.append(f"区域: {state.region}")
+        parts.append(f"时间: {state.timestamp}")
+
+        # 作物信息
+        if state.active_crops:
+            crops_text = "\n".join(
+                f"- {c['crop']} | {c['stage']} | 进度{c['progress_percent']}%"
+                for c in state.active_crops
+            )
+            parts.append(f"\n当前作物:\n{crops_text}")
+        else:
+            parts.append("\n当前作物: 无进行中的种植")
+
+        # 天气
+        if state.current_weather:
+            w = state.current_weather
+            parts.append(f"\n当前天气: {w.get('weather_desc','')} "
+                        f"温度{w.get('temperature','?')}°C "
+                        f"湿度{w.get('humidity','?')}% "
+                        f"风速{w.get('wind_speed','?')}km/h")
+
+        if state.weather_forecast:
+            fore_text = "\n".join(
+                f"- {f['date']}: {f.get('weather_desc','')} "
+                f"{f.get('temperature_low','?')}~{f.get('temperature_high','?')}°C"
+                for f in state.weather_forecast[:3]
+            )
+            parts.append(f"\n天气预报:\n{fore_text}")
+
+        # 持续异常
+        if state.weather_persistence:
+            p_text = "\n".join(
+                f"- ⚠️ {p['type']} 已持续{p['days']}天: {p.get('advice','')[:200]}"
+                for p in state.weather_persistence
+            )
+            parts.append(f"\n持续天气异常:\n{p_text}")
+
+        # 传感器
+        if state.sensor_readings:
+            sens_text = "\n".join(
+                f"- {k}: {v}"
+                for k, v in state.sensor_readings.items()
+                if v is not None
+            )
+            if sens_text:
+                parts.append(f"\n传感器读数:\n{sens_text}")
+        else:
+            parts.append("\n传感器读数: 无可用数据")
+
+        # 摄像头分析
+        if state.camera_views:
+            for cv in state.camera_views:
+                if cv.error:
+                    parts.append(f"\n摄像头 {cv.device_id}: ❌ {cv.error}")
+                elif cv.vision_analysis:
+                    a = cv.vision_analysis
+                    parts.append(f"\n摄像头 {cv.device_id} ({cv.location}):")
+                    parts.append(f"  作物: {a.get('crop_type','未知')}")
+                    parts.append(f"  阶段: {a.get('growth_stage','未知')}")
+                    health = a.get('health_assessment', {})
+                    parts.append(f"  健康: {health.get('overall','?')} "
+                               f"养分={health.get('nutrient_status','?')} "
+                               f"水分={health.get('water_status','?')}")
+                    issues = a.get('issues_found', [])
+                    for iss in issues:
+                        parts.append(f"  🚨 {iss.get('name','?')} "
+                                   f"({iss.get('severity','?')}): {iss.get('description','?')}")
+                    summary = a.get('summary', '')
+                    if summary:
+                        parts.append(f"  总结: {summary}")
+
+        # 病虫害风险
+        if state.disease_risks:
+            d_text = "\n".join(
+                f"- {r.get('crop','')} {r.get('disease','')} 风险{r.get('risk','')}"
+                for r in state.disease_risks[:5]
+            )
+            parts.append(f"\n病虫害风险:\n{d_text}")
+
+        # 近期操作
+        if state.recent_actions:
+            recent_text = "\n".join(
+                f"- {a.get('timestamp','?')}: {a.get('device_id','?')} "
+                f"{a.get('command','?')} → {a.get('success','?')}"
+                for a in state.recent_actions[:5]
+            )
+            parts.append(f"\n近期设备操作:\n{recent_text}")
+
+        # 输出要求
+        parts.append("""
+[输出要求]
+严格按以下JSON格式输出，不要包含markdown代码块标记，直接输出纯JSON:
+{"region":"区域名","overall_assessment":"一段中文总结描述当前农场整体状态和关键发现","actions":[{"action":"irrigate|fertigate|ventilate|light|heat|cool|alert","device_hint":"设备类型提示","params":{"duration":数字分钟},"urgency":"immediate|today|this_week|routine","reason":"为什么要执行这个操作"}],"follow_up":"后续建议或下次巡检需关注的点"}
+
+注意:
+- actions 可以为空数组 []
+- urgency: immediate=立即, today=今天, this_week=本周, routine=常规
+- 如果没有需要执行的操作，actions留空即可""")
+
+        return "\n".join(parts)
+
+    def request_decision(self, prompt: str) -> Optional[DecisionPlan]:
+        """③ 决策：调用 LLM 生成结构化操作计划"""
+        from app.agent.config import (
+            AUTO_DECISION_MODEL, AUTO_DECISION_TEMPERATURE,
+            AUTO_DECISION_TIMEOUT, LLM_API_KEY, LLM_BASE_URL,
+        )
+        if not LLM_API_KEY:
+            logger.error("LLM API 未配置，无法进行自主决策")
+            return None
+
+        try:
+            from langchain_openai import ChatOpenAI
+            from langchain_core.messages import HumanMessage
+
+            llm = ChatOpenAI(
+                model=AUTO_DECISION_MODEL,
+                temperature=AUTO_DECISION_TEMPERATURE,
+                api_key=LLM_API_KEY,
+                base_url=LLM_BASE_URL,
+                timeout=AUTO_DECISION_TIMEOUT,
+            )
+            resp = llm.invoke([HumanMessage(content=prompt)])
+            content = resp.content if hasattr(resp, 'content') else str(resp)
+
+            parsed = self._parse_decision(content)
+            if parsed is None:
+                logger.warning("LLM 决策 JSON 解析失败，原始响应: %s", content[:500])
+                return None
+
+            plan = DecisionPlan(
+                region=parsed.get("region", ""),
+                overall_assessment=parsed.get("overall_assessment", ""),
+                actions=parsed.get("actions", []),
+                follow_up=parsed.get("follow_up", ""),
+                raw_response=content,
+            )
+            return plan
+
+        except Exception as e:
+            logger.warning("LLM 决策请求失败: %s", e)
+            return None
+
+    def _parse_decision(self, content: str) -> Optional[Dict]:
+        """从 LLM 响应中提取 JSON，支持截断恢复"""
+        if not content or not content.strip():
+            return None
+
+        text = content.strip()
+
+        # 提取 ```json ... ``` 代码块
+        m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+        if m:
+            text = m.group(1).strip()
+
+        # 去除首尾非 JSON 字符
+        if text and text[0] != '{':
+            idx = text.find('{')
+            if idx >= 0:
+                text = text[idx:]
+        if text and text[-1] != '}':
+            idx = text.rfind('}')
+            if idx >= 0:
+                text = text[:idx + 1]
+
+        # 尝试解析
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # JSON 截断恢复
+        if text and not text.rstrip().endswith('}'):
+            for fix in ['}]}]}', '}}]}', '}]}', '}}', '}', '"]}', '"}']:
+                candidate = text.rstrip() + fix
+                try:
+                    result = json.loads(candidate)
+                    if result.get("region"):
+                        logger.info("JSON 截断已恢复")
+                        return result
+                except json.JSONDecodeError:
+                    continue
+
+        logger.warning("JSON 解析完全失败")
+        return None
+
+    def validate_plan(self, plan: DecisionPlan,
+                       available_capabilities: set = None,
+                       max_actions: int = 5) -> DecisionPlan:
+        """安全校验层：白名单、参数裁剪、去重、数量限制"""
+        if available_capabilities is None:
+            available_capabilities = set()
+
+        valid_actions = []
+        seen_devices = set()
+
+        for action in plan.actions[:max_actions]:
+            action_type = action.get("action", "")
+
+            # 白名单校验
+            if action_type not in ("irrigate", "fertigate", "ventilate",
+                                    "light", "heat", "cool", "alert"):
+                logger.info("跳过非法action: %s", action_type)
+                continue
+
+            # alert 不需要设备
+            if action_type != "alert":
+                device_id = action.get("device_id", action.get("device_hint", ""))
+                if not device_id:
+                    logger.info("跳过无设备ID的action: %s", action_type)
+                    continue
+
+                # 去重
+                dedup_key = f"{device_id}:{action_type}"
+                if dedup_key in seen_devices:
+                    logger.info("跳过重复操作: %s", dedup_key)
+                    continue
+                seen_devices.add(dedup_key)
+
+                action["device_id"] = device_id
+
+            # 参数硬上限裁剪
+            if action_type == "irrigate":
+                limit = _HARD_LIMITS["irrigate"]["max_duration_per_use_minutes"]
+                params = action.get("params", {})
+                if params.get("duration", 0) > limit:
+                    params["duration"] = limit
+                    action["params"] = params
+                    logger.info("灌溉时长裁剪至 %d 分钟", limit)
+
+            if action_type == "fertigate":
+                limit = _HARD_LIMITS["fertigate"]["max_amount_per_use_kg"]
+                params = action.get("params", {})
+                if params.get("amount_kg", 0) > limit:
+                    params["amount_kg"] = limit
+                    action["params"] = params
+                    logger.info("施肥量裁剪至 %d kg", limit)
+
+            valid_actions.append(action)
+
+        plan.actions = valid_actions
+        return plan

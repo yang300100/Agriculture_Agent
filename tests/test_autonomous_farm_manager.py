@@ -104,3 +104,115 @@ class TestAutonomousFarmManager:
         from core.device_rule_engine import RuleDecision
         result = mgr._check_night_constraint("irrigate", night_mode="full", hour=23)
         assert result is None
+
+
+class TestDecisionEngine:
+    """LLM 决策引擎测试"""
+
+    @pytest.fixture
+    def sample_state(self):
+        return FarmState(
+            region="大棚A", username="test",
+            timestamp="2026-06-19T14:00:00",
+            camera_views=[
+                CameraView(device_id="cam01", location="大棚A",
+                          vision_analysis={
+                              "crop_type": "番茄", "growth_stage": "fruiting",
+                              "health_assessment": {"overall": "fair",
+                                  "water_status": "drought-stressed"},
+                              "recommended_actions": [
+                                  {"action": "irrigate", "urgency": "today",
+                                   "detail": "土壤偏干需要灌溉"}
+                              ],
+                          }),
+            ],
+            sensor_readings={"sensor01.soil_moisture": 28.5},
+            current_weather={"temperature": 28, "humidity": 45,
+                           "weather_desc": "晴"},
+            weather_forecast=[
+                {"date": "2026-06-20", "weather_desc": "晴",
+                 "temperature_high": 30, "temperature_low": 20, "humidity": 40},
+            ],
+            active_crops=[
+                {"crop": "番茄", "stage": "结果期", "stage_number": 4,
+                 "total_stages": 6, "status": "进行中", "progress_percent": 65},
+            ],
+        )
+
+    def test_build_prompt_contains_key_fields(self, sample_state):
+        mgr = AutonomousFarmManager()
+        prompt = mgr.build_decision_prompt(sample_state)
+        assert "大棚A" in prompt
+        assert "番茄" in prompt
+        assert "28.5" in prompt
+        assert "soil_moisture" in prompt
+
+    def test_parse_valid_json(self):
+        mgr = AutonomousFarmManager()
+        content = '```json\n{"region":"大棚A","overall_assessment":"测试","actions":[],"follow_up":""}\n```'
+        result = mgr._parse_decision(content)
+        assert result["region"] == "大棚A"
+        assert result["overall_assessment"] == "测试"
+
+    def test_parse_json_without_code_block(self):
+        mgr = AutonomousFarmManager()
+        content = '{"region":"大棚A","overall_assessment":"OK","actions":[],"follow_up":""}'
+        result = mgr._parse_decision(content)
+        assert result["region"] == "大棚A"
+
+    def test_parse_truncated_json_recovers(self):
+        mgr = AutonomousFarmManager()
+        content = '{"region":"大棚A","overall_assessment":"一切正常","actions":[{"action":"irrigate","params":{"duration":25'
+        result = mgr._parse_decision(content)
+        assert result is not None
+        assert result["region"] == "大棚A"
+
+    def test_parse_completely_invalid_returns_none(self):
+        mgr = AutonomousFarmManager()
+        content = "这是一段不是JSON的回复文本"
+        result = mgr._parse_decision(content)
+        assert result is None
+
+    def test_validate_plan_accepts_valid_actions(self):
+        mgr = AutonomousFarmManager()
+        plan = DecisionPlan(region="大棚A", actions=[
+            {"action": "irrigate", "device_id": "pump1", "params": {"duration": 30}, "urgency": "today", "reason": "土壤缺水"},
+            {"action": "alert", "urgency": "this_week", "reason": "需注意病害"},
+        ])
+        plan = mgr.validate_plan(plan, available_capabilities={"irrigate"})
+        assert len(plan.actions) == 2
+
+    def test_validate_plan_rejects_unknown_action(self):
+        mgr = AutonomousFarmManager()
+        plan = DecisionPlan(region="大棚A", actions=[
+            {"action": "fly_to_moon", "params": {}, "urgency": "today", "reason": "?"},
+        ])
+        plan = mgr.validate_plan(plan, available_capabilities=set())
+        assert len(plan.actions) == 0
+
+    def test_validate_plan_clips_exceeded_params(self):
+        mgr = AutonomousFarmManager()
+        plan = DecisionPlan(region="大棚A", actions=[
+            {"action": "irrigate", "device_id": "pump1", "params": {"duration": 999}, "urgency": "today", "reason": "测试"},
+        ])
+        plan = mgr.validate_plan(plan, available_capabilities={"irrigate"})
+        assert plan.actions[0]["params"]["duration"] == 120
+
+    def test_validate_plan_limits_max_actions(self):
+        mgr = AutonomousFarmManager()
+        actions = [
+            {"action": "irrigate", "device_id": f"pump{i}", "params": {"duration": 10}, "urgency": "today", "reason": f"测试{i}"}
+            for i in range(10)
+        ]
+        plan = DecisionPlan(region="大棚A", actions=actions)
+        plan = mgr.validate_plan(plan, available_capabilities={"irrigate"}, max_actions=5)
+        assert len(plan.actions) == 5
+
+    def test_validate_plan_dedup_same_device(self):
+        mgr = AutonomousFarmManager()
+        plan = DecisionPlan(region="大棚A", actions=[
+            {"action": "irrigate", "device_id": "pump1", "params": {"duration": 10}, "urgency": "today", "reason": "a"},
+            {"action": "irrigate", "device_id": "pump1", "params": {"duration": 20}, "urgency": "today", "reason": "b"},
+        ])
+        plan = mgr.validate_plan(plan, available_capabilities={"irrigate"})
+        assert len(plan.actions) == 1
