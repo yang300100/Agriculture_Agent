@@ -225,7 +225,7 @@ class DeviceAgent(BaseAgent):
                 loop.run_until_complete(registry.discover_all())
 
                 cmd = DeviceCommand(command=command, params=params)
-                executor = DeviceExecutor(registry)
+                executor = DeviceExecutor(registry, username=username)
                 result = executor.execute_sync(device_id, cmd, trigger="agent", rule_id=rule_id)
 
                 engine.record_execution(device_id, params)

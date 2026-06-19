@@ -517,7 +517,7 @@ div[role="radiogroup"]:has(> label:nth-child(10)) label > div:first-child,
     display: none !important;
 }
 
-/* 当前选中项 — 深色背景，一眼辨识
+/* 当前选中项 — 浅棕色背景，一眼辨识
    兼容多种 Streamlit 版本的 checked 标记方式：
    - data-checked / aria-checked（新版 Streamlit）
    - input:checked（通用，最可靠）
@@ -528,8 +528,8 @@ div[role="radiogroup"]:has(> label:nth-child(10)) label:has(input:checked),
 .right-nav-radio label[data-checked="true"],
 .right-nav-radio label[aria-checked="true"],
 .right-nav-radio label:has(input:checked) {
-    background: #252320 !important;
-    color: #faf9f5 !important;
+    background: #c8a27a !important;
+    color: #141413 !important;
 }
 
 /* ── 右侧渐变遮罩（折叠态让文字裁剪边缘更柔和） ── */
