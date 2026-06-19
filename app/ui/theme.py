@@ -409,109 +409,98 @@ def render_nav_bar():
             st.rerun()
         return
 
-    # ── 桌面端：右侧可折叠导航 ────────────────────
+    # ── 桌面端：右侧可折叠导航（st.radio + CSS，保持会话） ──
 
-    # 构建导航项 HTML（用 <a> 标签实现点击切换，无需 JS）
-    items_html = ""
-    for item in NAV_ITEMS:
-        active_class = "active" if item["id"] == current_id else ""
-        items_html += (
-            f'<a class="right-nav-item {active_class}" href="?page={item["id"]}">'
-            f'<span class="nav-icon">{item["icon"]}</span>'
-            f'<span class="nav-label">{item["label"]}</span>'
-            f'</a>'
-        )
-
-    nav_html = f"""
+    nav_css = """
 <style>
-/* ── 右侧导航容器 ── */
-.right-nav-wrapper {{
-    position: fixed;
-    right: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 999;
-}}
-.right-nav-container {{
-    background: #efe9de;
-    border: 1px solid #e6dfd8;
-    border-right: none;
-    border-radius: 12px 0 0 12px;
-    padding: 8px 4px;
-    width: 48px;
-    transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    box-shadow: -2px 0 16px rgba(20, 20, 19, 0.08);
-}}
-.right-nav-container:hover {{
-    width: 140px;
-    box-shadow: -4px 0 24px rgba(20, 20, 19, 0.12);
-}}
-.right-nav-item, .right-nav-item:link, .right-nav-item:visited {{
-    text-decoration: none !important;
-}}
-.right-nav-item {{
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 8px;
-    border-radius: 8px;
-    cursor: pointer;
-    color: #6c6a64;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    font-size: 13px;
-    font-weight: 500;
-    white-space: nowrap;
-    transition: background 0.15s, color 0.15s;
-    user-select: none;
-    text-decoration: none;
-    min-height: 40px;
-}}
-.right-nav-item:hover {{
-    background: #cc785c;
-    color: #ffffff;
-}}
-.right-nav-item.active {{
-    background: #cc785c;
-    color: #ffffff;
-}}
-.nav-icon {{
-    font-size: 20px;
-    min-width: 24px;
-    text-align: center;
-    flex-shrink: 0;
-    line-height: 1;
-}}
-.nav-label {{
-    opacity: 0;
-    transition: opacity 0.2s ease 0.05s;
-}}
-.right-nav-container:hover .nav-label {{
-    opacity: 1;
-}}
-
-/* 主内容区留出导航空间 */
-.main .block-container {{
+/* 将 radio group 定位到右侧 */
+.right-nav-wrapper div[role="radiogroup"] {
+    position: fixed !important;
+    right: 0 !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    z-index: 999 !important;
+    background: #efe9de !important;
+    border: 1px solid #e6dfd8 !important;
+    border-right: none !important;
+    border-radius: 12px 0 0 12px !important;
+    padding: 8px 4px !important;
+    width: 48px !important;
+    transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 2px !important;
+    box-shadow: -2px 0 16px rgba(20, 20, 19, 0.08) !important;
+}
+.right-nav-wrapper div[role="radiogroup"]:hover {
+    width: 140px !important;
+    box-shadow: -4px 0 24px rgba(20, 20, 19, 0.12) !important;
+}
+/* 每个选项标签 */
+.right-nav-wrapper div[role="radiogroup"] label {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    padding: 10px 8px !important;
+    border-radius: 8px !important;
+    cursor: pointer !important;
+    color: #6c6a64 !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    white-space: nowrap !important;
+    min-height: 40px !important;
+    margin: 0 !important;
+    transition: background 0.15s, color 0.15s !important;
+    background: transparent !important;
+    border: none !important;
+}
+.right-nav-wrapper div[role="radiogroup"] label:hover {
+    background: #cc785c !important;
+    color: #ffffff !important;
+}
+/* 隐藏 radio 圆圈 */
+.right-nav-wrapper div[role="radiogroup"] label input[type="radio"] {
+    display: none !important;
+}
+/* 选中状态 */
+.right-nav-wrapper div[role="radiogroup"] label[data-checked="true"],
+.right-nav-wrapper div[role="radiogroup"] label[aria-checked="true"] {
+    background: #cc785c !important;
+    color: #ffffff !important;
+}
+/* 主内容区留出空间 */
+.main .block-container {
     padding-right: 64px !important;
-}}
-@media screen and (max-width: 767px) {{
-    .right-nav-wrapper {{
+}
+@media screen and (max-width: 767px) {
+    .right-nav-wrapper {
         display: none;
-    }}
-    .main .block-container {{
+    }
+    .main .block-container {
         padding-right: 1rem !important;
-    }}
-}}
+    }
+}
 </style>
-
-<div class="right-nav-wrapper">
-    <div class="right-nav-container">
-        {items_html}
-    </div>
-</div>
 """
+    st.markdown(nav_css, unsafe_allow_html=True)
 
-    st.markdown(nav_html, unsafe_allow_html=True)
+    # 用 st.radio 包裹在 div 中 → CSS 将其定位到右侧
+    st.markdown('<div class="right-nav-wrapper">', unsafe_allow_html=True)
+    selected_label = st.radio(
+        "导航", options, index=default_idx,
+        label_visibility="collapsed", key="right_nav_radio",
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # 处理页面切换（st.radio 触发 rerun，会话保持）
+    try:
+        new_idx = options.index(selected_label)
+        new_id = page_ids[new_idx]
+    except (ValueError, IndexError):
+        new_id = current_id
+
+    if new_id != current_id:
+        st.session_state.current_page = new_id
+        st.rerun()
