@@ -409,120 +409,90 @@ def render_nav_bar():
             st.rerun()
         return
 
-    # ── 桌面端：右侧可折叠导航（JS 标记 + CSS 定位） ──
+    # ── 桌面端：右侧可折叠导航（components.html iframe 方案）──
 
-    nav_css = """
+    import json as _json
+
+    # 导航数据传 JSON 给 JS
+    nav_data = _json.dumps([
+        {"id": item["id"], "icon": item["icon"], "label": item["label"]}
+        for item in NAV_ITEMS
+    ])
+
+    iframe_html = f"""
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
 <style>
-/* ── 右侧导航容器（JS 会给正确的 radio group 加上这个 class）── */
-.right-nav-radio {
-    position: fixed !important;
-    right: 0 !important;
-    top: 50% !important;
-    transform: translateY(-50%) !important;
-    z-index: 999 !important;
-    background: #efe9de !important;
-    border: 1px solid #e6dfd8 !important;
-    border-right: none !important;
-    border-radius: 12px 0 0 12px !important;
-    padding: 8px 4px !important;
-    width: 48px !important;
-    transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    overflow: hidden !important;
-    display: flex !important;
-    flex-direction: column !important;
-    gap: 2px !important;
-    box-shadow: -2px 0 16px rgba(20, 20, 19, 0.08) !important;
-}
-.right-nav-radio:hover {
-    width: 140px !important;
-    box-shadow: -4px 0 24px rgba(20, 20, 19, 0.12) !important;
-}
-/* 每个选项标签 — 收起时大号 emoji 居中 */
-.right-nav-radio label {
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    gap: 0 !important;
-    padding: 8px 0 !important;
-    border-radius: 8px !important;
-    cursor: pointer !important;
-    color: #6c6a64 !important;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
-    font-size: 22px !important;
-    font-weight: 500 !important;
-    white-space: nowrap !important;
-    min-height: 38px !important;
-    margin: 0 !important;
-    transition: background 0.15s, color 0.15s, font-size 0.15s, gap 0.15s, padding 0.15s !important;
-    background: transparent !important;
-    border: none !important;
-    overflow: hidden !important;
-}
-/* 悬停时展开为小号文字左对齐 */
-.right-nav-radio:hover label {
-    font-size: 13px !important;
-    gap: 8px !important;
-    padding: 10px 8px !important;
-    justify-content: flex-start !important;
-}
-.right-nav-radio label:hover {
-    background: #cc785c !important;
-    color: #ffffff !important;
-}
-/* 彻底隐藏 radio 圆圈 */
-.right-nav-radio label > div:first-child {
-    display: none !important;
-}
-/* 选中状态高亮 */
-.right-nav-radio label[data-checked="true"],
-.right-nav-radio label[aria-checked="true"] {
-    background: #cc785c !important;
-    color: #ffffff !important;
-}
-/* 主内容区留出空间 */
-.main .block-container {
-    padding-right: 64px !important;
-}
-@media screen and (max-width: 767px) {
-    .right-nav-radio {
-        display: none;
-    }
-    .main .block-container {
-        padding-right: 1rem !important;
-    }
-}
-</style>
-"""
-    st.markdown(nav_css, unsafe_allow_html=True)
-
-    # st.radio → JS 会找到它并加上 class="right-nav-radio"
-    selected_label = st.radio(
-        "导航", options, index=default_idx,
-        label_visibility="collapsed", key="right_nav_radio",
-    )
-
-    # JavaScript：st.html() 支持执行 script，按选项数量识别导航 radio
-    st.html("""
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{ background:transparent; overflow:hidden; }}
+.nav {{
+    float: right;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 4px;
+    background: #efe9de;
+    border: 1px solid #e6dfd8;
+    border-radius: 12px 0 0 12px;
+    width: 48px;
+    transition: width 0.25s ease;
+    overflow: hidden;
+    box-shadow: -2px 0 16px rgba(20,20,19,0.08);
+    height: fit-content;
+}}
+.nav:hover {{ width: 140px; }}
+.item {{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: #6c6a64;
+    font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    min-height: 40px;
+    transition: background .15s, color .15s;
+    user-select: none;
+    text-decoration: none;
+}}
+.item:hover {{ background: #cc785c; color: #fff; }}
+.item.active {{ background: #cc785c; color: #fff; }}
+.icon {{ font-size: 20px; min-width: 24px; text-align: center; flex-shrink: 0; }}
+.label {{ opacity: 0; transition: opacity .2s ease .05s; }}
+.nav:hover .label {{ opacity: 1; }}
+</style></head>
+<body>
+<div class="nav" id="nav"></div>
 <script>
-(function() {
-    var groups = document.querySelectorAll('div[role="radiogroup"]');
-    for (var i = 0; i < groups.length; i++) {
-        var labels = groups[i].querySelectorAll('label');
-        if (labels.length >= 10) {
-            groups[i].classList.add('right-nav-radio');
-            return;
-        }
-    }
-})();
+var data = {nav_data};
+var current = "{current_id}";
+var nav = document.getElementById('nav');
+data.forEach(function(item) {{
+    var d = document.createElement('div');
+    d.className = 'item' + (item.id === current ? ' active' : '');
+    d.innerHTML = '<span class="icon">' + item.icon + '</span><span class="label">' + item.label + '</span>';
+    d.onclick = function() {{
+        window.parent.postMessage({{
+            isStreamlitMessage: true,
+            type: 'streamlit:setComponentValue',
+            value: item.id
+        }}, '*');
+    }};
+    nav.appendChild(d);
+}});
 </script>
-""")
+</body></html>"""
 
-    # 页面切换（st.radio 触发 Streamlit rerun，会话保持）
-    try:
-        new_idx = options.index(selected_label)
-        new_id = page_ids[new_idx]
-    except (ValueError, IndexError):
-        new_id = current_id
-    if new_id != current_id:
-        st.session_state.current_page = new_id
-        st.rerun()
+    # 用 st.columns 把 iframe 放在右侧
+    col_main, col_nav = st.columns([0.9, 0.1])
+    with col_nav:
+        clicked = components.html(iframe_html, height=600, scrolling=False)
+
+    # 处理点击事件
+    if clicked and clicked in page_ids:
+        if st.session_state.get("current_page") != clicked:
+            st.session_state.current_page = clicked
+            st.rerun()
