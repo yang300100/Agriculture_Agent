@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 from typing import Dict, Any, Optional
 
@@ -238,6 +239,35 @@ class DeviceAgent(BaseAgent):
                     msg = f"✅ 指令已执行！\n\n🔧 设备：{device_id}\n⚡ 操作：{command}\n📊 参数：{params}\n📝 结果：{res_msg}\n"
                     if extra:
                         msg += f"\n{extra}"
+
+                    # ── 同步创建任务记录（确保出现在"今日执行记录"中）──
+                    try:
+                        from core.planting_tracker import PlantingTracker
+                        crop = state.short_term_facts.get("crop", "") or params.get("crop", "")
+                        action_labels = {
+                            "irrigate": "浇水", "fertigate": "施肥", "ventilate": "通风",
+                            "light": "补光", "heat": "加热", "cool": "降温", "shade": "遮阳",
+                        }
+                        task_type = action_labels.get(
+                            state.device_command.get("action", "") if state.device_command else "",
+                            "设备操作"
+                        )
+                        tracker = PlantingTracker(os.path.join("data", username))
+                        tracker.create_task({
+                            "crop": crop or "未指定作物",
+                            "task_type": task_type,
+                            "title": f"[Agent执行] {task_type} ({device_id})",
+                            "description": f"LLM Agent 自动执行：{command}，参数：{params}",
+                            "status": "已完成",
+                            "priority": "medium",
+                            "progress_percent": 100,
+                            "device_id": device_id,
+                            "device_command": command,
+                            "device_params": params,
+                        })
+                        logger.info("DeviceAgent 已同步创建任务记录: %s", task_type)
+                    except Exception as e:
+                        logger.warning("DeviceAgent 创建任务记录失败: %s", e)
                 else:
                     msg = f"❌ 执行失败：{res_msg}"
 

@@ -163,6 +163,10 @@ def register_routes(app: FastAPI):
             logger.exception("Agent 调用失败")
             answer = f"抱歉，处理您的问题时出现错误：{e}"
 
+        logger.info("API 返回: answer_len=%d\n━━━ 最终回答 ━━━\n%s\n━━━━━━━━━━━━",
+                    len(answer),
+                    answer[:3000] if len(answer) > 3000 else answer)
+
         # 安全序列化
         facts = {}
         for k, v in state.short_term_facts.items():

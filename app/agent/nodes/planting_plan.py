@@ -46,9 +46,11 @@ def planting_plan_node(state: AgentState) -> AgentState:
             if plan.soil_type:
                 state.user_profile["soil_type"] = plan.soil_type
 
-            # 创建进度卡片和任务
+            # 创建进度卡片和任务（使用用户专属目录）
             try:
-                tracker = PlantingTracker()
+                import os as _os
+                username = getattr(state, 'username', 'default')
+                tracker = PlantingTracker(_os.path.join("data", username))
 
                 # 1. 创建整体种植进度记录
                 current_stage = "准备期"

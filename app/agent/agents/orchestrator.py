@@ -25,6 +25,18 @@ CROSS_DOMAIN_KEYWORDS = {
     "crop_monitoring": ["监控作物", "拍照分析", "查看长势", "摄像", "巡检", "监测"],
 }
 
+# 否定/完成/状态前缀 — 当关键词紧邻这些词时，不应触发操作意图
+_NEGATION_PATTERNS = [
+    r'(未|没|不|已|已经|刚|刚刚|之前|上次|昨天|今天|前几天|之前已经)\s*{kw}',
+    r'{kw}\s*(过|了|完|好|完毕|结束|完成)',
+]
+
+# 任务创建语境 — 用户说"添加/创建/设置...任务/提醒"时，不应触发 device_control
+# 即使句中包含"浇水""施肥"等设备关键词，用户意图是创建任务而非执行设备
+_TASK_CREATION_PATTERNS = [
+    r'(添加|创建|新建|设置|帮我建|帮我加|帮忙建|帮忙加)\s*.*?\s*(任务|提醒|待办)',
+]
+
 
 class AgentOrchestrator:
     """多 Agent 调度中心"""
@@ -52,10 +64,12 @@ class AgentOrchestrator:
         intent = state.intent_type or ""
 
         if state.need_clarification:
+            logger.info("调度: 需要澄清，跳过 Agent 匹配")
             return "clarify"
 
         skip_intents = ("greeting", "thanks", "farewell", "identity", "function", "unclear")
         if intent in skip_intents:
+            logger.info("调度: intent=%s 属于跳过类型，直接走 RAG 检索", intent)
             return "rag_retrieval"
 
         secondary = self._detect_secondary(question, intent)
@@ -65,6 +79,7 @@ class AgentOrchestrator:
         if len(targets) == 1:
             return self._run_single(state, targets[0])
         else:
+            logger.info("调度: 复合意图 → 并行执行 %d 个 Agent", len(targets))
             return self._run_parallel(state, targets)
 
     # ── Agent 间互调 ──────────────────────────────
@@ -89,8 +104,17 @@ class AgentOrchestrator:
     def _run_single(self, state: AgentState, intent: str) -> str:
         agent = self._find_agent(intent)
         if agent:
+            logger.info("Agent 执行: %s → intent=%s", agent.name, intent)
             agent.invoke(state)
-        return self._next_node(intent)
+            answer = state.final_answer or ""
+            logger.info("Agent 完成: %s → final_answer=%s (len=%d)\n━━━ 回答内容 ━━━\n%s\n━━━━━━━━━━━━",
+                        agent.name, bool(answer), len(answer),
+                        answer[:2000] if len(answer) > 2000 else answer)
+        else:
+            logger.warning("未找到可处理 intent=%s 的 Agent，回退 RAG 检索", intent)
+        next_node = self._next_node(intent)
+        logger.info("下一节点: %s (intent=%s)", next_node, intent)
+        return next_node
 
     def _run_parallel(self, state: AgentState, intents: List[str]) -> str:
         results: Dict[str, str] = {}
@@ -98,19 +122,31 @@ class AgentOrchestrator:
 
         primary_agent = self._find_agent(primary_intent)
         if primary_agent:
+            logger.info("Agent 执行(主): %s → intent=%s", primary_agent.name, primary_intent)
             primary_agent.invoke(state)
             results[primary_intent] = state.final_answer or ""
+            answer = state.final_answer or ""
+            logger.info("Agent 完成(主): %s → answer_len=%d\n━━━ 回答内容(主) ━━━\n%s\n━━━━━━━━━━━━",
+                        primary_agent.name, len(answer),
+                        answer[:2000] if len(answer) > 2000 else answer)
 
         if len(intents) > 1:
+            logger.info("并行执行 %d 个副 Agent: %s", len(intents) - 1, intents[1:])
             import copy
             def _run_secondary(intent: str) -> Tuple[str, str]:
                 agent = self._find_agent(intent)
                 if not agent:
+                    logger.warning("副 Agent 未找到: intent=%s", intent)
                     return (intent, "")
                 s_copy = copy.deepcopy(state)
                 try:
+                    logger.info("Agent 执行(副): %s → intent=%s", agent.name, intent)
                     agent.invoke(s_copy)
-                    return (intent, s_copy.final_answer or "")
+                    ans = s_copy.final_answer or ""
+                    logger.info("Agent 完成(副): %s → answer_len=%d\n━━━ 回答内容(副:%s) ━━━\n%s\n━━━━━━━━━━━━",
+                                agent.name, len(ans), intent,
+                                ans[:1500] if len(ans) > 1500 else ans)
+                    return (intent, ans)
                 except Exception as e:
                     logger.warning("副 Agent %s 失败: %s", intent, e)
                     return (intent, "")
@@ -123,6 +159,7 @@ class AgentOrchestrator:
                         results[intent] = answer
 
         state.final_answer = self._merge_answers(results, primary_intent)
+        logger.info("回答合并完成: %d 个 Agent 参与", len(results))
         return self._next_node(primary_intent)
 
     def _merge_answers(self, results: Dict[str, str], primary: str) -> str:
@@ -150,18 +187,47 @@ class AgentOrchestrator:
         return "\n".join(sections)
 
     def _detect_secondary(self, question: str, primary: str) -> List[str]:
+        """检测次级意图，排除否定/完成/任务创建语境中的误匹配"""
+        import re
+        # 任务创建语境检测："添加浇水任务"不应触发 device_control
+        is_task_creation = any(
+            re.search(p, question) for p in _TASK_CREATION_PATTERNS
+        )
         found = []
         for intent, keywords in CROSS_DOMAIN_KEYWORDS.items():
             if intent == primary:
                 continue
-            if any(kw in question for kw in keywords):
+            # 任务创建语境下，跳过 device_control（用户想创建任务而非执行设备）
+            if is_task_creation and intent == "device_control":
+                logger.info("次级意图过滤(任务创建语境): 跳过 device_control, text=%s", question[:60])
+                continue
+            matched = []
+            for kw in keywords:
+                if kw not in question:
+                    continue
+                # 检查是否处于否定/完成语境中
+                negated = False
+                for pattern in _NEGATION_PATTERNS:
+                    if re.search(pattern.format(kw=re.escape(kw)), question):
+                        negated = True
+                        break
+                if negated:
+                    logger.info("次级意图过滤(否定语境): intent=%s keyword=%s text=%s", intent, kw, question[:60])
+                    continue
+                matched.append(kw)
+            if matched:
+                logger.info("检测到次级意图: intent=%s (命中关键词: %s)", intent, matched)
                 found.append(intent)
+        if found:
+            logger.info("次级意图汇总: %s (主意图=%s)", found[:2], primary)
         return found[:2]
 
     def _find_agent(self, intent: str) -> Optional[BaseAgent]:
         for agent in self.agents.values():
             if agent.can_handle(intent):
+                logger.info("Agent 匹配: intent=%s → %s (%s)", intent, agent.name, agent.description)
                 return agent
+        logger.warning("Agent 匹配失败: 没有 Agent 能处理 intent=%s", intent)
         return None
 
     def _next_node(self, intent: str) -> str:

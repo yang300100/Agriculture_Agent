@@ -105,8 +105,21 @@ def start_all():
     api_path = os.path.join(PROJECT_ROOT, "app", "api_server.py")
     t = threading.Thread(target=lambda: subprocess.run([sys.executable, api_path]), daemon=True)
     t.start()
-    import time
-    time.sleep(3)  # 等后端启动
+    import time, urllib.request, urllib.error
+    # 健康检查轮询，最多等 30 秒
+    print("⏳ 等待后端就绪...", end="", flush=True)
+    for i in range(30):
+        time.sleep(1)
+        try:
+            r = urllib.request.urlopen("http://localhost:8000/api/profile?username=_health", timeout=3)
+            if r.status == 200:
+                print(" ✅")
+                break
+        except (urllib.error.URLError, OSError):
+            pass
+        print(".", end="", flush=True)
+    else:
+        print(" ⚠️ 后端可能尚未就绪，继续启动前端...")
     start_web()
 
 

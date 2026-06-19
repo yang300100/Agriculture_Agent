@@ -37,11 +37,18 @@ def api(path, method="get", json_data=None, cache_ttl=None):
             # 创建副本，避免修改调用方的原始 dict
             data = dict(json_data) if json_data else {}
             data["username"] = username
-            r = requests.post(url, json=data, timeout=60 if "chat" in path else 15)
+            # 聊天请求超时设为 180s（Agent 流水线包含多次 LLM 调用，可能 >60s）
+            r = requests.post(url, json=data, timeout=180 if "chat" in path else 15)
         if r.status_code == 200:
             result = r.json()
         else:
             result = None
+    except requests.exceptions.Timeout:
+        st.error("⏰ 请求超时：后端处理时间过长，请稍后重试或简化问题。")
+        result = None
+    except requests.exceptions.ConnectionError:
+        st.error("🔌 无法连接后端，请确认 FastAPI 已启动（python app/api_server.py）。")
+        result = None
     except Exception:
         result = None
 

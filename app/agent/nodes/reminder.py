@@ -85,7 +85,10 @@ def reminder_management_node(state: AgentState) -> AgentState:
 
             # 同时创建任务卡片（用于前端展示）
             try:
-                tracker = PlantingTracker()
+                import os as _os
+                username = getattr(state, 'username', 'default')
+                sd = _os.path.join("data", username)
+                tracker = PlantingTracker(sd)
                 end_date = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
                 task_id = tracker.create_task({
                     "crop": crop or "未指定作物",

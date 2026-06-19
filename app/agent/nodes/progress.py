@@ -10,8 +10,10 @@ logger = logging.getLogger(__name__)
 def progress_tracking_node(state: AgentState) -> AgentState:
     """查询用户的实际种植进度和待办任务"""
     try:
+        import os as _os
         from core.planting_tracker import PlantingTracker
-        tracker = PlantingTracker()
+        username = getattr(state, 'username', 'default')
+        tracker = PlantingTracker(_os.path.join("data", username))
         progresses = tracker.get_progress()
         tasks = tracker.get_tasks()
     except Exception as e:

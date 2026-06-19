@@ -34,7 +34,10 @@ def classify_intent(state: AgentState) -> AgentState:
         state.need_rag = True
         return state
 
-    # 通用意图快速判断（关键词匹配）
+    # 通用意图快速判断（关键词匹配 — 仅用于不会误判的安全意图）
+    # 注意：DEVICE_KEYWORDS 不在此处快速匹配，因为设备关键词极易在否定/描述语境中误触发
+    # （如"近期未施肥"中的"施肥"会被错误识别为设备控制指令）
+    # 设备控制意图统一走下方 LLM 分类，LLM 能理解对话上下文区分"帮我浇水"和"今天浇过水了"
     if any(word in user_question for word in GREETING_KEYWORDS):
         state.intent_type = "greeting"
         state.need_rag = False
@@ -50,13 +53,8 @@ def classify_intent(state: AgentState) -> AgentState:
         state.need_rag = False
         state.need_clarification = False
         return state
-    elif any(word in user_question for word in DEVICE_KEYWORDS):
-        state.intent_type = "device_control"
-        state.need_rag = False
-        state.need_clarification = False
-        return state
 
-    # 使用LLM进行意图推理
+    # 使用LLM进行意图推理（包含 device_control 等复杂意图）
     intent = _llm_classify_intent(user_question, state)
     state.intent_type = intent["intent_type"]
     state.need_rag = intent["need_rag"]
@@ -114,6 +112,16 @@ def _llm_classify_intent(user_question: str, state: AgentState) -> Dict[str, Any
 1. 如果用户只输入一个作物名称（如"小麦"、"玉米"），而之前的对话正在讨论该作物的病虫害/病害问题，则意图应为 "disease_prevention"
 2. 如果用户输入与之前对话主题相关，优先保持上下文连贯，不要视为"unclear"
 3. 用户当前输入可能是对之前问题的补充确认
+    4. 【重要】区分"创建任务/提醒"与"执行设备操作"：
+       - "添加...任务"、"创建...任务"、"设置...提醒"、"帮我建一个..." → reminder_setup
+       - "帮我浇水"、"开启灌溉"、"启动施肥"、"打开通风" → device_control
+       - 关键信号词：出现"添加/创建/设置/新建 + 任务/提醒" → reminder_setup，不是 device_control！
+       - 即使用户提到了浇水/施肥等词，只要前面有"添加任务"、"创建提醒"等词，意图就是 reminder_setup
+    5. 【重要】reminder_setup 不需要澄清：如果用户明确表达了创建任务/提醒的意图（如"添加浇水任务"），即使没有指定作物，也不需要澄清（need_clarification=false）。系统会自动使用"未指定作物"创建任务。只有在完全无法判断用户想做什么时才设 need_clarification=true。
+       - "添加...任务"、"创建...任务"、"设置...提醒"、"帮我建一个..." → reminder_setup
+       - "帮我浇水"、"开启灌溉"、"启动施肥"、"打开通风" → device_control
+       - 关键信号词：出现"添加/创建/设置/新建 + 任务/提醒" → reminder_setup，不是 device_control！
+       - 即使用户提到了浇水/施肥等词，只要前面有"添加任务"、"创建提醒"等词，意图就是 reminder_setup
 
 用户输入："{user_question}"
 
@@ -129,7 +137,7 @@ def _llm_classify_intent(user_question: str, state: AgentState) -> Dict[str, Any
 1. 用户的核心意图是什么？（请结合对话历史判断）
 2. 用户是否在继续之前的话题？
 3. 是否需要查询农业知识库？
-4. 是否需要进一步澄清？
+4. 是否需要进一步澄清？（注意：reminder_setup 中如果任务类型已明确（浇水/施肥/除草等），即使没有作物名也不需要澄清，系统会自动处理。只有完全无法判断用户意图时才设 need_clarification=true）
 
 请以JSON格式返回：
 {{

@@ -116,8 +116,8 @@ def apply_theme():
         color: #3d3d3a;
     }
 
-    /* ===== TOP NAVIGATION BAR (st.radio styled as nav pills) ===== */
-    /* Radio group container */
+    /* ===== HORIZONTAL RADIO PILLS（仅在 st.columns 等水平容器中使用）===== */
+    /* Radio group container — 限定在 stHorizontalBlock 内 */
     [data-testid="stHorizontalBlock"] div[role="radiogroup"] {
         display: flex;
         gap: 4px;
@@ -126,9 +126,10 @@ def apply_theme():
         border-bottom: 1px solid #e6dfd8;
         padding-bottom: 12px;
         margin-bottom: 16px;
+        flex-wrap: wrap;
     }
-    /* Individual radio labels (nav items) */
-    div[role="radiogroup"] label {
+    /* Individual radio labels — 限定在 stHorizontalBlock 内，避免误伤右侧导航 */
+    [data-testid="stHorizontalBlock"] div[role="radiogroup"] label {
         display: inline-flex !important;
         align-items: center !important;
         gap: 6px !important;
@@ -144,24 +145,20 @@ def apply_theme():
         margin: 0 !important;
         transition: background 0.15s, color 0.15s;
     }
-    div[role="radiogroup"] label:hover {
+    [data-testid="stHorizontalBlock"] div[role="radiogroup"] label:hover {
         background: #efe9de !important;
         color: #141413 !important;
     }
-    /* Active/selected nav item */
-    div[role="radiogroup"] label[data-selected="true"],
-    div[role="radiogroup"] label[data-checked="true"],
-    div[role="radiogroup"] label[aria-checked="true"] {
+    /* Active/selected — 限定在 stHorizontalBlock 内 */
+    [data-testid="stHorizontalBlock"] div[role="radiogroup"] label[data-selected="true"],
+    [data-testid="stHorizontalBlock"] div[role="radiogroup"] label[data-checked="true"],
+    [data-testid="stHorizontalBlock"] div[role="radiogroup"] label[aria-checked="true"] {
         background: #cc785c !important;
         color: #ffffff !important;
     }
-    /* Hide the radio circle */
+    /* Hide the radio circle — 全局生效（不影响布局，只隐藏圆点） */
     div[role="radiogroup"] label input[type="radio"] {
         display: none !important;
-    }
-    /* Radio group container spacing fix */
-    div[role="radiogroup"] {
-        flex-wrap: wrap;
     }
 
     /* ===== PRIMARY BUTTONS (CORAL) ===== */
@@ -380,8 +377,14 @@ def apply_theme():
 def render_nav_bar():
     """右侧可折叠纵向导航栏：默认仅显示图标，鼠标悬停展开图标+文字
 
-    桌面端：fixed 定位在页面右侧，48px 宽 → 悬停 148px 宽
+    桌面端：fixed 定位在页面右侧，52px 宽（仅图标）→ 悬停 160px 宽（图标+文字）
     手机端：沿用下拉 selectbox
+
+    核心思路：
+    - 容器 overflow:hidden 裁剪掉文字部分，只露出 emoji
+    - emoji 通过 flex-start + 精确 padding 在 52px 容器中居中
+    - 悬停时容器展宽 + 字号缩小，完整文字自然显示
+    - 右侧加一层渐变遮罩，让裁剪边缘更柔和
     """
     if "current_page" not in st.session_state:
         st.session_state.current_page = "dashboard"
@@ -409,83 +412,184 @@ def render_nav_bar():
             st.rerun()
         return
 
-    # ── 桌面端：右侧可折叠导航（纯 st.radio + CSS）──
+    # ── 桌面端：右侧可折叠导航（纯 st.radio + CSS，不依赖 JS）──
 
     st.markdown("""<style>
-/* 导航 radio（JS 会给它加上 .right-nav-radio class） */
+/* ============================================
+   右侧可折叠导航栏
+   折叠态：52px 宽，仅显示 emoji 图标
+   悬停态：160px 宽，显示图标 + 中文标签
+
+   定位策略：用 :has() 匹配包含 10+ 个 label 的 radio group
+   （导航有 12 项，其他 radio 最多 3 项），完全不依赖 JS。
+   同时兼容 JS 添加的 .right-nav-radio class。
+   ============================================ */
+
+/* 目标容器：导航 radio group（12个选项） */
+div[role="radiogroup"]:has(> label:nth-child(10)),
 .right-nav-radio {
     position: fixed !important;
     right: 0 !important;
     top: 50% !important;
     transform: translateY(-50%) !important;
     z-index: 9999 !important;
+
+    /* 视觉风格 */
     background: #efe9de !important;
     border: 1px solid #e6dfd8 !important;
     border-right: none !important;
     border-radius: 12px 0 0 12px !important;
-    padding: 8px 4px !important;
-    width: 48px !important;
-    transition: width 0.25s ease !important;
-    overflow: hidden !important;
+    box-shadow: -2px 0 20px rgba(20,20,19,0.10) !important;
+
+    /* 布局 */
     display: flex !important;
     flex-direction: column !important;
     gap: 2px !important;
-    box-shadow: -2px 0 16px rgba(20,20,19,0.08) !important;
+    padding: 10px 5px !important;
+
+    /* 折叠态尺寸 + 裁剪 */
+    width: 52px !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+
+    /* 平滑过渡 */
+    transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1) !important;
+
+    /* 防止过长时溢出屏幕 */
+    max-height: 82vh !important;
 }
+
+/* 悬停展开 */
+div[role="radiogroup"]:has(> label:nth-child(10)):hover,
 .right-nav-radio:hover {
-    width: 140px !important;
+    width: 160px !important;
 }
+
+/* ── 每个导航项（label） ── */
+div[role="radiogroup"]:has(> label:nth-child(10)) label,
 .right-nav-radio label {
     display: flex !important;
     align-items: center !important;
-    justify-content: center !important;
-    padding: 8px !important;
+    justify-content: flex-start !important;
+
+    /* 内边距：上下紧凑，左侧精确控制 emoji 在 52px 容器中的居中 */
+    padding: 8px 8px 8px 9px !important;
     border-radius: 8px !important;
     cursor: pointer !important;
-    color: #6c6a64 !important;
-    font-size: 22px !important;
+
+    /* 折叠态：大号 emoji（24px），文字自然溢出被父容器 overflow:hidden 裁剪 */
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    font-size: 24px !important;
     font-weight: 500 !important;
+    color: #6c6a64 !important;
     white-space: nowrap !important;
-    min-height: 40px !important;
+    min-height: 42px !important;
     margin: 0 !important;
     background: transparent !important;
     border: none !important;
     overflow: hidden !important;
-    transition: background 0.15s, color 0.15s, font-size 0.15s, justify-content 0.15s !important;
+
+    /* 过渡 */
+    transition:
+        background 0.18s ease,
+        color 0.18s ease,
+        font-size 0.25s ease,
+        padding 0.25s ease !important;
 }
+
+/* 悬停展开后：缩小字号、文字完全可见 */
+div[role="radiogroup"]:has(> label:nth-child(10)):hover label,
 .right-nav-radio:hover label {
-    font-size: 13px !important;
-    justify-content: flex-start !important;
+    font-size: 13.5px !important;
+    padding: 8px 12px !important;
 }
+
+/* 单项 hover 高亮 */
+div[role="radiogroup"]:has(> label:nth-child(10)) label:hover,
 .right-nav-radio label:hover {
     background: #cc785c !important;
-    color: #fff !important;
+    color: #ffffff !important;
 }
+
+/* 隐藏 Streamlit radio 原生圆点 */
+div[role="radiogroup"]:has(> label:nth-child(10)) label > div:first-child,
 .right-nav-radio label > div:first-child {
     display: none !important;
 }
-.right-nav-radio label[data-checked="true"] {
-    background: #cc785c !important;
-    color: #fff !important;
+
+/* 当前选中项 — 深色背景，一眼辨识 */
+div[role="radiogroup"]:has(> label:nth-child(10)) label[data-checked="true"],
+div[role="radiogroup"]:has(> label:nth-child(10)) label[aria-checked="true"],
+.right-nav-radio label[data-checked="true"],
+.right-nav-radio label[aria-checked="true"] {
+    background: #252320 !important;
+    color: #faf9f5 !important;
 }
+
+/* ── 右侧渐变遮罩（折叠态让文字裁剪边缘更柔和） ── */
+div[role="radiogroup"]:has(> label:nth-child(10))::after,
+.right-nav-radio::after {
+    content: "" !important;
+    position: absolute !important;
+    top: 0 !important;
+    right: 0 !important;
+    width: 18px !important;
+    height: 100% !important;
+    pointer-events: none !important;
+    background: linear-gradient(to right, transparent, #efe9de 85%) !important;
+    border-radius: 0 0 0 0 !important;
+    transition: opacity 0.25s ease !important;
+    opacity: 1 !important;
+}
+div[role="radiogroup"]:has(> label:nth-child(10)):hover::after,
+.right-nav-radio:hover::after {
+    opacity: 0 !important;
+}
+
+/* ── 主内容区右侧留白，防止被导航遮挡 ── */
 .main .block-container {
-    padding-right: 64px !important;
+    padding-right: 68px !important;
 }
+
+/* ── 手机端：隐藏右侧导航，恢复正常留白 ── */
 @media screen and (max-width: 767px) {
-    .right-nav-radio { display: none !important; }
-    .main .block-container { padding-right: 1rem !important; }
+    div[role="radiogroup"]:has(> label:nth-child(10)),
+    .right-nav-radio {
+        display: none !important;
+    }
+    .main .block-container {
+        padding-right: 1rem !important;
+    }
 }
 </style>""", unsafe_allow_html=True)
 
-    # JS: 给选项最多的 radio group 加上 class（导航有 12 项，其他只有 2-3 项）
+    # JS: 辅助给导航 radio group 加上 class（用于不支持 :has() 的旧浏览器降级）
     st.html("""<script>
 (function() {
-    var max = 0, target = null;
-    document.querySelectorAll('div[role="radiogroup"]').forEach(function(rg) {
-        var n = rg.querySelectorAll('label').length;
-        if (n > max) { max = n; target = rg; }
-    });
-    if (target) target.classList.add('right-nav-radio');
+    if (typeof MutationObserver === 'undefined') return;
+    var tries = 0, maxTries = 10;
+    function findAndTag() {
+        var groups = document.querySelectorAll('div[role="radiogroup"]');
+        var maxCount = 0, navGroup = null;
+        groups.forEach(function(rg) {
+            var n = rg.querySelectorAll('label').length;
+            if (n > maxCount) { maxCount = n; navGroup = rg; }
+        });
+        if (navGroup && maxCount >= 10) {
+            navGroup.classList.add('right-nav-radio');
+            navGroup.setAttribute('data-nav', 'right');
+            return true;
+        }
+        return false;
+    }
+    if (!findAndTag() && tries < maxTries) {
+        var obs = new MutationObserver(function() {
+            tries++;
+            if (findAndTag()) obs.disconnect();
+            else if (tries >= maxTries) obs.disconnect();
+        });
+        obs.observe(document.body, { childList: true, subtree: true });
+    }
 })();
 </script>""")
 
