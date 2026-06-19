@@ -412,8 +412,8 @@ def render_nav_bar():
     # ── 桌面端：右侧可折叠导航（纯 st.radio + CSS）──
 
     st.markdown("""<style>
-/* 导航 radio — 固定右侧 */
-div[role="radiogroup"] {
+/* 导航 radio（JS 会给它加上 .right-nav-radio class） */
+.right-nav-radio {
     position: fixed !important;
     right: 0 !important;
     top: 50% !important;
@@ -432,10 +432,10 @@ div[role="radiogroup"] {
     gap: 2px !important;
     box-shadow: -2px 0 16px rgba(20,20,19,0.08) !important;
 }
-div[role="radiogroup"]:hover {
+.right-nav-radio:hover {
     width: 140px !important;
 }
-div[role="radiogroup"] label {
+.right-nav-radio label {
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
@@ -453,18 +453,18 @@ div[role="radiogroup"] label {
     overflow: hidden !important;
     transition: background 0.15s, color 0.15s, font-size 0.15s, justify-content 0.15s !important;
 }
-div[role="radiogroup"]:hover label {
+.right-nav-radio:hover label {
     font-size: 13px !important;
     justify-content: flex-start !important;
 }
-div[role="radiogroup"] label:hover {
+.right-nav-radio label:hover {
     background: #cc785c !important;
     color: #fff !important;
 }
-div[role="radiogroup"] label > div:first-child {
+.right-nav-radio label > div:first-child {
     display: none !important;
 }
-div[role="radiogroup"] label[data-checked="true"] {
+.right-nav-radio label[data-checked="true"] {
     background: #cc785c !important;
     color: #fff !important;
 }
@@ -472,10 +472,22 @@ div[role="radiogroup"] label[data-checked="true"] {
     padding-right: 64px !important;
 }
 @media screen and (max-width: 767px) {
-    div[role="radiogroup"] { display: none !important; }
+    .right-nav-radio { display: none !important; }
     .main .block-container { padding-right: 1rem !important; }
 }
 </style>""", unsafe_allow_html=True)
+
+    # JS: 给选项最多的 radio group 加上 class（导航有 12 项，其他只有 2-3 项）
+    st.html("""<script>
+(function() {
+    var max = 0, target = null;
+    document.querySelectorAll('div[role="radiogroup"]').forEach(function(rg) {
+        var n = rg.querySelectorAll('label').length;
+        if (n > max) { max = n; target = rg; }
+    });
+    if (target) target.classList.add('right-nav-radio');
+})();
+</script>""")
 
     selected_label = st.radio(
         "导航", options, index=default_idx,
