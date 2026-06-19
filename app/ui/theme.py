@@ -507,7 +507,7 @@ items.forEach(function(it) {{
 </script>
 </body></html>"""
 
-    clicked = components.html(iframe_html, height=620, scrolling=False, default=None)
+    clicked = components.html(iframe_html, height=620, scrolling=False)
 
     if clicked and clicked in page_ids and clicked != current_id:
         st.session_state.current_page = clicked
