@@ -133,7 +133,7 @@ class AgentOrchestrator:
             "crop_selection": "🌱 种植建议", "planting_schedule": "📅 种植时间",
             "planting_method": "🌾 种植方法", "disease_prevention": "🩺 病虫害分析",
             "weather_query": "🌤 气象信息", "finance_query": "💰 财务信息",
-            "progress_tracking": "📋 进度跟踪",
+            "policy_query": "📜 政策信息", "progress_tracking": "📋 进度跟踪",
             "reminder_setup": "⏰ 提醒", "field_management": "📍 地块信息",
             "harvest_planning": "🌾 收获规划", "image_analysis": "🔍 图片分析",
         }

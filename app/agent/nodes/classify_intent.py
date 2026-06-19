@@ -105,6 +105,7 @@ def _llm_classify_intent(user_question: str, state: AgentState) -> Dict[str, Any
 - image_analysis: 图片分析（上传了图片进行分析）
 - weather_query: 天气查询（天气、气温、下雨、预报等）
 - finance_query: 财务查询（成本、收入、价格、收益等）
+- policy_query: 政策补贴查询（补贴、政策、补助、惠农、农业保险等）
 - field_management: 地块管理（地块、农田、面积、位置、地图等）
 - device_control: 设备控制（浇水、灌溉、施肥、通风、补光、加热、开关设备、控制设备等）
 - unclear: 意图不明
@@ -199,6 +200,10 @@ def _fallback_intent_classification(user_question: str) -> Dict[str, Any]:
     # 财务查询意图
     elif any(keyword in user_question for keyword in FINANCE_KEYWORDS):
         return {"intent_type": "finance_query", "need_rag": False, "need_clarification": False, "reasoning": "关键词匹配"}
+
+    # 政策补贴意图
+    elif any(keyword in user_question for keyword in POLICY_KEYWORDS):
+        return {"intent_type": "policy_query", "need_rag": True, "need_clarification": False, "reasoning": "关键词匹配"}
 
     # 地块管理意图
     elif any(keyword in user_question for keyword in FIELD_KEYWORDS):

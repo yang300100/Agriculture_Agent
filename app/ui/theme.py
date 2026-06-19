@@ -66,7 +66,7 @@ NAV_ITEMS = [
     {"id": "fields", "label": "地块管理", "icon": "📍"},
     {"id": "finance", "label": "财务管理", "icon": "💰"},
     {"id": "calendar", "label": "农事日历", "icon": "📅"},
-
+    {"id": "policy", "label": "政策补贴", "icon": "📜"},
     {"id": "encyclopedia", "label": "作物百科", "icon": "📖"},
     {"id": "calculator", "label": "农资计算", "icon": "🧮"},
     {"id": "wizard", "label": "种植向导", "icon": "🪄"},

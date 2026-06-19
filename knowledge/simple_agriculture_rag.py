@@ -1,6 +1,6 @@
 """
 简化版农业知识检索（无需Embeddings）
-使用关键词匹配 + 简单相似度计算
+使用关键词匹配 + 简单相似度计算 + 政策文档文本检索
 支持动态作物发现和模糊匹配
 """
 
@@ -20,11 +20,12 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 dotenv.load_dotenv()
 DEFAULT_KNOWLEDGE_DIR = os.getenv("AGRICULTURE_KNOWLEDGE_DIR", os.path.join(PROJECT_ROOT, "agriculture_knowledge/crops"))
 DEFAULT_RAG_KNOWLEDGE_DIR = os.path.dirname(DEFAULT_KNOWLEDGE_DIR) if DEFAULT_KNOWLEDGE_DIR.endswith("/crops") else PROJECT_ROOT
+POLICY_DOCS_DIR = os.path.join(PROJECT_ROOT, "policy_docs")
 FAISS_INDEX_DIR = os.path.join(PROJECT_ROOT, "faiss_index")
 
 
 class SimpleAgricultureRAG:
-    """简化版农业知识RAG（无需Embeddings），支持动态作物发现"""
+    """简化版农业知识RAG（无需Embeddings），支持动态作物发现和策略文档检索"""
 
     def __init__(self, knowledge_dir: str = None):
         self.knowledge_dir = knowledge_dir or DEFAULT_RAG_KNOWLEDGE_DIR
@@ -32,6 +33,7 @@ class SimpleAgricultureRAG:
         self.crop_keywords = {}  # 动态构建
         self._load_all_knowledge()
         self._build_crop_keywords()
+        self._load_policy_chunks()
 
     def _load_all_knowledge(self):
         """加载所有作物知识文件"""
@@ -94,6 +96,23 @@ class SimpleAgricultureRAG:
             if crop_name not in self.crop_keywords:
                 self.crop_keywords[crop_name] = [crop_name] + variants
 
+    def _load_policy_chunks(self):
+        """加载FAISS索引导出的政策文档文本块（用于关键词检索）"""
+        self.policy_chunks = []
+        # 优先从导出的JSON加载
+        export_file = os.path.join(FAISS_INDEX_DIR, "faiss_exported_data.json")
+        if os.path.exists(export_file):
+            try:
+                with open(export_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        self.policy_chunks = data
+                    elif isinstance(data, dict):
+                        self.policy_chunks = data.get("chunks", data.get("documents", []))
+                print(f"已加载 {len(self.policy_chunks)} 条政策文档文本块")
+            except Exception as e:
+                print(f"加载政策文档失败: {e}")
+
     def _extract_crop_from_query(self, query: str) -> List[str]:
         """从查询中提取作物名称，返回匹配的作物列表（按匹配长度降序）"""
         matches = []
@@ -138,9 +157,39 @@ class SimpleAgricultureRAG:
 
         return "general"
 
+    def _search_policy(self, query: str, k: int = 2) -> List[Dict[str, Any]]:
+        """在政策文档中搜索相关内容（关键词匹配）"""
+        if not self.policy_chunks:
+            return []
+
+        query_keywords = set(re.findall(r'[一-龥]+', query))
+        results = []
+
+        for chunk in self.policy_chunks:
+            content = chunk.get("page_content", chunk.get("content", ""))
+            if not content:
+                continue
+
+            # 计算关键词命中数
+            hit_count = sum(1 for kw in query_keywords if kw in content)
+            if hit_count >= 2:  # 至少命中2个关键词
+                results.append({
+                    "content": content[:500],
+                    "metadata": {
+                        "source": chunk.get("metadata", {}).get("source", "政策文档"),
+                        "type": "policy",
+                        "crop": "通用",
+                    },
+                    "score": min(0.85, 0.5 + hit_count * 0.1),
+                    "hit_count": hit_count,
+                })
+
+        results.sort(key=lambda x: x["hit_count"], reverse=True)
+        return results[:k]
+
     def search(self, query: str, k: int = 3) -> List[Dict[str, Any]]:
         """
-        搜索农业知识（增强版：动态作物识别）
+        搜索农业知识（增强版：动态作物识别 + 政策文档检索）
 
         Args:
             query: 查询问题
@@ -178,6 +227,11 @@ class SimpleAgricultureRAG:
             # 没有识别到作物 → 返回所有作物的基本信息
             for item in self.knowledge_base[:k]:
                 results.append(self._format_basic_info(item))
+
+        # 3. 补充政策文档检索结果
+        if len(results) < k:
+            policy_results = self._search_policy(query, k - len(results))
+            results.extend(policy_results)
 
         return results[:k]
 

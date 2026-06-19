@@ -30,17 +30,23 @@ FAISS_INDEX_PATH = os.getenv(
 
 
 class FAISSAgricultureRAG:
-    """基于 FAISS 向量检索的农业知识库，支持作物知识语义搜索"""
+    """基于 FAISS 向量检索的农业知识库，支持作物知识 + 政策文档双索引"""
 
-    def __init__(self, agriculture_index_path: str = None):
+    def __init__(self, agriculture_index_path: str = None,
+                 policy_index_path: str = None):
         self.agriculture_index_path = agriculture_index_path or AGRICULTURE_FAISS_PATH
+        self.policy_index_path = policy_index_path or FAISS_INDEX_PATH
         self._agri_store: Optional[FAISS] = None
+        self._policy_store: Optional[FAISS] = None
         self._embeddings: Optional[OpenAIEmbeddings] = None
         self._init_ok = bool(EMBEDDING_API_KEY)
 
     @property
     def is_available(self) -> bool:
-        return self._init_ok and os.path.exists(self.agriculture_index_path)
+        return self._init_ok and (
+            os.path.exists(self.agriculture_index_path) or
+            os.path.exists(self.policy_index_path)
+        )
 
     def _get_embeddings(self) -> OpenAIEmbeddings:
         if self._embeddings is None:
@@ -71,6 +77,22 @@ class FAISSAgricultureRAG:
             logger.warning("FAISS 作物知识索引加载失败: %s", e)
             self._agri_store = None
 
+    def _load_policy(self):
+        if self._policy_store is not None:
+            return
+        if not os.path.exists(self.policy_index_path):
+            return
+        try:
+            embeddings = self._get_embeddings()
+            self._policy_store = FAISS.load_local(
+                self.policy_index_path, embeddings,
+                allow_dangerous_deserialization=True,
+            )
+            logger.info("FAISS 政策文档索引加载成功")
+        except Exception as e:
+            logger.warning("FAISS 政策文档索引加载失败: %s", e)
+            self._policy_store = None
+
     def search(self, query: str, k: int = 3) -> List[Dict[str, Any]]:
         """
         向量语义搜索
@@ -96,6 +118,22 @@ class FAISSAgricultureRAG:
                     })
         except Exception as e:
             logger.warning("FAISS 农业知识检索出错: %s", e)
+
+        # 政策文档补充
+        remaining = k - len(results)
+        if remaining > 0:
+            try:
+                self._load_policy()
+                if self._policy_store is not None:
+                    docs = self._policy_store.similarity_search_with_score(query, k=remaining)
+                    for doc, score in docs:
+                        results.append({
+                            "content": doc.page_content,
+                            "metadata": doc.metadata,
+                            "score": float(score),
+                        })
+            except Exception as e:
+                logger.warning("FAISS 政策文档检索出错: %s", e)
 
         # 按分数升序（FAISS 返回 L2 距离，越小越相似），去重
         seen = set()

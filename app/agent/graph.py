@@ -34,7 +34,7 @@ def _agent_dispatch_node(state: AgentState) -> AgentState:
     return state
 
 
-def build_agricultural_agent(rag_system: SimpleAgricultureRAG,
+def build_agricultural_policy_agent(rag_system: SimpleAgricultureRAG,
                                      faiss_rag: FAISSAgricultureRAG = None):
     """构建多 Agent 协同工作流"""
     workflow = StateGraph(AgentState)

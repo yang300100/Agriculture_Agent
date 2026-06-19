@@ -16,7 +16,7 @@ from app.views.profile import render_profile_page
 from app.views.fields import render_fields_page
 from app.views.finance import render_finance_page
 from app.views.calendar import render_calendar_page
-
+from app.views.policy import render_policy_page
 from app.views.dashboard import render_dashboard_page
 from app.views.encyclopedia import render_encyclopedia_page
 from app.views.calculator import render_calculator_page
@@ -227,6 +227,9 @@ def main():
     elif current_page == "calendar":
         st.divider()
         render_calendar_page()
+    elif current_page == "policy":
+        st.divider()
+        render_policy_page()
     elif current_page == "encyclopedia":
         st.divider()
         render_encyclopedia_page()

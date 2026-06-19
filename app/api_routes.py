@@ -130,13 +130,13 @@ def register_routes(app: FastAPI):
     @app.post("/api/chat")
     def chat(req: ChatRequest):
         from app.agent.state import AgentState
-        from app.agent.graph import build_agricultural_agent
+        from app.agent.graph import build_agricultural_policy_agent
         from knowledge.simple_agriculture_rag import SimpleAgricultureRAG
         from knowledge.faiss_agriculture_rag import FAISSAgricultureRAG
 
         rag = SimpleAgricultureRAG()
         faiss = FAISSAgricultureRAG() if FAISSAgricultureRAG().is_available else None
-        agent = build_agricultural_agent(rag, faiss)
+        agent = build_agricultural_policy_agent(rag, faiss)
 
         state = AgentState(
             messages=[],
@@ -535,6 +535,15 @@ def register_routes(app: FastAPI):
             with open(path, encoding="utf-8") as f:
                 return json.load(f)
         raise HTTPException(404, "作物未找到")
+
+    # ── 政策搜索 ──────────────────────────────────────
+
+    @app.get("/api/policy/search")
+    def policy_search(q: str = ""):
+        from knowledge.simple_agriculture_rag import SimpleAgricultureRAG
+        rag = SimpleAgricultureRAG()
+        results = rag._search_policy(q, k=8) if q else []
+        return results
 
     # ── 种植向导 ──────────────────────────────────────
 

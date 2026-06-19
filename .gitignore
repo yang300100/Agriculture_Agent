@@ -1,9 +1,35 @@
+# 环境变量（含密钥）
 .env
-/.claude/
+
+# IDE
 /.idea/
+/.claude/
 /memory/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 运行时数据（本地存储）
+data/
+!data/.gitkeep
+faiss_index/
+agriculture_faiss_index/
+
+# 文档（排除所有 .md，只保留 README 和 docs/）
 *.md
 !README.md
 !docs/**/*.md
+
+# 项目特定
 CLAUDE.md
 lanqiao.py
+.streamlit/secrets.toml
+
+# 系统文件
+.DS_Store
+Thumbs.db

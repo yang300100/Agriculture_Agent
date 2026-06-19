@@ -13,7 +13,7 @@ class AgentState(BaseModel):
         "crop_selection", "planting_schedule", "planting_method",
         "reminder_setup", "progress_tracking", "disease_prevention",
         "harvest_planning", "image_analysis", "weather_query",
-        "finance_query", "field_management",
+        "finance_query", "policy_query", "field_management",
         "device_control", "crop_monitoring", "unclear"
     ]] = None
     short_term_facts: Dict[str, Any] = Field(default_factory=dict)

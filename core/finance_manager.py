@@ -36,6 +36,7 @@ class CostType(Enum):
 class IncomeType(Enum):
     """收入类型"""
     SALES = "销售"
+    SUBSIDY = "补贴"
     OTHER = "其他"
 
 
@@ -217,6 +218,8 @@ class FinanceManager:
             raise ValueError("请勿在短时间内重复提交相同记录")
 
         notes = income_data.get("notes", "")
+        if income_type == "补贴" and not notes:
+            notes = _get_subsidy_note(crop_name)
 
         record = IncomeRecord(
             id=self._generate_id(),
@@ -705,3 +708,15 @@ if __name__ == "__main__":
     # 生成年度报告
     report = manager.get_annual_report("2024")
     print(manager.format_annual_report(report))
+
+
+def _get_subsidy_note(crop: str) -> str:
+    """根据作物返回补贴政策备注"""
+    subsidy_map = {
+        "小麦": "可能涉及：耕地地力保护补贴、最低收购价政策",
+        "水稻": "可能涉及：最低收购价政策、生产者补贴",
+        "玉米": "可能涉及：生产者补贴（东北）、大豆玉米复合种植补贴",
+        "大豆": "可能涉及：大豆生产者补贴（东北）、大豆玉米复合种植补贴",
+        "棉花": "可能涉及：棉花目标价格补贴（新疆）",
+    }
+    return subsidy_map.get(crop, "请咨询当地农业农村局了解具体补贴政策")

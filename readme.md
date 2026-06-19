@@ -5,9 +5,9 @@
 ## 功能特性
 
 ### 对话交互
-- **19 种意图识别**：作物选择、种植时间、种植方法、提醒设置、进度跟踪、病虫害防治、收获规划、图片分析、天气查询、财务查询、地块管理、设备控制、作物监测、问候/感谢/告别/身份/功能/意图不明
+- **20 种意图识别**：作物选择、种植时间、种植方法、提醒设置、进度跟踪、病虫害防治、收获规划、图片分析、天气查询、财务查询、政策补贴、地块管理、设备控制、作物监测、问候/感谢/告别/身份/功能/意图不明
 - **LLM 智能分类**：三级降级（关键词快速路径 → LLM 推理 → 关键词兜底）
-- **FAISS 向量检索**：作物知识语义搜索 + 关键词匹配双通道检索，自动 fallback
+- **FAISS 向量检索**：作物知识 + 政策文档双索引，语义搜索 + 关键词匹配双通道，自动 fallback
 - **跨会话记忆**：用户档案 + 对话历史自动持久化，重开浏览器自动恢复
 - **长记忆持久化**：每 3 轮自动总结注入上下文
 
@@ -47,6 +47,12 @@
 ### 地块管理
 - Folium 交互地图：绘制多边形边界、GPS 定位、卫星图图层
 - 自动面积计算（Haversine 公式）、各地块实时天气汇总
+
+### 政策补贴
+- 政策文档 FAISS 向量索引
+- 8 种常见补贴类型速查表
+- 内置作物补贴知识库
+- 独立浏览页面，支持搜索
 
 ### 农历节气
 - **24 节气天文公式计算**（不限年份，永不过期）
@@ -124,7 +130,7 @@
 
 能力：
 • 单意图 → 直接分派到对应 Agent
-• 复合意图 → 并行执行 + 回答合并（如「小麦价格和病害」→ 财务 + 病虫害双 Agent）
+• 复合意图 → 并行执行 + 回答合并（如「小麦价格和补贴」→ 财务 + 政策双 Agent）
 • Agent 间互调 → 病虫害自动问天气判断施药时机
 • **设备控制** → 对话驱动 + 规则自动触发双重通路
 • **规则引擎** → 用户定边界，AI 在边界内自主优化
@@ -156,8 +162,7 @@
 │  ├─ GET  /api/solar-terms        农历节气       │
 │  ├─ POST /api/reminders          提醒管理       │
 │  ├─ GET  /api/encyclopedia/*     作物百科       │
-
-
+│  ├─ GET  /api/policy/search      政策搜索       │
 │  ├─ POST /api/plan               种植方案向导    │
 │  ├─ GET/POST/DELETE /api/devices 设备管理 CRUD  │
 │  ├─ POST /api/devices/{id}/command  设备指令    │
@@ -354,7 +359,7 @@ Agriculture_Agent/
 │   │   │   ├── planting_agent.py   # 🌱 种植规划 Agent（4种意图）
 │   │   │   ├── disease_agent.py    # 🩺 病虫害诊断 Agent（联动气象）
 │   │   │   ├── weather_agent.py    # 🌤 气象服务 Agent
-│   │   │   ├── finance_agent.py    # 💰 财务 Agent
+│   │   │   ├── finance_agent.py    # 💰 财务与政策 Agent（2种意图）
 │   │   │   ├── farming_agent.py    # 📋 农事管理 Agent（3种意图）
 │   │   │   ├── device_agent.py     # 🤖 设备控制 Agent（LLM解析+规则引擎+自主权）
 │   │   │   └── crop_monitor_agent.py # 📷 作物监测 Agent（Vision分析+自主决策）
@@ -369,6 +374,7 @@ Agriculture_Agent/
 │   │       ├── weather.py          # 天气查询 + 施药气象分析
 │   │       ├── finance.py          # 财务查询
 │   │       ├── field.py            # 地块管理 + 轮作
+│   │       ├── policy.py           # 政策补贴查询
 │   │       ├── progress.py         # 进度跟踪
 │   │       ├── extract_tasks.py    # 自动提取任务
 │   │       └── update_memory.py    # 长记忆更新（每3轮自动总结）
@@ -382,6 +388,7 @@ Agriculture_Agent/
 │       ├── fields.py               # 地块管理（地图 + 天气叠加）
 │       ├── finance.py              # 财务管理（记账 + 图表）
 │       ├── calendar.py             # 农事日历（甘特图）
+│       ├── policy.py               # 政策补贴查询
 │       ├── encyclopedia.py         # 作物百科
 │       ├── calculator.py           # 农资计算器
 │       ├── wizard.py               # 种植方案向导
@@ -417,8 +424,7 @@ Agriculture_Agent/
 │   ├── simple_agriculture_rag.py   # 关键词检索
 │   ├── faiss_agriculture_rag.py    # FAISS 向量检索
 │   ├── build_agriculture_rag.py    # 作物知识索引构建
-
-
+│   └── build_faiss_rag.py          # 政策文档索引构建
 │
 ├── devices/                         # IoT 设备驱动模块
 │   ├── base.py                      # 驱动抽象基类 + DeviceCommand/DeviceInfo
@@ -453,7 +459,7 @@ Agriculture_Agent/
 | 财务查询 | "今年大豆赚了多少？" |
 | 地块管理 | "我有几个地块？" |
 | 轮作建议 | "去年种了花生，今年种什么好？" |
-
+| 政策补贴 | "种小麦有什么补贴？" |
 | 市场价格 | "土豆现在多少钱一斤？" |
 | 设备控制 | "帮小麦浇30分钟水" |
 | 作物监测 | "看看大棚里的番茄长势怎么样" |

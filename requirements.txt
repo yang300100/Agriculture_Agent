@@ -56,6 +56,3 @@ pymodbus>=3.5.0
 
 # ── 开发 & 测试 ────────────────────────────────────
 pytest>=7.0.0
-
-opencv-python
-pyserial
