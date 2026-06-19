@@ -409,12 +409,12 @@ def render_nav_bar():
             st.rerun()
         return
 
-    # ── 桌面端：右侧可折叠导航（st.radio，直接 CSS 定位） ──
+    # ── 桌面端：右侧可折叠导航（JS 标记 + CSS 定位） ──
 
     nav_css = """
 <style>
-/* ── 只选中主内容区的 radio group（不影响侧边栏等）── */
-.main div[role="radiogroup"] {
+/* ── 右侧导航容器（JS 会给正确的 radio group 加上这个 class）── */
+.right-nav-radio {
     position: fixed !important;
     right: 0 !important;
     top: 50% !important;
@@ -433,12 +433,12 @@ def render_nav_bar():
     gap: 2px !important;
     box-shadow: -2px 0 16px rgba(20, 20, 19, 0.08) !important;
 }
-.main div[role="radiogroup"]:hover {
+.right-nav-radio:hover {
     width: 140px !important;
     box-shadow: -4px 0 24px rgba(20, 20, 19, 0.12) !important;
 }
 /* 每个选项标签 — 收起时大号 emoji 居中 */
-.main div[role="radiogroup"] label {
+.right-nav-radio label {
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
@@ -457,26 +457,25 @@ def render_nav_bar():
     background: transparent !important;
     border: none !important;
     overflow: hidden !important;
-    position: relative !important;
 }
-/* 悬停时展开为小号文字 + icon 左对齐 */
-.main div[role="radiogroup"]:hover label {
+/* 悬停时展开为小号文字左对齐 */
+.right-nav-radio:hover label {
     font-size: 13px !important;
     gap: 8px !important;
     padding: 10px 8px !important;
     justify-content: flex-start !important;
 }
-.main div[role="radiogroup"] label:hover {
+.right-nav-radio label:hover {
     background: #cc785c !important;
     color: #ffffff !important;
 }
-/* 彻底隐藏 Streamlit radio 圆圈 */
-.main div[role="radiogroup"] label > div:first-child {
+/* 彻底隐藏 radio 圆圈 */
+.right-nav-radio label > div:first-child {
     display: none !important;
 }
 /* 选中状态高亮 */
-.main div[role="radiogroup"] label[data-checked="true"],
-.main div[role="radiogroup"] label[aria-checked="true"] {
+.right-nav-radio label[data-checked="true"],
+.right-nav-radio label[aria-checked="true"] {
     background: #cc785c !important;
     color: #ffffff !important;
 }
@@ -485,7 +484,7 @@ def render_nav_bar():
     padding-right: 64px !important;
 }
 @media screen and (max-width: 767px) {
-    .main div[role="radiogroup"] {
+    .right-nav-radio {
         display: none;
     }
     .main .block-container {
@@ -496,11 +495,28 @@ def render_nav_bar():
 """
     st.markdown(nav_css, unsafe_allow_html=True)
 
-    # st.radio 直接渲染到 DOM → CSS 选中唯一的 vertical radio group
+    # st.radio → JS 会找到它并加上 class="right-nav-radio"
     selected_label = st.radio(
         "导航", options, index=default_idx,
         label_visibility="collapsed", key="right_nav_radio",
     )
+
+    # JavaScript：找到包含导航 emoji 的 radio group，加上 class
+    st.markdown("""<script>
+(function() {
+    var groups = document.querySelectorAll('div[role="radiogroup"]');
+    for (var i = 0; i < groups.length; i++) {
+        var labels = groups[i].querySelectorAll('label');
+        for (var j = 0; j < labels.length; j++) {
+            var t = labels[j].textContent;
+            if (t.indexOf('🌾') >= 0) {
+                groups[i].classList.add('right-nav-radio');
+                break;
+            }
+        }
+    }
+})();
+</script>""", unsafe_allow_html=True)
 
     # 页面切换（st.radio 触发 Streamlit rerun，会话保持）
     try:
