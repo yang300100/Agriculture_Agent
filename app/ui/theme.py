@@ -409,106 +409,84 @@ def render_nav_bar():
             st.rerun()
         return
 
-    # ── 桌面端：右侧可折叠导航（iframe + CSS fixed 定位）──
+    # ── 桌面端：右侧可折叠导航（纯 st.radio + CSS）──
 
-    import json as _json
-    nav_data = _json.dumps([
-        {"id": it["id"], "icon": it["icon"], "label": it["label"]}
-        for it in NAV_ITEMS
-    ])
-
-    # CSS 把 iframe 容器固定在右侧
     st.markdown("""<style>
-iframe[title="components.html"] {
+/* 导航 radio — 固定右侧 */
+div[role="radiogroup"] {
     position: fixed !important;
     right: 0 !important;
     top: 50% !important;
     transform: translateY(-50%) !important;
-    z-index: 999 !important;
-    width: 155px !important;
-    height: 620px !important;
-    border: none !important;
+    z-index: 9999 !important;
+    background: #efe9de !important;
+    border: 1px solid #e6dfd8 !important;
+    border-right: none !important;
+    border-radius: 12px 0 0 12px !important;
+    padding: 8px 4px !important;
+    width: 48px !important;
+    transition: width 0.25s ease !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 2px !important;
+    box-shadow: -2px 0 16px rgba(20,20,19,0.08) !important;
+}
+div[role="radiogroup"]:hover {
+    width: 140px !important;
+}
+div[role="radiogroup"] label {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 8px !important;
+    border-radius: 8px !important;
+    cursor: pointer !important;
+    color: #6c6a64 !important;
+    font-size: 22px !important;
+    font-weight: 500 !important;
+    white-space: nowrap !important;
+    min-height: 40px !important;
+    margin: 0 !important;
     background: transparent !important;
+    border: none !important;
+    overflow: hidden !important;
+    transition: background 0.15s, color 0.15s, font-size 0.15s, justify-content 0.15s !important;
+}
+div[role="radiogroup"]:hover label {
+    font-size: 13px !important;
+    justify-content: flex-start !important;
+}
+div[role="radiogroup"] label:hover {
+    background: #cc785c !important;
+    color: #fff !important;
+}
+div[role="radiogroup"] label > div:first-child {
+    display: none !important;
+}
+div[role="radiogroup"] label[data-checked="true"] {
+    background: #cc785c !important;
+    color: #fff !important;
 }
 .main .block-container {
-    padding-right: 68px !important;
+    padding-right: 64px !important;
 }
 @media screen and (max-width: 767px) {
-    iframe[title="components.html"] { display: none !important; }
+    div[role="radiogroup"] { display: none !important; }
     .main .block-container { padding-right: 1rem !important; }
 }
 </style>""", unsafe_allow_html=True)
 
-    iframe_html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-* {{ margin:0; padding:0; box-sizing:border-box; }}
-body {{ background:transparent; overflow:hidden; }}
-.nav {{
-    position: absolute;
-    right: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 8px 4px;
-    background: #efe9de;
-    border: 1px solid #e6dfd8;
-    border-right: none;
-    border-radius: 12px 0 0 12px;
-    width: 48px;
-    transition: width .25s ease;
-    overflow: hidden;
-    box-shadow: -2px 0 16px rgba(20,20,19,0.08);
-    pointer-events: auto;
-}}
-.nav:hover {{ width: 140px; }}
-.item {{
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 8px;
-    border-radius: 8px;
-    cursor: pointer;
-    color: #6c6a64;
-    font-family: Inter, sans-serif;
-    font-size: 13px;
-    font-weight: 500;
-    white-space: nowrap;
-    min-height: 40px;
-    transition: background .15s, color .15s;
-    user-select: none;
-}}
-.item:hover {{ background: #cc785c; color: #fff; }}
-.item.active {{ background: #cc785c; color: #fff; }}
-.icon {{ font-size: 20px; min-width: 24px; text-align: center; flex-shrink: 0; }}
-.label {{ opacity: 0; transition: opacity .2s ease .05s; }}
-.nav:hover .label {{ opacity: 1; }}
-</style></head>
-<body>
-<div class="nav" id="nav"></div>
-<script>
-var items = {nav_data};
-var cur = "{current_id}";
-var nav = document.getElementById('nav');
-items.forEach(function(it) {{
-    var d = document.createElement('div');
-    d.className = 'item' + (it.id === cur ? ' active' : '');
-    d.innerHTML = '<span class="icon">' + it.icon + '</span><span class="label">' + it.label + '</span>';
-    d.onclick = function() {{
-        window.parent.postMessage({{
-            type: 'streamlit:setComponentValue',
-            value: it.id
-        }}, '*');
-    }};
-    nav.appendChild(d);
-}});
-</script>
-</body></html>"""
+    selected_label = st.radio(
+        "导航", options, index=default_idx,
+        label_visibility="collapsed", key="right_nav_radio",
+    )
 
-    clicked = components.html(iframe_html, height=620, scrolling=False)
-
-    if clicked and clicked in page_ids and clicked != current_id:
-        st.session_state.current_page = clicked
+    try:
+        new_idx = options.index(selected_label)
+        new_id = page_ids[new_idx]
+    except (ValueError, IndexError):
+        new_id = current_id
+    if new_id != current_id:
+        st.session_state.current_page = new_id
         st.rerun()
