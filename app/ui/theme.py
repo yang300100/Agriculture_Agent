@@ -409,36 +409,59 @@ def render_nav_bar():
             st.rerun()
         return
 
-    # ── 桌面端：右侧可折叠导航（components.html iframe 方案）──
+    # ── 桌面端：右侧可折叠导航（iframe + CSS fixed 定位）──
 
     import json as _json
-
-    # 导航数据传 JSON 给 JS
     nav_data = _json.dumps([
-        {"id": item["id"], "icon": item["icon"], "label": item["label"]}
-        for item in NAV_ITEMS
+        {"id": it["id"], "icon": it["icon"], "label": it["label"]}
+        for it in NAV_ITEMS
     ])
 
-    iframe_html = f"""
-<!DOCTYPE html>
+    # CSS 把 iframe 容器固定在右侧
+    st.markdown("""<style>
+iframe[title="components.html"] {
+    position: fixed !important;
+    right: 0 !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    z-index: 999 !important;
+    width: 155px !important;
+    height: 620px !important;
+    border: none !important;
+    background: transparent !important;
+}
+.main .block-container {
+    padding-right: 68px !important;
+}
+@media screen and (max-width: 767px) {
+    iframe[title="components.html"] { display: none !important; }
+    .main .block-container { padding-right: 1rem !important; }
+}
+</style>""", unsafe_allow_html=True)
+
+    iframe_html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
 * {{ margin:0; padding:0; box-sizing:border-box; }}
 body {{ background:transparent; overflow:hidden; }}
 .nav {{
-    float: right;
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
     display: flex;
     flex-direction: column;
     gap: 2px;
     padding: 8px 4px;
     background: #efe9de;
     border: 1px solid #e6dfd8;
+    border-right: none;
     border-radius: 12px 0 0 12px;
     width: 48px;
-    transition: width 0.25s ease;
+    transition: width .25s ease;
     overflow: hidden;
     box-shadow: -2px 0 16px rgba(20,20,19,0.08);
-    height: fit-content;
+    pointer-events: auto;
 }}
 .nav:hover {{ width: 140px; }}
 .item {{
@@ -449,14 +472,13 @@ body {{ background:transparent; overflow:hidden; }}
     border-radius: 8px;
     cursor: pointer;
     color: #6c6a64;
-    font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: Inter, sans-serif;
     font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
     min-height: 40px;
     transition: background .15s, color .15s;
     user-select: none;
-    text-decoration: none;
 }}
 .item:hover {{ background: #cc785c; color: #fff; }}
 .item.active {{ background: #cc785c; color: #fff; }}
@@ -467,18 +489,17 @@ body {{ background:transparent; overflow:hidden; }}
 <body>
 <div class="nav" id="nav"></div>
 <script>
-var data = {nav_data};
-var current = "{current_id}";
+var items = {nav_data};
+var cur = "{current_id}";
 var nav = document.getElementById('nav');
-data.forEach(function(item) {{
+items.forEach(function(it) {{
     var d = document.createElement('div');
-    d.className = 'item' + (item.id === current ? ' active' : '');
-    d.innerHTML = '<span class="icon">' + item.icon + '</span><span class="label">' + item.label + '</span>';
+    d.className = 'item' + (it.id === cur ? ' active' : '');
+    d.innerHTML = '<span class="icon">' + it.icon + '</span><span class="label">' + it.label + '</span>';
     d.onclick = function() {{
         window.parent.postMessage({{
-            isStreamlitMessage: true,
             type: 'streamlit:setComponentValue',
-            value: item.id
+            value: it.id
         }}, '*');
     }};
     nav.appendChild(d);
@@ -486,13 +507,8 @@ data.forEach(function(item) {{
 </script>
 </body></html>"""
 
-    # 用 st.columns 把 iframe 放在右侧
-    col_main, col_nav = st.columns([0.9, 0.1])
-    with col_nav:
-        clicked = components.html(iframe_html, height=600, scrolling=False)
+    clicked = components.html(iframe_html, height=620, scrolling=False, default=None)
 
-    # 处理点击事件
-    if clicked and clicked in page_ids:
-        if st.session_state.get("current_page") != clicked:
-            st.session_state.current_page = clicked
-            st.rerun()
+    if clicked and clicked in page_ids and clicked != current_id:
+        st.session_state.current_page = clicked
+        st.rerun()
