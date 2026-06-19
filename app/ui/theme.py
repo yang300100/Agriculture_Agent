@@ -413,8 +413,8 @@ def render_nav_bar():
 
     nav_css = """
 <style>
-/* 将 radio group 定位到右侧 — 直接选中 DOM 元素 */
-div[role="radiogroup"] {
+/* ── 只选中主内容区的 radio group（不影响侧边栏等）── */
+.main div[role="radiogroup"] {
     position: fixed !important;
     right: 0 !important;
     top: 50% !important;
@@ -433,60 +433,59 @@ div[role="radiogroup"] {
     gap: 2px !important;
     box-shadow: -2px 0 16px rgba(20, 20, 19, 0.08) !important;
 }
-div[role="radiogroup"]:hover {
+.main div[role="radiogroup"]:hover {
     width: 140px !important;
     box-shadow: -4px 0 24px rgba(20, 20, 19, 0.12) !important;
 }
-/* 每个选项标签 */
-div[role="radiogroup"] label {
+/* 每个选项标签 — 收起时大号 emoji 居中 */
+.main div[role="radiogroup"] label {
     display: flex !important;
     align-items: center !important;
-    gap: 8px !important;
-    padding: 10px 8px !important;
+    justify-content: center !important;
+    gap: 0 !important;
+    padding: 8px 0 !important;
     border-radius: 8px !important;
     cursor: pointer !important;
     color: #6c6a64 !important;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
-    font-size: 13px !important;
+    font-size: 22px !important;
     font-weight: 500 !important;
     white-space: nowrap !important;
-    min-height: 40px !important;
+    min-height: 38px !important;
     margin: 0 !important;
-    transition: background 0.15s, color 0.15s !important;
+    transition: background 0.15s, color 0.15s, font-size 0.15s, gap 0.15s, padding 0.15s !important;
     background: transparent !important;
     border: none !important;
+    overflow: hidden !important;
+    position: relative !important;
 }
-div[role="radiogroup"] label:hover {
+/* 悬停时展开为小号文字 + icon 左对齐 */
+.main div[role="radiogroup"]:hover label {
+    font-size: 13px !important;
+    gap: 8px !important;
+    padding: 10px 8px !important;
+    justify-content: flex-start !important;
+}
+.main div[role="radiogroup"] label:hover {
     background: #cc785c !important;
     color: #ffffff !important;
 }
-/* 隐藏 radio 圆圈 */
-div[role="radiogroup"] label input[type="radio"] {
+/* 彻底隐藏 Streamlit radio 圆圈 */
+.main div[role="radiogroup"] label > div:first-child {
     display: none !important;
 }
 /* 选中状态高亮 */
-div[role="radiogroup"] label[data-checked="true"],
-div[role="radiogroup"] label[aria-checked="true"] {
+.main div[role="radiogroup"] label[data-checked="true"],
+.main div[role="radiogroup"] label[aria-checked="true"] {
     background: #cc785c !important;
     color: #ffffff !important;
-}
-/* 选中标签加左边框标记 */
-div[role="radiogroup"] label[data-checked="true"]::before,
-div[role="radiogroup"] label[aria-checked="true"]::before {
-    content: "";
-    position: absolute;
-    left: 2px;
-    width: 3px;
-    height: 18px;
-    background: #ffffff;
-    border-radius: 2px;
 }
 /* 主内容区留出空间 */
 .main .block-container {
     padding-right: 64px !important;
 }
 @media screen and (max-width: 767px) {
-    div[role="radiogroup"] {
+    .main div[role="radiogroup"] {
         display: none;
     }
     .main .block-container {
