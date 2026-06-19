@@ -411,15 +411,15 @@ def render_nav_bar():
 
     # ── 桌面端：右侧可折叠导航 ────────────────────
 
-    # 构建导航项 HTML
+    # 构建导航项 HTML（用 <a> 标签实现点击切换，无需 JS）
     items_html = ""
     for item in NAV_ITEMS:
         active_class = "active" if item["id"] == current_id else ""
         items_html += (
-            f'<div class="right-nav-item {active_class}" data-page="{item["id"]}">'
+            f'<a class="right-nav-item {active_class}" href="?page={item["id"]}">'
             f'<span class="nav-icon">{item["icon"]}</span>'
             f'<span class="nav-label">{item["label"]}</span>'
-            f'</div>\n'
+            f'</a>'
         )
 
     nav_html = f"""
@@ -449,6 +449,9 @@ def render_nav_bar():
 .right-nav-container:hover {{
     width: 140px;
     box-shadow: -4px 0 24px rgba(20, 20, 19, 0.12);
+}}
+.right-nav-item, .right-nav-item:link, .right-nav-item:visited {{
+    text-decoration: none !important;
 }}
 .right-nav-item {{
     display: flex;
@@ -509,22 +512,6 @@ def render_nav_bar():
         {items_html}
     </div>
 </div>
-
-<script>
-(function() {{
-    var items = document.querySelectorAll('.right-nav-item');
-    items.forEach(function(item) {{
-        item.addEventListener('click', function() {{
-            var pageId = this.getAttribute('data-page');
-            var current = new URL(window.parent.location).searchParams.get('page');
-            if (pageId === current) return;
-            var url = new URL(window.parent.location);
-            url.searchParams.set('page', pageId);
-            window.parent.location.href = url.toString();
-        }});
-    }});
-}})();
-</script>
 """
 
     st.markdown(nav_html, unsafe_allow_html=True)

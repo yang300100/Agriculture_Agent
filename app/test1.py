@@ -183,14 +183,18 @@ def main():
     if not _render_auth():
         return
 
-    # 从 URL 查询参数读取页面（由右侧导航栏 JS 设置）
-    if "current_page" not in st.session_state:
-        qp_page = st.query_params.get("page")
-        st.session_state.current_page = qp_page if qp_page in [
-            "dashboard", "chat", "profile", "fields", "finance",
-            "calendar", "policy", "encyclopedia", "calculator",
-            "wizard", "devices", "rules",
-        ] else "dashboard"
+    # 从 URL 查询参数同步页面（右侧导航栏 <a> 标签设置）
+    VALID_PAGES = {
+        "dashboard", "chat", "profile", "fields", "finance",
+        "calendar", "policy", "encyclopedia", "calculator",
+        "wizard", "devices", "rules",
+    }
+    qp_page = st.query_params.get("page")
+    if qp_page and qp_page in VALID_PAGES:
+        if st.session_state.get("current_page") != qp_page:
+            st.session_state.current_page = qp_page
+    elif "current_page" not in st.session_state:
+        st.session_state.current_page = "dashboard"
 
     _init_mobile_detection()
     apply_theme()
