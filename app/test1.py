@@ -182,6 +182,16 @@ def main():
     st.set_page_config(page_title="智能种植规划助手", page_icon="🌾", layout="wide", initial_sidebar_state="auto")
     if not _render_auth():
         return
+
+    # 从 URL 查询参数读取页面（由右侧导航栏 JS 设置）
+    if "current_page" not in st.session_state:
+        qp_page = st.query_params.get("page")
+        st.session_state.current_page = qp_page if qp_page in [
+            "dashboard", "chat", "profile", "fields", "finance",
+            "calendar", "policy", "encyclopedia", "calculator",
+            "wizard", "devices", "rules",
+        ] else "dashboard"
+
     _init_mobile_detection()
     apply_theme()
 

@@ -378,51 +378,153 @@ def apply_theme():
 
 
 def render_nav_bar():
-    """Render the Anthropic-style top navigation bar using st.radio styled as nav pills.
+    """右侧可折叠纵向导航栏：默认仅显示图标，鼠标悬停展开图标+文字
 
-    Uses a horizontal radio button group styled with CSS to match the
-    design.md top-nav component. The brand label is rendered above.
+    桌面端：fixed 定位在页面右侧，48px 宽 → 悬停 148px 宽
+    手机端：沿用下拉 selectbox
     """
-    # Initialize default page
     if "current_page" not in st.session_state:
         st.session_state.current_page = "dashboard"
 
     is_mobile = st.session_state.get("is_mobile", False)
-
-    # Brand header row — 手机端由 test1.py 的标题替代，避免重复
-    if not is_mobile:
-        st.markdown(
-            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">'
-            '<span style="font-family:\'Cormorant Garamond\',serif;font-size:18px;'
-            'font-weight:400;color:#141413;letter-spacing:-0.3px">'
-            '🌾 智能种植规划助手</span>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-
+    current_id = st.session_state.get("current_page", "dashboard")
     options = [f"{item['icon']} {item['label']}" for item in NAV_ITEMS]
     page_ids = [item["id"] for item in NAV_ITEMS]
-    current_id = st.session_state.get("current_page", "chat")
     default_idx = page_ids.index(current_id) if current_id in page_ids else 0
 
+    # ── 手机端：下拉导航 ──────────────────────────
     if is_mobile:
         st.html("<style>[data-baseweb='select'] input {pointer-events: none !important;}</style>")
         selected_label = st.selectbox(
             "导航", options, index=default_idx,
             label_visibility="collapsed", key="nav_select",
         )
-    else:
-        selected_label = st.radio(
-            "导航", options, index=default_idx,
-            horizontal=True, label_visibility="collapsed", key="nav_radio",
+        try:
+            new_idx = options.index(selected_label)
+            new_id = page_ids[new_idx]
+        except (ValueError, IndexError):
+            new_id = current_id
+        if new_id != current_id:
+            st.session_state.current_page = new_id
+            st.rerun()
+        return
+
+    # ── 桌面端：右侧可折叠导航 ────────────────────
+
+    # 构建导航项 HTML
+    items_html = ""
+    for item in NAV_ITEMS:
+        active_class = "active" if item["id"] == current_id else ""
+        items_html += (
+            f'<div class="right-nav-item {active_class}" data-page="{item["id"]}">'
+            f'<span class="nav-icon">{item["icon"]}</span>'
+            f'<span class="nav-label">{item["label"]}</span>'
+            f'</div>\n'
         )
 
-    try:
-        new_idx = options.index(selected_label)
-        new_id = page_ids[new_idx]
-    except (ValueError, IndexError):
-        new_id = current_id
+    nav_html = f"""
+<style>
+/* ── 右侧导航容器 ── */
+.right-nav-wrapper {{
+    position: fixed;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 999;
+}}
+.right-nav-container {{
+    background: #efe9de;
+    border: 1px solid #e6dfd8;
+    border-right: none;
+    border-radius: 12px 0 0 12px;
+    padding: 8px 4px;
+    width: 48px;
+    transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    box-shadow: -2px 0 16px rgba(20, 20, 19, 0.08);
+}}
+.right-nav-container:hover {{
+    width: 140px;
+    box-shadow: -4px 0 24px rgba(20, 20, 19, 0.12);
+}}
+.right-nav-item {{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: #6c6a64;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s;
+    user-select: none;
+    text-decoration: none;
+    min-height: 40px;
+}}
+.right-nav-item:hover {{
+    background: #cc785c;
+    color: #ffffff;
+}}
+.right-nav-item.active {{
+    background: #cc785c;
+    color: #ffffff;
+}}
+.nav-icon {{
+    font-size: 20px;
+    min-width: 24px;
+    text-align: center;
+    flex-shrink: 0;
+    line-height: 1;
+}}
+.nav-label {{
+    opacity: 0;
+    transition: opacity 0.2s ease 0.05s;
+}}
+.right-nav-container:hover .nav-label {{
+    opacity: 1;
+}}
 
-    if new_id != current_id:
-        st.session_state.current_page = new_id
-        st.rerun()
+/* 主内容区留出导航空间 */
+.main .block-container {{
+    padding-right: 64px !important;
+}}
+@media screen and (max-width: 767px) {{
+    .right-nav-wrapper {{
+        display: none;
+    }}
+    .main .block-container {{
+        padding-right: 1rem !important;
+    }}
+}}
+</style>
+
+<div class="right-nav-wrapper">
+    <div class="right-nav-container">
+        {items_html}
+    </div>
+</div>
+
+<script>
+(function() {{
+    var items = document.querySelectorAll('.right-nav-item');
+    items.forEach(function(item) {{
+        item.addEventListener('click', function() {{
+            var pageId = this.getAttribute('data-page');
+            var current = new URL(window.parent.location).searchParams.get('page');
+            if (pageId === current) return;
+            var url = new URL(window.parent.location);
+            url.searchParams.set('page', pageId);
+            window.parent.location.href = url.toString();
+        }});
+    }});
+}})();
+</script>
+"""
+
+    st.markdown(nav_html, unsafe_allow_html=True)
