@@ -371,7 +371,7 @@ class DeviceAgent(BaseAgent):
                 executor = DeviceExecutor(registry, username=username)
                 result = executor.execute_sync(device_id, cmd, trigger="agent", rule_id=rule_id)
 
-                engine.record_execution(device_id, params)
+                engine.record_execution(device_id, params, success=result.get("success", False))
 
                 state.device_command = {"device_id": device_id, "command": command, "params": params, "action": params.get("action", command)}
                 res_obj = result.get("result")
