@@ -16,11 +16,11 @@ LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 if not LLM_API_KEY:
     raise EnvironmentError("未检测到 LLM_API_KEY 环境变量！")
 
-# Vision视觉模型配置
-VISION_API_KEY = os.getenv("VISION_API_KEY") or LLM_API_KEY
-VISION_BASE_URL = os.getenv("VISION_BASE_URL") or LLM_BASE_URL
-VISION_MODEL = os.getenv("VISION_MODEL") or LLM_MODEL
-VISION_TEMPERATURE = float(os.getenv("VISION_TEMPERATURE", "0.3"))
+# 深度学习模型配置（本地推理，替代Vision API）
+DL_BACKEND = os.getenv("DL_BACKEND", "onnx")
+DL_MODELS_DIR = os.getenv("DL_MODELS_DIR", "models/weights")
+DL_DEVICE = os.getenv("DL_DEVICE", "cpu")
+DL_DEFAULT_MODEL = os.getenv("DL_DEFAULT_MODEL", "")
 
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
 FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", "faiss_index")
@@ -32,7 +32,9 @@ SHORT_MEMORY_TOP_K = int(os.getenv("SHORT_MEMORY_TOP_K", "5"))
 SUMMARY_TRIGGER_ROUNDS = int(os.getenv("SUMMARY_TRIGGER_ROUNDS", "3"))
 
 # 功能开关
-ENABLE_IMAGE_ANALYSIS = os.getenv("ENABLE_IMAGE_ANALYSIS", "true").lower() == "true"
+ENABLE_IMAGE_ANALYSIS = bool(os.getenv("DL_DEFAULT_MODEL", "")) or os.path.exists(
+    os.path.join(os.getenv("DL_MODELS_DIR", "models/weights"), "plant_village_wheat.onnx")
+)
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
 # Agent 自主权级别: low(全部确认) / medium(规则边界内自动) / high(完全自主跳过确认)
