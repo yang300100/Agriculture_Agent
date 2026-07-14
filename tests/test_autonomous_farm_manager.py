@@ -86,7 +86,8 @@ class TestAutonomousFarmManager:
                 self.status = type('S', (), {'value': 'online'})()
 
         devices = [MockDevice("大棚A"), MockDevice("大棚A"), MockDevice("大棚B")]
-        regions = AutonomousFarmManager._group_by_region(devices)
+        mgr = AutonomousFarmManager()
+        regions = mgr._group_by_region(devices)
         assert set(regions.keys()) == {"大棚A", "大棚B"}
         assert len(regions["大棚A"]) == 2
         assert len(regions["大棚B"]) == 1
