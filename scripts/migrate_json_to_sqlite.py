@@ -26,8 +26,8 @@ def migrate_users():
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         count = 0
-        for username, info in data.items():
-            user = User(username=username, password_hash=info.get("password", ""))
+        for username, password in data.items():
+            user = User(username=username, password_hash=password if isinstance(password, str) else password.get("password", ""))
             session.add(user)
             count += 1
         session.commit()
@@ -166,7 +166,7 @@ def migrate_all():
     total += migrate_finance()
     total += migrate_device_configs()
     total += migrate_device_rules()
-    print(f"迁移完成！共 {total} 条记录。")
+    print(f"迁移完成! 共 {total} 条记录。")
 
 
 if __name__ == "__main__":

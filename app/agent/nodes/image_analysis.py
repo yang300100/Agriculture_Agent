@@ -1,89 +1,115 @@
-"""图片分析节点 — 直调多模态 API，不经过 LangChain"""
+"""图片分析节点 — 本地DL模型分类 + LLM增强生成"""
 
-import json, logging, os, re, requests
+import json, logging, os, re
 
 from ..state import AgentState
-from ..config import VISION_MODEL, VISION_API_KEY, VISION_BASE_URL, VISION_TEMPERATURE, LLM_MODEL
-
-VISION_MAX_TOKENS = int(os.getenv("VISION_MAX_TOKENS", "4096"))
+from ..config import DL_DEFAULT_MODEL, ENABLE_IMAGE_ANALYSIS, LLM_MODEL
 
 logger = logging.getLogger(__name__)
 
-PROMPT = """你是一位农业病虫害诊断专家。请分析农作物图片，返回 JSON：
+LLM_ENHANCE_PROMPT = """你是一位农业病虫害诊断专家。根据图像识别结果，请提供详细的防治建议。
 
-{
-    "crop_type": "作物名称",
-    "growth_stage": "生长阶段",
-    "detected_issues": [{
-        "type": "病害/虫害/营养问题",
-        "name": "具体名称",
-        "severity": "轻微/中等/严重",
-        "confidence": 0.85,
-        "description": "症状描述"
-    }],
-    "overall_health": "良好/一般/较差",
-    "recommendations": ["建议1", "建议2"],
-    "urgency": "立即处理/近期处理/持续观察"
-}"""
+识别结果：
+- 病害/问题：{class_name}
+- 置信度：{confidence}
+
+请提供：
+1. 该病害/虫害的详细描述和典型症状
+2. 具体防治方法和用药建议
+3. 预防措施和后续管理
+4. 对当前作物生长阶段的影响评估"""
 
 
 def image_analysis_node(state: AgentState) -> AgentState:
     if not state.has_image or not state.image_data:
         return state
 
-    if not VISION_MODEL:
+    if not ENABLE_IMAGE_ANALYSIS:
         state.image_analysis_result = _fail(
-            f"图片分析未启用。请在 .env 中配置 VISION_MODEL（支持多模态的模型）。"
-            f"当前 LLM_MODEL={LLM_MODEL} 不支持图片。")
+            f"图片分析未启用。请在 .env 中配置 DL_DEFAULT_MODEL 或将模型权重放入 models/weights/。")
         return state
 
     try:
-        state.image_analysis_result = _call_vision_api(state)
+        state.image_analysis_result = _call_dl_model(state)
     except Exception as e:
-        msg = str(e)
-        hint = ""
-        if "image_url" in msg.lower() or "multipart" in msg.lower():
-            hint = f"模型 {VISION_MODEL} 不支持图片输入，请更换为多模态模型。"
-        state.image_analysis_result = _fail(f"{hint or msg}")
+        state.image_analysis_result = _fail(f"图片分析失败: {str(e)[:200]}")
 
     return state
 
 
-def _call_vision_api(state: AgentState) -> dict:
-    url = f"{VISION_BASE_URL}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {VISION_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": VISION_MODEL,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": PROMPT},
-                {"type": "image_url", "image_url": {
-                    "url": f"data:{state.image_mime_type or 'image/jpeg'};base64,{state.image_data}"}},
-                {"type": "text", "text": state.user_question or "请分析这张农作物图片"},
-            ],
+def _call_dl_model(state: AgentState) -> dict:
+    """使用本地DL模型进行病虫害分类，然后用LLM增强"""
+    import base64
+    from core.model_registry_factory import get_model_registry
+    from core.model_executor import ModelExecutor
+    from models.base import ModelInput
+
+    registry = get_model_registry()
+    executor = ModelExecutor(registry)
+
+    model_id = DL_DEFAULT_MODEL
+    if not model_id:
+        models = registry.list_models()
+        if not models:
+            raise Exception("没有可用的DL模型。请将模型权重放入 models/weights/ 目录。")
+        model_id = models[0].model_id
+
+    image_bytes = base64.b64decode(state.image_data)
+    model_input = ModelInput(image_bytes=image_bytes, top_k=3)
+    result = executor.infer_sync(model_id, model_input)
+
+    if not result.success:
+        raise Exception(f"模型推理失败: {result.error_code}")
+
+    predictions = [
+        {"class_name": p.class_name, "confidence": round(p.confidence, 4)}
+        for p in result.predictions
+    ]
+
+    # 用LLM增强top-1预测结果
+    top = predictions[0]
+    enhanced = _invoke_llm_enhance(top["class_name"], top["confidence"], state)
+
+    return {
+        "model_id": result.model_id,
+        "predictions": predictions,
+        "inference_time_ms": result.inference_time_ms,
+        "crop_type": enhanced.get("crop_type", ""),
+        "growth_stage": enhanced.get("growth_stage", ""),
+        "detected_issues": [{
+            "type": "病害" if "病" in top["class_name"] else "虫害",
+            "name": top["class_name"],
+            "severity": enhanced.get("severity", "中等"),
+            "confidence": top["confidence"],
+            "description": enhanced.get("description", ""),
         }],
-        "max_tokens": VISION_MAX_TOKENS,
-        "temperature": VISION_TEMPERATURE,
+        "overall_health": enhanced.get("overall_health", "一般"),
+        "recommendations": enhanced.get("recommendations", []),
+        "urgency": enhanced.get("urgency", "近期处理"),
+        "llm_advice": enhanced.get("advice", ""),
     }
-    resp = requests.post(url, headers=headers, json=payload, timeout=120)
-    if resp.status_code != 200:
-        raise Exception(f"API {resp.status_code}: {resp.text[:300]}")
 
+
+def _invoke_llm_enhance(class_name: str, confidence: float, state: AgentState) -> dict:
+    """调用LLM根据分类结果生成防治建议"""
+    from ..utils import _get_llm
     try:
-        body = resp.json()
-        content = body["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, json.JSONDecodeError) as e:
-        logger.warning("Vision API 响应解析失败: %s, body=%s", e, resp.text[:500])
-        raise Exception(f"API 返回格式异常: {resp.text[:200]}")
-
-    if not content or not content.strip():
-        raise Exception("API 返回了空内容，可能是图片格式不被支持或图片过大")
-
-    return _parse(content)
+        prompt = LLM_ENHANCE_PROMPT.format(class_name=class_name, confidence=confidence)
+        llm = _get_llm()
+        response = llm.invoke(prompt)
+        text = response.content if hasattr(response, "content") else str(response)
+        # 尝试从LLM回答中提取结构化信息
+        return {
+            "advice": text,
+            "description": "",
+            "severity": "中等",
+            "overall_health": "一般",
+            "recommendations": [],
+            "urgency": "近期处理",
+        }
+    except Exception as e:
+        logger.warning("LLM增强失败: %s", e)
+        return {"advice": f"模型识别为: {class_name}（置信度: {confidence}）"}
 
 
 def image_analysis_answer_node(state: AgentState) -> AgentState:

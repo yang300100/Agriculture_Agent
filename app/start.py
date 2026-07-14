@@ -12,6 +12,25 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
 
+def _ensure_database():
+    """确保数据库已初始化，并尝试从JSON迁移数据"""
+    db_path = os.path.join(PROJECT_ROOT, "data", "agriculture.db")
+    if not os.path.exists(db_path):
+        print("初始化数据库...")
+        try:
+            from core.database.engine import init_db
+            init_db()
+            print("  数据库已创建: data/agriculture.db")
+            # 尝试自动迁移
+            json_data = os.path.join(PROJECT_ROOT, "data", "users.json")
+            if os.path.exists(json_data):
+                print("  检测到JSON数据，开始迁移...")
+                from scripts.migrate_json_to_sqlite import migrate_all
+                migrate_all()
+        except Exception as e:
+            print(f"  数据库初始化失败: {e}")
+
+
 def check_env():
     """检查环境配置"""
     env_path = os.path.join(PROJECT_ROOT, ".env")
@@ -93,15 +112,17 @@ def show_help():
 
 def start_backend():
     """启动 FastAPI 后端"""
-    print("🔧 启动 FastAPI 后端服务...")
+    _ensure_database()
+    print("启动 FastAPI 后端服务...")
     api_path = os.path.join(PROJECT_ROOT, "app", "api_server.py")
     subprocess.run([sys.executable, api_path])
 
 
 def start_all():
     """同时启动后端和前端"""
+    _ensure_database()
     import threading
-    print("🚀 启动全部服务...")
+    print("启动全部服务...")
     api_path = os.path.join(PROJECT_ROOT, "app", "api_server.py")
     t = threading.Thread(target=lambda: subprocess.run([sys.executable, api_path]), daemon=True)
     t.start()
