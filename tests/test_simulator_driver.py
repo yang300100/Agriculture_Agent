@@ -11,6 +11,43 @@ from devices.base import DeviceCommand, DeviceCapability
 class TestSimulatorDriver:
     def setup_method(self):
         self.driver = SimulatorDriver(simulated_latency_ms=0)
+        # 注册测试需要的虚拟设备
+        self.driver.add_virtual_device(
+            device_id="virtual_irrigation_01", name="虚拟灌溉器#1",
+            capabilities=[DeviceCapability.IRRIGATE],
+            sensors=["flow_rate"],
+            location="默认区域",
+        )
+        self.driver.add_virtual_device(
+            device_id="virtual_soil_sensor_01", name="虚拟土壤传感器#1",
+            capabilities=[DeviceCapability.READ_SENSOR],
+            sensors=["temperature", "humidity", "soil_moisture"],
+            location="默认区域",
+        )
+        self.driver.add_virtual_device(
+            device_id="virtual_ventilation_01", name="虚拟通风设备#1",
+            capabilities=[DeviceCapability.VENTILATE],
+            sensors=[],
+            location="默认区域",
+        )
+        self.driver.add_virtual_device(
+            device_id="virtual_light_01", name="虚拟补光灯#1",
+            capabilities=[DeviceCapability.LIGHT],
+            sensors=[],
+            location="默认区域",
+        )
+        self.driver.add_virtual_device(
+            device_id="virtual_fertigator_01", name="虚拟施肥器#1",
+            capabilities=[DeviceCapability.FERTIGATE],
+            sensors=[],
+            location="默认区域",
+        )
+        self.driver.add_virtual_device(
+            device_id="virtual_heater_01", name="虚拟加热器#1",
+            capabilities=[DeviceCapability.HEAT],
+            sensors=["temperature"],
+            location="默认区域",
+        )
 
     def test_init_has_devices(self):
         assert len(self.driver._devices) == 6

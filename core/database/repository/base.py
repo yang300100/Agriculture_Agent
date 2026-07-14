@@ -1,5 +1,7 @@
 """通用 Repository 基类"""
+import datetime
 from typing import Optional, List, TypeVar, Generic, Type
+from sqlalchemy import Date
 from sqlalchemy.orm import Session
 from core.database.engine import get_session
 
@@ -12,12 +14,28 @@ class BaseRepository(Generic[T]):
     def __init__(self, model: Type[T], session: Optional[Session] = None):
         self.model = model
         self._session = session
+        # 预热 Date 列名缓存
+        self._date_columns = {
+            c.name for c in self.model.__table__.columns
+            if isinstance(c.type, Date)
+        }
 
     @property
     def session(self) -> Session:
         if self._session is None:
             self._session = get_session()
         return self._session
+
+    def _coerce_dates(self, kwargs: dict) -> dict:
+        """将字符串日期转为 Python date 对象"""
+        for key in self._date_columns:
+            val = kwargs.get(key)
+            if isinstance(val, str) and val:
+                try:
+                    kwargs[key] = datetime.date.fromisoformat(val)
+                except (ValueError, TypeError):
+                    pass
+        return kwargs
 
     def get_by_id(self, id: int) -> Optional[T]:
         return self.session.query(self.model).filter(self.model.id == id).first()
@@ -35,6 +53,7 @@ class BaseRepository(Generic[T]):
         return self.session.query(self.model).filter_by(**filters).first()
 
     def create(self, **kwargs) -> T:
+        kwargs = self._coerce_dates(kwargs)
         obj = self.model(**kwargs)
         self.session.add(obj)
         self.session.commit()
@@ -42,6 +61,7 @@ class BaseRepository(Generic[T]):
         return obj
 
     def update(self, id: int, **kwargs) -> Optional[T]:
+        kwargs = self._coerce_dates(kwargs)
         obj = self.get_by_id(id)
         if obj is None:
             return None
@@ -66,6 +86,7 @@ class BaseRepository(Generic[T]):
         return q.count()
 
     def bulk_create(self, items: List[dict]) -> List[T]:
+        items = [self._coerce_dates(item) for item in items]
         objs = [self.model(**item) for item in items]
         self.session.add_all(objs)
         self.session.commit()
@@ -74,6 +95,7 @@ class BaseRepository(Generic[T]):
     def replace_all_for_user(self, user_id: int, items: List[dict]):
         """原子替换某用户的所有记录（先删后插）"""
         self.session.query(self.model).filter(self.model.user_id == user_id).delete()
+        items = [self._coerce_dates(item) for item in items]
         objs = [self.model(user_id=user_id, **item) for item in items]
         self.session.add_all(objs)
         self.session.commit()
