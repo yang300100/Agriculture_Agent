@@ -14,47 +14,53 @@ def render_calendar_page():
         sd = p.get("start_date", "")
         ed = p.get("expected_end_date", "") or sd
         items.append({
-            "group": f"🌾 {p['crop']}",
-            "task": p.get("stage", ""),
+            "group": p['crop'],
+            "task": f"📅 {p.get('stage', '')}（进度）",
             "start": _parse_date(sd) or datetime.now().date(),
             "end": _parse_date(ed) or datetime.now().date(),
             "progress": p.get("progress_percent", 0),
         })
     for t in tasks:
-        # 只显示未完成且有截止日期的任务，避免历史任务堆满日历
         if t.get("status") == "已完成":
             continue
         sd = t.get("start_date", "") or t.get("end_date", "")
         ed = t.get("end_date", "")
         if not ed:
-            continue  # 无截止日期的任务不显示在时间线上
+            continue
+        crop = t.get('crop', '任务')
+        # 任务归入对应作物分组，与进度条在同一行
         items.append({
-            "group": f"📋 {t.get('crop','任务')}",
-            "task": t.get("title", ""),
+            "group": crop,
+            "task": f"📋 {t.get('title', '')}",
             "start": _parse_date(sd) or datetime.now().date(),
             "end": _parse_date(ed) or datetime.now().date(),
             "progress": t.get("progress", 0),
         })
+
+    # 按作物分组排序：先进度后任务
+    items.sort(key=lambda x: (x["group"], 0 if "📅" in x["task"] else 1, x["start"]))
 
     if items:
         _render_gantt_chart(items)
     else:
         st.info("暂无种植数据。创建种植计划后将显示时间线。")
 
-    # Recent tasks
+    # Recent tasks — 只显示待办/进行中/已逾期，按截止日期排序
     st.markdown("### 近期任务")
-    if tasks:
-        for t in tasks[:10]:
-            icon = {"待办": "📝", "进行中": "🌱", "已完成": "✅", "已逾期": "⚠️"}.get(t.get("status", ""), "📋")
+    active_tasks = [t for t in tasks if t.get("status") not in ("已完成",)]
+    active_tasks.sort(key=lambda t: t.get("end_date", "9999") or "9999")
+    if active_tasks:
+        for t in active_tasks[:15]:
+            icon = {"待办": "📝", "进行中": "🌱", "已逾期": "⚠️"}.get(t.get("status", ""), "📋")
             end_str = t.get("end_date", "")
             days_left = ""
             if end_str:
                 try:
-                    delta = (datetime.strptime(end_str, "%Y-%m-%d") - datetime.now()).days
+                    delta = (datetime.strptime(end_str[:10], "%Y-%m-%d") - datetime.now()).days
                     days_left = f"还有{delta}天" if delta > 0 else f"已逾期{abs(delta)}天" if delta < 0 else "今天"
                 except Exception:
                     pass
-            st.markdown(f"{icon} **{t.get('title','')}** — {t.get('crop','')} | {end_str} {days_left}")
+            st.markdown(f"{icon} **{t.get('title','')}** — {t.get('crop','')} | {end_str[:10]} {days_left}")
             st.progress(t.get("progress", 0) / 100)
     else:
         st.caption("暂无待办任务")
