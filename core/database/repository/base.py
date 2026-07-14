@@ -27,14 +27,19 @@ class BaseRepository(Generic[T]):
         return self._session
 
     def _coerce_dates(self, kwargs: dict) -> dict:
-        """将字符串日期转为 Python date 对象"""
+        """将字符串日期转为 Python date 对象，空串/非法值转为 None"""
         for key in self._date_columns:
             val = kwargs.get(key)
-            if isinstance(val, str) and val:
-                try:
-                    kwargs[key] = datetime.date.fromisoformat(val)
-                except (ValueError, TypeError):
-                    pass
+            if isinstance(val, str):
+                if not val.strip():
+                    kwargs[key] = None
+                else:
+                    try:
+                        kwargs[key] = datetime.date.fromisoformat(val[:10])
+                    except (ValueError, TypeError):
+                        kwargs[key] = None  # 非法日期→None
+            elif val is not None and not isinstance(val, datetime.date):
+                kwargs[key] = None
         return kwargs
 
     def get_by_id(self, id: int) -> Optional[T]:
