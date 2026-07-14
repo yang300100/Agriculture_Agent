@@ -147,12 +147,15 @@ class PlantingTracker:
         repo = PlantingTaskRepository()
         tasks = repo.find_by(user_id=self._uid)
         return [{
-            "id": t.id, "crop": t.crop, "task_type": t.task_type,
-            "title": t.title, "description": t.description,
-            "status": t.status, "priority": t.priority,
-            "start_date": t.start_date, "end_date": t.end_date,
-            "completed_date": t.completed_date, "progress_percent": t.progress_percent or 0,
-            "notes": t.notes, "created_at": t.created_at.isoformat() if t.created_at else "",
+            "id": str(t.id), "crop": t.crop or "", "task_type": t.task_type or "",
+            "title": t.title or "", "description": t.description or "",
+            "status": t.status or "待办", "priority": t.priority or "medium",
+            "start_date": t.start_date.isoformat() if t.start_date else "",
+            "end_date": t.end_date.isoformat() if t.end_date else "",
+            "completed_date": t.completed_date.isoformat() if t.completed_date else "",
+            "progress_percent": 0,  # DB模型无此字段，默认0
+            "notes": t.notes or "",
+            "created_at": t.created_at.isoformat() if t.created_at else "",
             "updated_at": t.updated_at.isoformat() if t.updated_at else "",
             "device_id": t.device_id, "device_command": t.device_command,
             "device_params": t.device_params,
@@ -271,11 +274,16 @@ class PlantingTracker:
         repo = PlantingPlanRepository()
         plans = repo.find_by(user_id=self._uid)
         return [{
-            "id": p.id, "crop": p.crop, "stage": p.stage,
-            "stage_number": p.stage_number, "total_stages": p.total_stages,
-            "start_date": p.start_date, "expected_end_date": p.expected_end_date,
-            "actual_end_date": p.actual_end_date, "progress_percent": p.progress_percent or 0,
-            "status": p.status, "created_at": p.created_at.isoformat() if p.created_at else "",
+            "id": str(p.id), "crop": p.crop or "", "stage": p.stage or "",
+            "stage_number": p.stage_number or 1, "total_stages": p.total_stages or 4,
+            "start_date": p.start_date.isoformat() if p.start_date else "",
+            "expected_end_date": p.expected_end_date.isoformat() if p.expected_end_date else "",
+            "actual_end_date": p.actual_end_date.isoformat() if p.actual_end_date else "",
+            "progress_percent": p.progress_percent or 0,
+            "status": p.status or "进行中",
+            "tasks": [],  # DB模型无此字段，默认空
+            "notes": "",  # DB模型无此字段，默认空
+            "created_at": p.created_at.isoformat() if p.created_at else "",
             "updated_at": p.updated_at.isoformat() if p.updated_at else "",
         } for p in plans]
 
