@@ -1,4 +1,4 @@
-# 🌾 智能种植规划助手
+# 智能种植规划助手
 
 基于 LangChain + LangGraph + FastAPI + Streamlit 的多 Agent 智能农业助手。7 个专业智能体协同作战，通过调度中心统一管理，支持复合意图并行处理、Agent 间自动联动、IoT 设备自主控制与摄像头定时巡检。
 
@@ -16,7 +16,7 @@
 - **15 种作物**结构化知识库：小麦、玉米、水稻、大豆、棉花、土豆、花生、高粱、谷子、油菜、甘薯、甘蔗、烟草、茶叶、番茄
 - 多方案对比评分（价格、产量、风险、适应性）
 - **轮作建议**：连作风险检测 + 下季推荐 + 多年轮作规划
-- **🪄 种植向导**：三步一键生成计划 + 进度 + 任务 + 提醒
+- ** 种植向导**：三步一键生成计划 + 进度 + 任务 + 提醒
 - **生长阶段自动推进**：根据种植日期自动计算当前阶段（只前进不后退）
 
 ### 农事提醒
@@ -61,16 +61,16 @@
 - 农事日历甘特图叠加节气标记线
 
 ### 语音交互
-- 🎤 语音输入：浏览器 Web Speech API（中文普通话）
-- 🔊 语音播报：每条回复支持 TTS 朗读
-- 📝 **语音指令解析**：支持「记账：小麦 收入 5000」「提醒：明天 8点 小麦 浇水」「查天气」等快捷语音指令
+- 语音输入：浏览器 Web Speech API（中文普通话）
+- 语音播报：每条回复支持 TTS 朗读
+- **语音指令解析**：支持「记账：小麦 收入 5000」「提醒：明天 8点 小麦 浇水」「查天气」等快捷语音指令
 
 ### 农资计算器
 - 播种量计算（千粒重 × 发芽率 × 亩株数）
 - 施肥量计算（N-P-K 折算具体化肥品种亩用量）
 - 农药稀释计算（按倍数或亩用量）
 
-### IoT 设备控制 🤖 NEW
+### IoT 设备控制 NEW
 - **7 个专业 Agent 中的设备控制 + 作物监测**：对话即可控制灌溉/施肥/通风/补光/加热
 - **设备仪表盘**：实时监控设备状态、传感器读数，一键快捷操作
 - **规则引擎**：用户设定安全边界 → Agent 在边界内自主决策执行
@@ -78,7 +78,7 @@
 - **4 种驱动协议**：虚拟模拟器 / MQTT / HTTP REST / Modbus RTU/TCP
 - **Agent 间联动**：病虫害检测 → 自动问天气 → 自动执行喷药
 
-### 作物监测 📷 NEW
+### 作物监测 NEW
 - 摄像头定时巡检：每 N 分钟自动拍照，Vision AI 分析作物健康状况
 - 多维健康评估：养分状态 / 水分状态 / 病虫害检测 / 生长阶段识别
 - 自动联动执行：高危问题（干旱/缺肥/虫害）→ 自动匹配设备 → 自主灌溉/施肥/告警
@@ -107,25 +107,25 @@
 
 ```
 用户输入 → parse_input → classify_intent
-                              │
-                    ┌─────────┴──────────┐
-                    │  AgentOrchestrator  │  ← 调度中心（复合意图并行 + 回答合并）
-                    └─────────┬──────────┘
-                              │
-     ┌──────────┬──────────┬──┴─────┬──────────┬──────────┬──────────┐
-     │          │          │        │          │          │          │
+ │
+ ┌─────────┴──────────┐
+ │ AgentOrchestrator │ ← 调度中心（复合意图并行 + 回答合并）
+ └─────────┬──────────┘
+ │
+ ┌──────────┬──────────┬──┴─────┬──────────┬──────────┬──────────┐
+ │ │ │ │ │ │ │
 ┌────┴────┐ ┌───┴───┐ ┌───┴───┐ ┌──┴──┐ ┌────┴────┐ ┌───┴────┐ ┌───┴──────┐
-│ 🌱 种植  │ │🩺 病虫害│ │ 🌤 气象│ │💰 财务│ │ 📋 农事 │ │🤖 设备  │ │📷 作物监测│
-│ 4 种意图 │ │2 种意图│ │1 种意图│ │2种意图│ │ 3 种意图 │ │1 种意图 │ │1 种意图  │
+│ 种植 │ │ 病虫害│ │ 气象│ │ 财务│ │ 农事 │ │ 设备 │ │ 作物监测│
+│ 4 种意图 │ │2 种意图│ │1 种意图│ │2种意图│ │ 3 种意图 │ │1 种意图 │ │1 种意图 │
 └────┬────┘ └───┬───┘ └───┬───┘ └──┬──┘ └────┬────┘ └───┬────┘ └───┬──────┘
-     │          │         │        │          │          │          │
-     └──────────┼─────────┼────────┼──────────┼──────────┼──────────┘
-                │         │        │          │          │
-          Agent 间自动联动 ────────┴──────────┴──────────┘
-          病虫害 → 问天气 → 自动喷药
-          霜冻预警 → 自动开加热器
-          传感器触发 → 规则引擎 → 自动灌溉
-          摄像头巡检 → Vision 分析 → 自主执行
+ │ │ │ │ │ │ │
+ └──────────┼─────────┼────────┼──────────┼──────────┼──────────┘
+ │ │ │ │ │
+ Agent 间自动联动 ────────┴──────────┴──────────┘
+ 病虫害 → 问天气 → 自动喷药
+ 霜冻预警 → 自动开加热器
+ 传感器触发 → 规则引擎 → 自动灌溉
+ 摄像头巡检 → Vision 分析 → 自主执行
 ```
 
 能力：
@@ -140,47 +140,47 @@
 
 ```
 ┌──────────────────────────────────────────────┐
-│              FastAPI (:8000) 常驻后端          │
-│                                              │
-│  APScheduler 定时任务                          │
-│  ├─ 每 3min: 任务自动执行检查                   │
-│  ├─ 每 5min: 提醒检查 + SMS 推送               │
-│  ├─ 每 5min: 设备规则轮询 + 传感器触发          │
-│  ├─ 每 30min: 天气预警缓存 + 持续异常检测       │
-│  ├─ 每 30min: 摄像头定时巡检 + Vision 分析      │
-│  └─ 每 6h: 病虫害风险评估                       │
-│                                              │
-│  REST API (~35 端点)                          │
-│  ├─ POST /api/chat              Agent 对话     │
-│  ├─ GET  /api/dashboard          仪表盘聚合     │
-│  ├─ GET/POST /api/progress       种植进度 CRUD  │
-│  ├─ GET/POST /api/tasks          农事任务 CRUD  │
-│  ├─ GET/POST/DELETE /api/fields  地块管理 CRUD  │
-│  ├─ GET/POST /api/finance/*      财务 CRUD+报表 │
-│  ├─ GET/POST /api/profile        用户档案       │
-│  ├─ GET  /api/weather/*          天气 + 预警    │
-│  ├─ GET  /api/solar-terms        农历节气       │
-│  ├─ POST /api/reminders          提醒管理       │
-│  ├─ GET  /api/encyclopedia/*     作物百科       │
-│  ├─ GET  /api/policy/search      政策搜索       │
-│  ├─ POST /api/plan               种植方案向导    │
-│  ├─ GET/POST/DELETE /api/devices 设备管理 CRUD  │
-│  ├─ POST /api/devices/{id}/command  设备指令    │
-│  ├─ GET  /api/devices/{id}/state    设备状态    │
-│  ├─ GET  /api/devices/{id}/snapshot 摄像头拍照  │
-│  ├─ GET  /api/camera/analysis/{id} AI分析记录  │
-│  ├─ GET/POST/PUT/DELETE /api/rules 规则 CRUD   │
-│  ├─ GET/POST /api/actions/*      操作确认+日志  │
-│  └─ GET  /api/health             健康检查       │
-│                                              │
-│  直接调用 core/ agent/ knowledge/ 模块        │
+│ FastAPI (:8000) 常驻后端 │
+│ │
+│ APScheduler 定时任务 │
+│ ├─ 每 3min: 任务自动执行检查 │
+│ ├─ 每 5min: 提醒检查 + SMS 推送 │
+│ ├─ 每 5min: 设备规则轮询 + 传感器触发 │
+│ ├─ 每 30min: 天气预警缓存 + 持续异常检测 │
+│ ├─ 每 30min: 摄像头定时巡检 + Vision 分析 │
+│ └─ 每 6h: 病虫害风险评估 │
+│ │
+│ REST API (~35 端点) │
+│ ├─ POST /api/chat Agent 对话 │
+│ ├─ GET /api/dashboard 仪表盘聚合 │
+│ ├─ GET/POST /api/progress 种植进度 CRUD │
+│ ├─ GET/POST /api/tasks 农事任务 CRUD │
+│ ├─ GET/POST/DELETE /api/fields 地块管理 CRUD │
+│ ├─ GET/POST /api/finance/* 财务 CRUD+报表 │
+│ ├─ GET/POST /api/profile 用户档案 │
+│ ├─ GET /api/weather/* 天气 + 预警 │
+│ ├─ GET /api/solar-terms 农历节气 │
+│ ├─ POST /api/reminders 提醒管理 │
+│ ├─ GET /api/encyclopedia/* 作物百科 │
+│ ├─ GET /api/policy/search 政策搜索 │
+│ ├─ POST /api/plan 种植方案向导 │
+│ ├─ GET/POST/DELETE /api/devices 设备管理 CRUD │
+│ ├─ POST /api/devices/{id}/command 设备指令 │
+│ ├─ GET /api/devices/{id}/state 设备状态 │
+│ ├─ GET /api/devices/{id}/snapshot 摄像头拍照 │
+│ ├─ GET /api/camera/analysis/{id} AI分析记录 │
+│ ├─ GET/POST/PUT/DELETE /api/rules 规则 CRUD │
+│ ├─ GET/POST /api/actions/* 操作确认+日志 │
+│ └─ GET /api/health 健康检查 │
+│ │
+│ 直接调用 core/ agent/ knowledge/ 模块 │
 └──────────────────────────────────────────────┘
-                     ↑ HTTP
+ ↑ HTTP
 ┌──────────────────────────────────────────────┐
-│            Streamlit (:8501) 纯展示前端        │
-│                                              │
-│  所有业务逻辑通过 API 调用                      │
-│  UI 渲染代码完全不变                            │
+│ Streamlit (:8501) 纯展示前端 │
+│ │
+│ 所有业务逻辑通过 API 调用 │
+│ UI 渲染代码完全不变 │
 └──────────────────────────────────────────────┘
 ```
 
@@ -194,10 +194,10 @@ Agent 支持通过 4 种协议接入真实 IoT 设备，实现自主控制。通
 
 | 驱动 | 协议 | 适用硬件 | 需要额外安装 |
 |------|------|---------|------------|
-| 🖥️ **Simulator** | 本地内存 | 开发测试（6 个内置虚拟设备） | 无 |
-| 📡 **MQTT** | MQTT 3.1.1 | ESP32/ESP8266、树莓派、任意 MQTT 设备 | `pip install paho-mqtt` |
-| 🌐 **HTTP REST** | HTTP | 智能插座(Tasmota/ESPHome)、树莓派 GPIO 控制器 | 无（使用 `requests`） |
-| 🔧 **Modbus** | RTU/TCP | PLC、变频器、工业传感器 | `pip install pymodbus` |
+| **Simulator** | 本地内存 | 开发测试（6 个内置虚拟设备） | 无 |
+| **MQTT** | MQTT 3.1.1 | ESP32/ESP8266、树莓派、任意 MQTT 设备 | `pip install paho-mqtt` |
+| **HTTP REST** | HTTP | 智能插座(Tasmota/ESPHome)、树莓派 GPIO 控制器 | 无（使用 `requests`） |
+| **Modbus** | RTU/TCP | PLC、变频器、工业传感器 | `pip install pymodbus` |
 
 ### 接入步骤
 
@@ -208,23 +208,23 @@ Agent 支持通过 4 种协议接入真实 IoT 设备，实现自主控制。通
 // 完整代码见 docs/devices/设备连接指南.md
 
 void mqtt_callback(char* topic, byte* payload, unsigned int length) {
-    // 解析 {"command":"start","params":{"duration":30}}
-    if (command == "start") {
-        digitalWrite(RELAY_PIN, HIGH);  // 开水泵
-        publish_state();                // 上报状态
-    }
+ // 解析 {"command":"start","params":{"duration":30}}
+ if (command == "start") {
+ digitalWrite(RELAY_PIN, HIGH); // 开水泵
+ publish_state(); // 上报状态
+ }
 }
 ```
 
 **2. 在设备仪表盘注册设备**：
 
-> 🤖 设备仪表盘 → ➕ 添加设备 → 填写表单 → 💾 注册
+> 设备仪表盘 → 添加设备 → 填写表单 → 注册
 
 | 字段 | 示例值 | 说明 |
 |------|--------|------|
 | 设备ID | `greenhouse_pump_01` | 全局唯一标识 |
 | 设备名称 | 大棚水泵#1 | 人类可读名称 |
-| 驱动类型 | 📡 MQTT | 选择通信协议 |
+| 驱动类型 | MQTT | 选择通信协议 |
 | Broker 地址 | `192.168.1.100` | MQTT Broker IP |
 | 控制主题 | `greenhouse/pump/control` | 设备订阅的主题 |
 | 状态主题 | `greenhouse/pump/state` | 设备上报状态的主题 |
@@ -233,7 +233,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
 
 ```
 用户: "帮小麦浇30分钟水"
-Agent: ✅ 指令已执行！设备：greenhouse_pump_01 → start 参数：duration=30
+Agent: 指令已执行！设备：greenhouse_pump_01 → start 参数：duration=30
 
 # 或者设定自动规则：
 规则: 当 soil_moisture < 30% 且 未来24h无雨 → 自动浇水30分钟
@@ -263,20 +263,20 @@ state = {"power": False, "status": "idle"}
 
 @app.route("/command", methods=["POST"])
 def command():
-    data = request.get_json()
-    if data["command"] == "start":
-        state["power"] = True; state["status"] = "running"
-        # 这里操作你的 GPIO / 继电器
-    return jsonify({"success": True})
+ data = request.get_json()
+ if data["command"] == "start":
+ state["power"] = True; state["status"] = "running"
+ # 这里操作你的 GPIO / 继电器
+ return jsonify({"success": True})
 
 @app.route("/state", methods=["GET"])
 def get_state():
-    return jsonify(state)
+ return jsonify(state)
 
 app.run(host="0.0.0.0", port=8080)
 ```
 
-> 📖 **完整设备端代码**（ESP32 C++、树莓派 Python、Tasmota 适配器、Modbus 从站模拟器、接线图）见 **[docs/devices/设备连接指南.md](docs/devices/设备连接指南.md)**
+> **完整设备端代码**（ESP32 C++、树莓派 Python、Tasmota 适配器、Modbus 从站模拟器、接线图）见 **[docs/devices/设备连接指南.md](docs/devices/设备连接指南.md)**
 
 ---
 
@@ -333,8 +333,8 @@ python knowledge/build_faiss_rag.py
 python app/start.py all
 
 # 或分别启动
-python app/start.py backend    # 终端 1: FastAPI :8000
-python app/start.py web        # 终端 2: Streamlit :8501
+python app/start.py backend # 终端 1: FastAPI :8000
+python app/start.py web # 终端 2: Streamlit :8501
 ```
 
 ---
@@ -344,101 +344,101 @@ python app/start.py web        # 终端 2: Streamlit :8501
 ```
 Agriculture_Agent/
 ├── app/
-│   ├── test1.py                    # Streamlit 入口 + 页面路由 + 设备检测
-│   ├── start.py                    # CLI 启动脚本（backend/web/all 命令）
-│   ├── api_server.py               # FastAPI 主进程 + APScheduler
-│   ├── api_routes.py               # ~20 个 REST API 端点
-│   ├── scheduler_jobs.py           # 提醒/天气/病害定时任务
-│   ├── agent/
-│   │   ├── config.py               # 环境变量 + 关键词常量
-│   │   ├── state.py                # AgentState（18 种意图）
-│   │   ├── graph.py                # LangGraph 工作流 + 多 Agent 调度
-│   │   ├── agents/                 # 7 个专业 Agent + 调度中心
-│   │   │   ├── base.py             # Agent 基类（互调支持）
-│   │   │   ├── orchestrator.py     # 调度中心（路由+并行+互调+合并）
-│   │   │   ├── planting_agent.py   # 🌱 种植规划 Agent（4种意图）
-│   │   │   ├── disease_agent.py    # 🩺 病虫害诊断 Agent（联动气象）
-│   │   │   ├── weather_agent.py    # 🌤 气象服务 Agent
-│   │   │   ├── finance_agent.py    # 💰 财务与政策 Agent（2种意图）
-│   │   │   ├── farming_agent.py    # 📋 农事管理 Agent（3种意图）
-│   │   │   ├── device_agent.py     # 🤖 设备控制 Agent（LLM解析+规则引擎+自主权）
-│   │   │   └── crop_monitor_agent.py # 📷 作物监测 Agent（Vision分析+自主决策）
-│   │   └── nodes/                  # 工作流节点（16个）
-│   │       ├── parse_input.py      # 输入解析 + 前季作物提取 + 语音指令
-│   │       ├── classify_intent.py  # 意图分类（LLM 推理 + 关键词降级）
-│   │       ├── rag_retrieval.py    # FAISS + 关键词双通道检索
-│   │       ├── llm_response.py     # LLM 通用回答 + 追问引导
-│   │       ├── planting_plan.py    # 种植规划 + 轮作建议
-│   │       ├── reminder.py         # 提醒管理
-│   │       ├── image_analysis.py   # Vision 图片分析 + 防治方案
-│   │       ├── weather.py          # 天气查询 + 施药气象分析
-│   │       ├── finance.py          # 财务查询
-│   │       ├── field.py            # 地块管理 + 轮作
-│   │       ├── policy.py           # 政策补贴查询
-│   │       ├── progress.py         # 进度跟踪
-│   │       ├── extract_tasks.py    # 自动提取任务
-│   │       └── update_memory.py    # 长记忆更新（每3轮自动总结）
-│   ├── ui/
-│   │   ├── theme.py                # 设计系统 CSS + 导航栏 + 响应式
-│   │   └── sidebar.py              # 侧边栏（进度/任务/天气/农历）
-│   └── views/
-│       ├── dashboard.py            # 概览仪表盘（默认首页）
-│       ├── chat.py                 # 对话页面（语音 + TTS）
-│       ├── profile.py              # 基本信息
-│       ├── fields.py               # 地块管理（地图 + 天气叠加）
-│       ├── finance.py              # 财务管理（记账 + 图表）
-│       ├── calendar.py             # 农事日历（甘特图）
-│       ├── policy.py               # 政策补贴查询
-│       ├── encyclopedia.py         # 作物百科
-│       ├── calculator.py           # 农资计算器
-│       ├── wizard.py               # 种植方案向导
-│       ├── devices.py              # 设备仪表盘
-│       └── rules.py                # 规则编辑器
+│ ├── test1.py # Streamlit 入口 + 页面路由 + 设备检测
+│ ├── start.py # CLI 启动脚本（backend/web/all 命令）
+│ ├── api_server.py # FastAPI 主进程 + APScheduler
+│ ├── api_routes.py # ~20 个 REST API 端点
+│ ├── scheduler_jobs.py # 提醒/天气/病害定时任务
+│ ├── agent/
+│ │ ├── config.py # 环境变量 + 关键词常量
+│ │ ├── state.py # AgentState（18 种意图）
+│ │ ├── graph.py # LangGraph 工作流 + 多 Agent 调度
+│ │ ├── agents/ # 7 个专业 Agent + 调度中心
+│ │ │ ├── base.py # Agent 基类（互调支持）
+│ │ │ ├── orchestrator.py # 调度中心（路由+并行+互调+合并）
+│ │ │ ├── planting_agent.py # 种植规划 Agent（4种意图）
+│ │ │ ├── disease_agent.py # 病虫害诊断 Agent（联动气象）
+│ │ │ ├── weather_agent.py # 气象服务 Agent
+│ │ │ ├── finance_agent.py # 财务与政策 Agent（2种意图）
+│ │ │ ├── farming_agent.py # 农事管理 Agent（3种意图）
+│ │ │ ├── device_agent.py # 设备控制 Agent（LLM解析+规则引擎+自主权）
+│ │ │ └── crop_monitor_agent.py # 作物监测 Agent（Vision分析+自主决策）
+│ │ └── nodes/ # 工作流节点（16个）
+│ │ ├── parse_input.py # 输入解析 + 前季作物提取 + 语音指令
+│ │ ├── classify_intent.py # 意图分类（LLM 推理 + 关键词降级）
+│ │ ├── rag_retrieval.py # FAISS + 关键词双通道检索
+│ │ ├── llm_response.py # LLM 通用回答 + 追问引导
+│ │ ├── planting_plan.py # 种植规划 + 轮作建议
+│ │ ├── reminder.py # 提醒管理
+│ │ ├── image_analysis.py # Vision 图片分析 + 防治方案
+│ │ ├── weather.py # 天气查询 + 施药气象分析
+│ │ ├── finance.py # 财务查询
+│ │ ├── field.py # 地块管理 + 轮作
+│ │ ├── policy.py # 政策补贴查询
+│ │ ├── progress.py # 进度跟踪
+│ │ ├── extract_tasks.py # 自动提取任务
+│ │ └── update_memory.py # 长记忆更新（每3轮自动总结）
+│ ├── ui/
+│ │ ├── theme.py # 设计系统 CSS + 导航栏 + 响应式
+│ │ └── sidebar.py # 侧边栏（进度/任务/天气/农历）
+│ └── views/
+│ ├── dashboard.py # 概览仪表盘（默认首页）
+│ ├── chat.py # 对话页面（语音 + TTS）
+│ ├── profile.py # 基本信息
+│ ├── fields.py # 地块管理（地图 + 天气叠加）
+│ ├── finance.py # 财务管理（记账 + 图表）
+│ ├── calendar.py # 农事日历（甘特图）
+│ ├── policy.py # 政策补贴查询
+│ ├── encyclopedia.py # 作物百科
+│ ├── calculator.py # 农资计算器
+│ ├── wizard.py # 种植方案向导
+│ ├── devices.py # 设备仪表盘
+│ └── rules.py # 规则编辑器
 │
 ├── core/
-│   ├── planting_planner.py         # 种植规划引擎
-│   ├── planting_tracker.py         # 进度跟踪 + 任务卡片 + 自动推进
-│   ├── crop_comparison.py          # 多作物对比评分
-│   ├── crop_rotation.py            # 轮作建议
-│   ├── weather_service.py          # 双 API 天气 + 熔断
-│   ├── weather_alerts.py           # 灾害预警 + 收获倒计时
-│   ├── weather_history.py          # 天气持续异常检测
-│   ├── spray_advisor.py            # 施药气象评估
-│   ├── reminder_system.py          # 提醒管理
-│   ├── reminder_scheduler.py       # 后台调度 + SMS 推送
-│   ├── finance_manager.py          # 财务管理 + 报表
-│   ├── market_service.py           # 市场价格查询
-│   ├── map_manager.py              # Folium 交互地图管理
-│   ├── chat_history.py             # 对话持久化
-│   ├── sms_service.py              # 腾讯云短信
-│   ├── wechat_notify.py            # 微信通知
-│   ├── voice_components.py         # 语音输入 (STT)
-│   ├── tts_components.py           # 语音播报 (TTS)
-│   ├── disease_risk.py             # 病虫害量化风险评估
-│   ├── device_rule_engine.py        # 设备规则引擎（条件匹配+动作评估+自主权）
-│   ├── device_executor.py           # 设备指令执行器（重试+日志+待确认队列）
-│   ├── device_registry_factory.py   # 多驱动设备注册工厂
-│   └── lunar_calendar.py           # 农历24节气天文计算
+│ ├── planting_planner.py # 种植规划引擎
+│ ├── planting_tracker.py # 进度跟踪 + 任务卡片 + 自动推进
+│ ├── crop_comparison.py # 多作物对比评分
+│ ├── crop_rotation.py # 轮作建议
+│ ├── weather_service.py # 双 API 天气 + 熔断
+│ ├── weather_alerts.py # 灾害预警 + 收获倒计时
+│ ├── weather_history.py # 天气持续异常检测
+│ ├── spray_advisor.py # 施药气象评估
+│ ├── reminder_system.py # 提醒管理
+│ ├── reminder_scheduler.py # 后台调度 + SMS 推送
+│ ├── finance_manager.py # 财务管理 + 报表
+│ ├── market_service.py # 市场价格查询
+│ ├── map_manager.py # Folium 交互地图管理
+│ ├── chat_history.py # 对话持久化
+│ ├── sms_service.py # 腾讯云短信
+│ ├── wechat_notify.py # 微信通知
+│ ├── voice_components.py # 语音输入 (STT)
+│ ├── tts_components.py # 语音播报 (TTS)
+│ ├── disease_risk.py # 病虫害量化风险评估
+│ ├── device_rule_engine.py # 设备规则引擎（条件匹配+动作评估+自主权）
+│ ├── device_executor.py # 设备指令执行器（重试+日志+待确认队列）
+│ ├── device_registry_factory.py # 多驱动设备注册工厂
+│ └── lunar_calendar.py # 农历24节气天文计算
 │
 ├── knowledge/
-│   ├── simple_agriculture_rag.py   # 关键词检索
-│   ├── faiss_agriculture_rag.py    # FAISS 向量检索
-│   ├── build_agriculture_rag.py    # 作物知识索引构建
-│   └── build_faiss_rag.py          # 政策文档索引构建
+│ ├── simple_agriculture_rag.py # 关键词检索
+│ ├── faiss_agriculture_rag.py # FAISS 向量检索
+│ ├── build_agriculture_rag.py # 作物知识索引构建
+│ └── build_faiss_rag.py # 政策文档索引构建
 │
-├── devices/                         # IoT 设备驱动模块
-│   ├── base.py                      # 驱动抽象基类 + DeviceCommand/DeviceInfo
-│   ├── registry.py                  # 驱动注册中心 + 设备发现
-│   ├── simulator_driver.py          # 虚拟设备模拟器（6 个内置设备）
-│   ├── mqtt_driver.py               # MQTT 3.1.1 协议驱动（ESP32/树莓派）
-│   ├── http_driver.py               # HTTP REST 驱动（Tasmota/ESPHome/Flask）
-│   ├── camera_driver.py             # 摄像头驱动（拍照 + Vision 分析联动）
-│   └── modbus_driver.py             # Modbus RTU/TCP 驱动（PLC/工业传感器）
-├── agriculture_knowledge/crops/    # 15 种作物结构化知识 JSON
-├── data/                           # 运行时 JSON 存储（按用户分目录）
-├── tests/                          # 单元测试（9 个测试文件）
-├── docs/                           # 设备连接指南等文档
-└── .env                            # 环境变量配置
+├── devices/ # IoT 设备驱动模块
+│ ├── base.py # 驱动抽象基类 + DeviceCommand/DeviceInfo
+│ ├── registry.py # 驱动注册中心 + 设备发现
+│ ├── simulator_driver.py # 虚拟设备模拟器（6 个内置设备）
+│ ├── mqtt_driver.py # MQTT 3.1.1 协议驱动（ESP32/树莓派）
+│ ├── http_driver.py # HTTP REST 驱动（Tasmota/ESPHome/Flask）
+│ ├── camera_driver.py # 摄像头驱动（拍照 + Vision 分析联动）
+│ └── modbus_driver.py # Modbus RTU/TCP 驱动（PLC/工业传感器）
+├── agriculture_knowledge/crops/ # 15 种作物结构化知识 JSON
+├── data/ # 运行时 JSON 存储（按用户分目录）
+├── tests/ # 单元测试（9 个测试文件）
+├── docs/ # 设备连接指南等文档
+└── .env # 环境变量配置
 ```
 
 ---
