@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 def planting_plan_node(state: AgentState) -> AgentState:
     """种植规划节点 - 生成个性化种植计划，同时创建进度卡片和任务"""
-    if state.intent_type in ["crop_selection", "planting_schedule"]:
+    if state.intent_type in ["crop_selection", "planting_schedule", "planting_method", "harvest_planning"]:
         # 提取用户信息
         user_info = {
             "region": state.short_term_facts.get("region") or state.user_profile.get("region", ""),
