@@ -20,7 +20,8 @@ def field_management_node(state: AgentState) -> AgentState:
 
         try:
             # 初始化地图管理器
-            map_manager = MapManager()
+            username = getattr(state, 'username', 'default')
+            map_manager = MapManager(username)
             fields = map_manager.get_all_fields()
 
             # 检查是否是查询请求

@@ -364,9 +364,9 @@ def register_routes(app: FastAPI):
         } for f in fields]
 
     @app.post("/api/fields")
-    def create_field(data: FieldData):
+    def create_field(data: FieldData, username: str = "default"):
         from core.map_manager import MapManager
-        mgr = MapManager()
+        mgr = MapManager(username)
         mgr.add_field({
             "name": data.name, "coordinates": data.coordinates,
             "soil_type": data.soil_type, "current_crop": data.current_crop,
@@ -374,9 +374,9 @@ def register_routes(app: FastAPI):
         return {"success": True}
 
     @app.delete("/api/fields/{fid}")
-    def delete_field(fid: str):
+    def delete_field(fid: str, username: str = "default"):
         from core.map_manager import MapManager
-        MapManager().delete_field(fid)
+        MapManager(username).delete_field(fid)
         return {"success": True}
 
     # ── 财务管理 ──────────────────────────────────────

@@ -28,7 +28,7 @@ def render_fields_page():
     try:
         # 保留 MapManager 用于地图渲染（folium 本地操作）
         from core.map_manager import MapManager, create_folium_map, extract_polygon_from_map_data
-        map_manager = MapManager()
+        map_manager = MapManager(st.session_state.get("username", "default"))
         fields = map_manager.get_all_fields()
 
         # ---- Existing Fields Overview Map ----

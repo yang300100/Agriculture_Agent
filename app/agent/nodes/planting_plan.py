@@ -131,7 +131,7 @@ def planting_plan_node(state: AgentState) -> AgentState:
                 try:
                     from core.map_manager import MapManager
                     from core.crop_rotation import CropRotationAdvisor
-                    fields = MapManager().get_all_fields()
+                    fields = MapManager(getattr(state, 'username', 'default')).get_all_fields()
                     previous_crop = state.short_term_facts.get("previous_crop", "")
                     rotation_lines = []
 
