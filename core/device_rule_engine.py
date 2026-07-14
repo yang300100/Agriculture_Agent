@@ -484,7 +484,7 @@ class RuleEngine:
             if expr == "weather_forecast_conflict":
                 return context.get("weather_conflict", False)
         except Exception as e:
-            logger.debug("confirm_expr 解析失败: expr=%r, error=%s", expr, e)
+            logger.warning("confirm_expr 解析失败: expr=%r, error=%s", expr, e)
             pass
         return False
 

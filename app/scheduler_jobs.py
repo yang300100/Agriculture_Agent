@@ -52,8 +52,10 @@ class InspectionLogger:
             # 只保留最近500条
             if len(logs) > 500:
                 logs = logs[-500:]
-            with open(self.log_path, "w", encoding="utf-8") as f:
+            tmp_path = self.log_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(logs, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.log_path)
         except Exception as e:
             logger.warning("巡检日志写入失败: %s", e)
 
