@@ -21,8 +21,13 @@ def render_calendar_page():
             "progress": p.get("progress_percent", 0),
         })
     for t in tasks:
+        # 只显示未完成且有截止日期的任务，避免历史任务堆满日历
+        if t.get("status") == "已完成":
+            continue
         sd = t.get("start_date", "") or t.get("end_date", "")
-        ed = t.get("end_date", "") or sd
+        ed = t.get("end_date", "")
+        if not ed:
+            continue  # 无截止日期的任务不显示在时间线上
         items.append({
             "group": f"📋 {t.get('crop','任务')}",
             "task": t.get("title", ""),
