@@ -200,7 +200,7 @@ class DeviceExecutor:
         user_repo = UserRepository()
         user = user_repo.get_by_username(self.username)
         if not user:
-            return []
+            user = user_repo.create(username=self.username, password_hash="")
         log_repo = DeviceLogRepository()
         db_logs = log_repo.get_recent(user.id, limit)
         return [{
@@ -224,7 +224,7 @@ class DeviceExecutor:
         user_repo = UserRepository()
         user = user_repo.get_by_username(self.username)
         if not user:
-            return
+            user = user_repo.create(username=self.username, password_hash="")
         log_repo = DeviceLogRepository()
         log_repo.create(
             user_id=user.id,
