@@ -22,6 +22,12 @@ DL_MODELS_DIR = os.getenv("DL_MODELS_DIR", "models/weights")
 DL_DEVICE = os.getenv("DL_DEVICE", "cpu")
 DL_DEFAULT_MODEL = os.getenv("DL_DEFAULT_MODEL", "")
 
+# 向后兼容的 VISION_* 别名（指向 LLM 配置）
+VISION_MODEL = LLM_MODEL
+VISION_API_KEY = LLM_API_KEY
+VISION_BASE_URL = LLM_BASE_URL
+VISION_TEMPERATURE = LLM_TEMPERATURE
+
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
 FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", "faiss_index")
 AGRICULTURE_FAISS_PATH = os.getenv("AGRICULTURE_FAISS_PATH", "agriculture_faiss_index")
@@ -32,9 +38,13 @@ SHORT_MEMORY_TOP_K = int(os.getenv("SHORT_MEMORY_TOP_K", "5"))
 SUMMARY_TRIGGER_ROUNDS = int(os.getenv("SUMMARY_TRIGGER_ROUNDS", "3"))
 
 # 功能开关
-ENABLE_IMAGE_ANALYSIS = bool(os.getenv("DL_DEFAULT_MODEL", "")) or os.path.exists(
-    os.path.join(os.getenv("DL_MODELS_DIR", "models/weights"), "plant_village_wheat.onnx")
-)
+_ENABLE_IMG_ENV = os.getenv("ENABLE_IMAGE_ANALYSIS", "").lower()
+if _ENABLE_IMG_ENV in ("true", "false"):
+    ENABLE_IMAGE_ANALYSIS = _ENABLE_IMG_ENV == "true"
+else:
+    ENABLE_IMAGE_ANALYSIS = bool(os.getenv("DL_DEFAULT_MODEL", "")) or os.path.exists(
+        os.path.join(os.getenv("DL_MODELS_DIR", "models/weights"), "plant_village_wheat.onnx")
+    )
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
 # Agent 自主权级别: low(全部确认) / medium(规则边界内自动) / high(完全自主跳过确认)

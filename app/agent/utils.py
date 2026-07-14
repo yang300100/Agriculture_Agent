@@ -12,6 +12,16 @@ from .config import SHORT_MEMORY_TOP_K, SUMMARY_PROMPT, LLM_MODEL, LLM_TEMPERATU
 from .state import AgentState
 
 
+def _get_llm(temperature: float = None) -> ChatOpenAI:
+    """获取 LLM 实例（供 image_analysis / crop_monitor 等节点调用）"""
+    return ChatOpenAI(
+        model=LLM_MODEL,
+        temperature=temperature if temperature is not None else LLM_TEMPERATURE,
+        api_key=OPENAI_API_KEY,
+        base_url=OPENAI_BASE_URL,
+    )
+
+
 def trim_short_memory(messages: List[BaseMessage], top_k: int = SHORT_MEMORY_TOP_K) -> List[BaseMessage]:
     """手动修剪短记忆，保留最近 N 轮对话 + 系统消息"""
     if not messages:

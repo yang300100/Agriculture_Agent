@@ -25,9 +25,10 @@ def get_model_registry() -> ModelRegistry:
 def setup_model_registry() -> ModelRegistry:
     """初始化模型注册中心"""
     registry = ModelRegistry()
-    backend_type = os.getenv("DL_BACKEND", "onnx")
-    device = os.getenv("DL_DEVICE", "cpu")
-    models_dir = os.getenv("DL_MODELS_DIR", "models/weights")
+    from app.agent.config import DL_BACKEND, DL_DEVICE, DL_MODELS_DIR
+    backend_type = DL_BACKEND
+    device = DL_DEVICE
+    models_dir = DL_MODELS_DIR
 
     # 注册后端
     if backend_type == "onnx" and ONNX_AVAILABLE:
