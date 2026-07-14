@@ -60,8 +60,36 @@ def _backup_corrupted(path: str):
 
 
 def load_custom_devices(username: str) -> list:
-    """加载用户自定义设备配置"""
+    """加载用户自定义设备配置（优先数据库，JSON兜底）"""
     _validate_username(username)
+    # 优先从数据库加载
+    try:
+        from core.database.repository.devices import DeviceConfigRepository
+        from core.database.repository.users import UserRepository
+        user_repo = UserRepository()
+        user = user_repo.get_by_username(username)
+        if user:
+            repo = DeviceConfigRepository()
+            configs = repo.find_by(user_id=user.id)
+            if configs:
+                result = []
+                for c in configs:
+                    result.append({
+                        "device_id": c.device_id,
+                        "name": c.name,
+                        "driver": c.driver,
+                        "capabilities": json.loads(c.capabilities) if c.capabilities else [],
+                        "sensors": json.loads(c.sensors) if c.sensors else [],
+                        "connection": json.loads(c.connection) if c.connection else {},
+                        "location": c.location or "",
+                        "plot_id": c.plot_id,
+                        "initial_state": json.loads(c.initial_state) if c.initial_state else {},
+                    })
+                return result
+    except Exception as e:
+        logger.debug("数据库加载设备配置失败，回退JSON: %s", e)
+
+    # JSON兜底
     path = os.path.join(DEFAULT_DATA_DIR, username, "custom_devices.json")
     if not os.path.exists(path):
         return []
@@ -95,13 +123,37 @@ def load_custom_devices(username: str) -> list:
 
 
 def save_custom_devices(username: str, devices: list) -> None:
-    """保存用户自定义设备配置（原子写入）"""
+    """保存用户自定义设备配置（双写：数据库 + JSON）"""
     _validate_username(username)
     if not isinstance(devices, list):
         raise TypeError(f"devices 必须是列表类型，收到: {type(devices)}")
+
+    # 写入数据库
+    try:
+        from core.database.repository.devices import DeviceConfigRepository
+        from core.database.repository.users import UserRepository
+        user_repo = UserRepository()
+        user = user_repo.get_by_username(username)
+        if user:
+            repo = DeviceConfigRepository()
+            items = [{
+                "device_id": d.get("device_id", ""),
+                "name": d.get("name", ""),
+                "driver": d.get("driver", "simulator"),
+                "capabilities": json.dumps(d.get("capabilities", []), ensure_ascii=False),
+                "sensors": json.dumps(d.get("sensors", []), ensure_ascii=False),
+                "connection": json.dumps(d.get("connection", {}), ensure_ascii=False),
+                "location": d.get("location", ""),
+                "plot_id": d.get("plot_id"),
+                "initial_state": json.dumps(d.get("initial_state", {}), ensure_ascii=False),
+            } for d in devices]
+            repo.replace_all_for_user(user.id, items)
+    except Exception as e:
+        logger.warning("数据库写入设备配置失败: %s", e)
+
+    # 写入JSON（兜底）
     path = os.path.join(DEFAULT_DATA_DIR, username, "custom_devices.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    # 原子写入：先写临时文件，再重命名
     tmp_path = path + ".tmp"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:

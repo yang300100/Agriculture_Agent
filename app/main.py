@@ -120,6 +120,16 @@ def _restore_session_context():
 
 
 def _load_users():
+    # 优先从数据库加载
+    try:
+        from core.database.repository.users import UserRepository
+        repo = UserRepository()
+        all_users = repo.get_all()
+        if all_users:
+            return {u.username: u.password_hash for u in all_users}
+    except Exception:
+        pass
+    # JSON兜底
     path = os.path.join("data", "users.json")
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
@@ -129,6 +139,19 @@ def _load_users():
     return {}
 
 def _save_users(users):
+    # 写入数据库
+    try:
+        from core.database.engine import init_db
+        from core.database.repository.users import UserRepository
+        init_db()
+        repo = UserRepository()
+        for username, password in users.items():
+            existing = repo.get_by_username(username)
+            if not existing:
+                repo.create(username=username, password_hash=password if isinstance(password, str) else password.get("password", ""))
+    except Exception:
+        pass
+    # JSON兜底
     os.makedirs("data", exist_ok=True)
     with open(os.path.join("data", "users.json"), "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False, indent=2)
