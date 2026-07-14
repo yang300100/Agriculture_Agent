@@ -484,23 +484,78 @@ def render_devices_page():
                             if st.button("⏻ 通电", key=f"power_on_{dev['device_id']}", use_container_width=True):
                                 api(f"/api/devices/{dev['device_id']}/command", method="post",
                                     json_data={"command": "power_on", "params": json.dumps({})})
-                                invalidate_cache("/api/devices")
-                                st.rerun()
+                                invalidate_cache("/api/devices"); st.rerun()
                         elif device_state_status == "error":
                             if st.button("🔄 复位", key=f"reset_{dev['device_id']}", use_container_width=True):
                                 api(f"/api/devices/{dev['device_id']}/command", method="post",
                                     json_data={"command": "reset", "params": json.dumps({})})
-                                invalidate_cache("/api/devices")
-                                st.rerun()
+                                invalidate_cache("/api/devices"); st.rerun()
                         else:
                             if st.button("⏻ 断电", key=f"power_off_{dev['device_id']}", use_container_width=True):
                                 api(f"/api/devices/{dev['device_id']}/command", method="post",
                                     json_data={"command": "power_off", "params": json.dumps({})})
-                                invalidate_cache("/api/devices")
-                                st.rerun()
-                            if result and result.get("success"):
-                                invalidate_cache("/api/devices")
-                                st.rerun()
+                                invalidate_cache("/api/devices"); st.rerun()
+
+                    # ── 参数化操作（待机状态下可用）──
+                    if device_state_status == "standby":
+                        if "irrigate" in caps:
+                            c_dur, c_btn = st.columns([2, 1])
+                            with c_dur:
+                                dur = st.number_input("灌溉时长(分)", 1, 120, 30, key=f"irr_dur_{dev['device_id']}", label_visibility="collapsed")
+                            with c_btn:
+                                if st.button("💧 浇水", key=f"irr_btn_{dev['device_id']}", use_container_width=True):
+                                    api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                        json_data={"command": "start", "params": json.dumps({"duration": dur})})
+                                    invalidate_cache("/api/devices"); st.rerun()
+                        if "fertigate" in caps:
+                            c_amt, c_btn = st.columns([2, 1])
+                            with c_amt:
+                                amt = st.number_input("施肥量(kg)", 1, 50, 5, key=f"fert_amt_{dev['device_id']}", label_visibility="collapsed")
+                            with c_btn:
+                                if st.button("🌱 施肥", key=f"fert_btn_{dev['device_id']}", use_container_width=True):
+                                    api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                        json_data={"command": "start", "params": json.dumps({"amount_kg": amt})})
+                                    invalidate_cache("/api/devices"); st.rerun()
+                        if "ventilate" in caps:
+                            c_spd, c_btn = st.columns([2, 1])
+                            with c_spd:
+                                spd = st.slider("转速(%)", 10, 100, 60, key=f"vent_spd_{dev['device_id']}", label_visibility="collapsed")
+                            with c_btn:
+                                if st.button("🌀 通风", key=f"vent_btn_{dev['device_id']}", use_container_width=True):
+                                    api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                        json_data={"command": "start", "params": json.dumps({"speed_percent": spd})})
+                                    invalidate_cache("/api/devices"); st.rerun()
+                        if "light" in caps:
+                            c_bri, c_btn = st.columns([2, 1])
+                            with c_bri:
+                                bri = st.slider("亮度(%)", 10, 100, 80, key=f"light_bri_{dev['device_id']}", label_visibility="collapsed")
+                            with c_btn:
+                                if st.button("💡 补光", key=f"light_btn_{dev['device_id']}", use_container_width=True):
+                                    api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                        json_data={"command": "start", "params": json.dumps({"brightness_percent": bri})})
+                                    invalidate_cache("/api/devices"); st.rerun()
+                        if "heat" in caps:
+                            c_tmp, c_btn = st.columns([2, 1])
+                            with c_tmp:
+                                tmp = st.slider("目标温度(°C)", 10, 40, 25, key=f"heat_tmp_{dev['device_id']}", label_visibility="collapsed")
+                            with c_btn:
+                                if st.button("🔥 加热", key=f"heat_btn_{dev['device_id']}", use_container_width=True):
+                                    api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                        json_data={"command": "start", "params": json.dumps({"target_temp": tmp})})
+                                    invalidate_cache("/api/devices"); st.rerun()
+                        # 通用启动按钮（非特定能力设备）
+                        if not any(c in caps for c in ["irrigate", "fertigate", "ventilate", "light", "heat"]):
+                            if st.button("▶️ 启动", key=f"start_{dev['device_id']}", use_container_width=True):
+                                api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                    json_data={"command": "start", "params": json.dumps({})})
+                                invalidate_cache("/api/devices"); st.rerun()
+
+                    # ── 运行中：停止按钮 ──
+                    if device_state_status == "running":
+                        if st.button("⏹️ 停止", key=f"stop_{dev['device_id']}", use_container_width=True):
+                            api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                json_data={"command": "stop", "params": json.dumps({})})
+                            invalidate_cache("/api/devices"); st.rerun()
 
     st.divider()
 
