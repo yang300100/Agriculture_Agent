@@ -8,56 +8,27 @@ from core.database.engine import init_db, Session
 from core.database.models import DeviceConfig, User
 
 DEVICES = [
-    # ── HTTP 协议 ──
-    {
-        "device_id": "irrigation_pump_01", "name": "温室灌溉泵",
-        "driver": "http", "capabilities": ["irrigate"], "sensors": ["flow_rate"],
-        "connection": {"base_url": "http://127.0.0.1:5000"},
-        "location": "温室A区-灌溉区",
-    },
-    {
-        "device_id": "grow_light_01", "name": "温室补光灯",
-        "driver": "http", "capabilities": ["light"], "sensors": ["light_lux", "brightness_percent"],
-        "connection": {"base_url": "http://127.0.0.1:5001"},
-        "location": "温室A区-种植区",
-    },
-    {
-        "device_id": "fertilizer_pump_01", "name": "施肥一体机",
-        "driver": "http", "capabilities": ["fertigate"], "sensors": ["flow_rate"],
-        "connection": {"base_url": "http://127.0.0.1:5002"},
-        "location": "温室A区-灌溉区",
-    },
-    # ── MQTT 协议 ──
-    {
-        "device_id": "ventilation_fan_01", "name": "温室通风扇",
-        "driver": "mqtt", "capabilities": ["ventilate"], "sensors": ["rpm", "temperature"],
-        "connection": {"host": "localhost", "port": 1883,
-                       "control_topic": "devices/ventilation_fan_01/control",
-                       "state_topic": "devices/ventilation_fan_01/state"},
-        "location": "温室A区-通风区",
-    },
-    {
-        "device_id": "heater_01", "name": "温室加热器",
-        "driver": "mqtt", "capabilities": ["heat"], "sensors": ["temperature", "target_temp"],
-        "connection": {"host": "localhost", "port": 1883,
-                       "control_topic": "devices/heater_01/control",
-                       "state_topic": "devices/heater_01/state"},
-        "location": "温室A区-种植区",
-    },
-    # ── Modbus 协议 ──
-    {
-        "device_id": "env_sensor_01", "name": "环境温湿度传感器",
-        "driver": "modbus", "capabilities": ["read_sensor"],
-        "sensors": ["temperature", "humidity", "soil_moisture", "co2_ppm"],
-        "connection": {"mode": "tcp", "host": "127.0.0.1", "port": 5020, "slave_id": 1},
-        "location": "温室A区-中心",
-    },
-    {
-        "device_id": "greenhouse_camera_01", "name": "温室监控摄像头",
-        "driver": "modbus", "capabilities": ["capture"], "sensors": [],
-        "connection": {"mode": "tcp", "host": "127.0.0.1", "port": 5020, "slave_id": 2},
-        "location": "温室A区-入口",
-    },
+    {"device_id": "irrigation_pump_01", "name": "温室灌溉泵", "driver": "http",
+     "capabilities": ["irrigate"], "sensors": ["flow_rate"],
+     "connection": {"base_url": "http://127.0.0.1:5000"}, "location": "温室A区-灌溉区"},
+    {"device_id": "ventilation_fan_01", "name": "温室通风扇", "driver": "http",
+     "capabilities": ["ventilate"], "sensors": ["rpm"],
+     "connection": {"base_url": "http://127.0.0.1:5000"}, "location": "温室A区-通风区"},
+    {"device_id": "grow_light_01", "name": "温室补光灯", "driver": "http",
+     "capabilities": ["light"], "sensors": ["light_lux", "brightness_percent"],
+     "connection": {"base_url": "http://127.0.0.1:5000"}, "location": "温室A区-种植区"},
+    {"device_id": "heater_01", "name": "温室加热器", "driver": "http",
+     "capabilities": ["heat"], "sensors": ["temperature"],
+     "connection": {"base_url": "http://127.0.0.1:5000"}, "location": "温室A区-种植区"},
+    {"device_id": "env_sensor_01", "name": "环境温湿度传感器", "driver": "http",
+     "capabilities": ["read_sensor"], "sensors": ["temperature", "humidity", "soil_moisture", "co2_ppm"],
+     "connection": {"base_url": "http://127.0.0.1:5000"}, "location": "温室A区-中心"},
+    {"device_id": "fertilizer_pump_01", "name": "施肥一体机", "driver": "http",
+     "capabilities": ["fertigate"], "sensors": ["flow_rate"],
+     "connection": {"base_url": "http://127.0.0.1:5000"}, "location": "温室A区-灌溉区"},
+    {"device_id": "greenhouse_camera_01", "name": "温室监控摄像头", "driver": "http",
+     "capabilities": ["capture"], "sensors": [],
+     "connection": {"base_url": "http://127.0.0.1:5000"}, "location": "温室A区-入口"},
 ]
 
 

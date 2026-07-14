@@ -289,6 +289,69 @@ def health():
     return jsonify({"status": "ok", "devices": len(_devices)})
 
 
+# ── 实时控制面板 ────────────────────────────
+
+@app.route("/", methods=["GET"])
+def dashboard():
+    """Web 控制面板"""
+    rows = []
+    with _lock:
+        for dev_id in sorted(_devices.keys()):
+            dev = _devices[dev_id]
+            state = dev["state"]
+            sensors = {k: v for k, v in state.items()
+                      if k not in ("power", "status", "_read_at", "_simulator", "last_duration")
+                      and isinstance(v, (int, float))}
+            rows.append({"id": dev_id, "name": dev["info"]["name"],
+                         "status": state.get("status", "?"), "power": state.get("power", False),
+                         "sensors": sensors})
+
+    html = """<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>模拟器控制面板</title><meta name="viewport" content="width=device-width,initial-scale=1">
+    <style>
+      body{font-family:system-ui;max-width:900px;margin:16px auto;padding:0 12px;background:#f0f2f5}
+      h1{color:#1a1a2e} .card{background:#fff;border-radius:10px;padding:14px;margin:10px 0;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+      .card h2{margin:0 0 6px;font-size:17px}
+      .s{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:bold;color:#fff}
+      .powered_off{background:#95a5a6} .standby{background:#f39c12} .running{background:#27ae60} .error{background:#e74c3c}
+      .sensors{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0}
+      .sn{background:#e8edf2;padding:3px 9px;border-radius:5px;font-size:12px}
+      .sn b{color:#2c3e50} button{padding:5px 12px;margin:2px;border:none;border-radius:5px;cursor:pointer;font-size:12px;color:#fff}
+      .b-on{background:#27ae60} .b-off{background:#e74c3c} .b-start{background:#2980b9}
+      .b-stop{background:#f39c12} .b-reset{background:#95a5a6} .b-err{background:#c0392b}
+      button:hover{opacity:.85} .rf{color:#999;font-size:11px;margin-top:16px}
+      input{padding:4px;border:1px solid #ddd;border-radius:4px;font-size:12px;width:70px}
+    </style></head><body>
+    <h1>🔧 硬件模拟器</h1><p>Agent 通过 HTTP 协议与此模拟器通信。下方可实时操控设备状态。</p>"""
+
+    for d in rows:
+        sensors_html = "".join(f'<span class="sn">{k}: <b>{v}</b></span>' for k, v in d["sensors"].items())
+        html += f"""<div class="card">
+          <h3>{d['name']} <span class="s {d['status']}">{d['status']}</span></h3>
+          <div style="color:#888;font-size:12px">{d['id']} | {'🟢 通电' if d['power'] else '🔴 断电'}</div>
+          <div class="sensors">{sensors_html or '<span class="sn">无传感器</span>'}</div>
+          <div style="margin-top:8px">
+            <button class="b-on" onclick="act('{d['id']}','power_on')">通电</button>
+            <button class="b-off" onclick="act('{d['id']}','power_off')">断电</button>
+            <button class="b-start" onclick="act('{d['id']}','start')">启动</button>
+            <button class="b-stop" onclick="act('{d['id']}','stop')">停止</button>
+            <button class="b-reset" onclick="act('{d['id']}','reset')">复位</button>
+            <button class="b-err" onclick="act('{d['id']}','sim_error')">故障</button>
+          </div>
+          <div style="margin-top:6px;font-size:12px">
+            传感器: <input id="k_{d['id']}" placeholder="字段名">
+            <input id="v_{d['id']}" placeholder="值">
+            <button class="b-start" onclick="setSensor('{d['id']}')">设置</button>
+          </div></div>"""
+
+    html += """<script>
+      async function act(id,cmd){await fetch('/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:id,command:cmd,params:{}})});setTimeout(()=>location.reload(),200)}
+      async function setSensor(id){let k=document.getElementById('k_'+id).value,v=document.getElementById('v_'+id).value;if(!k)return;await fetch('/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:id,command:'set_param',params:{[k]:parseFloat(v)||v}})});setTimeout(()=>location.reload(),200)}
+    </script><p class="rf">每3秒自动刷新 | <a href="/">手动刷新</a></p>
+    <script>setTimeout(()=>location.reload(),3000)</script></body></html>"""
+    return html
+
+
 # ── 启动 ──────────────────────────────────────
 
 if __name__ == "__main__":
