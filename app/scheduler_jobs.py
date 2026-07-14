@@ -383,7 +383,7 @@ def check_task_execution_job():
                             tracker.update_task_status(task.id, "待办", progress=0)
                             logger.warning("自动执行任务失败: %s → %s", task.title, task.device_id)
                     finally:
-                        close_registry(loop)
+                        close_registry(loop, registry)
                 except Exception as e:
                     logger.warning("自动执行任务异常: %s → %s", task.title, e)
                     tracker.update_task_status(task.id, "待办", progress=0)
@@ -546,7 +546,7 @@ def check_camera_capture_job():
                         _log_inspection(username, "摄像头巡检", "failed",
                                         f"异常: {e}", device_id=cam.device_id)
             finally:
-                close_registry(loop)
+                close_registry(loop, registry)
 
         elapsed = int((_time.time() - job_start) * 1000)
         _log_inspection("system", "摄像头巡检", "success",
@@ -724,7 +724,7 @@ def check_autonomous_cycle_job():
                         else:
                             regions = sorted(all_regions)
                     finally:
-                        close_registry(loop)
+                        close_registry(loop, registry)
             except Exception as e:
                 logger.warning("区域发现失败 [%s]: %s", username, e)
                 continue

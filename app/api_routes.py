@@ -680,7 +680,7 @@ def register_routes(app: FastAPI):
                     regions = set(getattr(d, 'location', '') or '默认区域' for d in devices)
                     region = sorted(regions)[0] if regions else None
                 finally:
-                    close_registry(loop)
+                    close_registry(loop, registry)
 
             if not region:
                 return {"success": False, "error": "未发现可用区域"}
@@ -1098,7 +1098,7 @@ def register_routes(app: FastAPI):
                 result = executor.confirm_pending(action_id)
                 return result
             finally:
-                close_registry(loop)
+                close_registry(loop, registry)
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1113,7 +1113,7 @@ def register_routes(app: FastAPI):
                 ok = executor.reject_pending(action_id)
                 return {"success": ok}
             finally:
-                close_registry(loop)
+                close_registry(loop, registry)
         except Exception as e:
             return {"success": False, "error": str(e)}
 
