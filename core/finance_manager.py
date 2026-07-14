@@ -118,6 +118,10 @@ class FinanceStorage:
     def _sync_to_db(self, records: List[Dict], record_type: str):
         from core.database.repository.finance import FinanceRepository
         repo = FinanceRepository()
+        # 先删除该类型的旧记录，再插入新记录
+        uid = self._get_user_id()
+        for old in repo.find_by(user_id=uid, record_type=record_type):
+            repo.delete(old.id)
         items = [{
             "date": r.get("date", ""),
             "crop": r.get("crop", ""),
@@ -132,7 +136,8 @@ class FinanceStorage:
             "buyer": r.get("buyer", ""),
             "notes": r.get("notes", ""),
         } for r in records]
-        repo.replace_all_for_user(self._get_user_id(), items)
+        for item in items:
+            repo.create(user_id=uid, **item)
 
     def _load_from_db(self, record_type: str) -> List[Dict]:
         from core.database.repository.finance import FinanceRepository
@@ -153,7 +158,7 @@ class FinanceStorage:
             "total_amount": r.total_amount,
             "buyer": r.buyer,
             "notes": r.notes,
-            "created_at": r.created_at.isoformat() if r.created_at else "",
+            "created_at": r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else "",
         } for r in db_records]
 
 

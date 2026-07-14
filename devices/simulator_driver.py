@@ -294,6 +294,15 @@ class SimulatorDriver(BaseDeviceDriver):
                            initial_state: Optional[Dict] = None) -> None:
         if initial_state is None:
             initial_state = {"power": False, "status": "powered_off"}
+        # 初始化传感器默认值
+        sensor_defaults = {
+            "temperature": 22.0, "humidity": 65.0, "soil_moisture": 45.0,
+            "ph": 7.0, "light_lux": 5000.0, "co2_ppm": 400.0,
+            "wind_speed": 1.5, "flow_rate": 0.0, "pressure": 101.3,
+        }
+        for s in (sensors or []):
+            if s in sensor_defaults and s not in initial_state:
+                initial_state[s] = sensor_defaults[s]
         self._devices[device_id] = {
             "info": {
                 "device_id": device_id,

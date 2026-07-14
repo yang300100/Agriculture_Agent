@@ -6,7 +6,12 @@ from sqlalchemy.orm import sessionmaker, Session as SASession
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "agriculture.db")
 DB_URL = f"sqlite:///{os.path.abspath(DB_PATH)}"
 
-_engine = create_engine(DB_URL, echo=False, connect_args={"check_same_thread": False})
+_engine = create_engine(
+    DB_URL, echo=False,
+    connect_args={"check_same_thread": False},
+    pool_size=20, max_overflow=30,
+    pool_pre_ping=True,
+)
 Session = sessionmaker(bind=_engine)
 
 
