@@ -1,4 +1,4 @@
-"""作物监测 Agent — 定时拍摄 + Vision 模型分析 + 自主决策执行
+"""作物监测 Agent — 本地DL模型分类 + LLM增强 + 自主决策执行
 
 独立于用户对话流程，为定时任务提供 analyze_image() 接口。
 也可通过 intent="crop_monitoring" 响应用户聊天请求。
@@ -8,63 +8,44 @@ import json
 import logging
 import os
 import re
-import requests
 from typing import Dict, Any, Optional, List
 
 from .base import BaseAgent
 from ..state import AgentState
 from ..config import (
-    VISION_MODEL, VISION_API_KEY, VISION_BASE_URL, VISION_TEMPERATURE,
     LLM_MODEL, LLM_API_KEY, LLM_BASE_URL, LLM_TEMPERATURE,
+    DL_DEFAULT_MODEL, ENABLE_IMAGE_ANALYSIS,
 )
 
-VISION_MAX_TOKENS = int(os.getenv("VISION_MAX_TOKENS", "4096"))
 logger = logging.getLogger(__name__)
 
-# ── 作物监测专用 Prompt ─────────────────────────
+# ── 本地DL模型 + LLM增强 Prompt ─────────────────
 
-MONITOR_PROMPT = """你是农业作物健康监测专家，正在分析一张来自农田摄像头的定期巡检照片。
+LLM_ENHANCE_PROMPT = """你是农业作物健康监测专家。根据图像识别结果，请生成完整的作物健康评估。
 
-请仔细观察画面中的作物，返回以下 JSON：
+识别结果: {dl_result}
 
-{
-    "crop_type": "作物名称（识别不出的写 unknown）",
+请返回以下 JSON：
+{{
+    "crop_type": "作物名称",
     "growth_stage": "seedling/vegetative/flowering/fruiting/mature/unknown",
-    "health_assessment": {
+    "health_assessment": {{
         "overall": "excellent/good/fair/poor",
         "nutrient_status": "adequate/deficient-N/deficient-P/deficient-K/unknown",
         "water_status": "adequate/drought-stressed/overwatered/unknown",
         "pest_presence": "none/suspected/confirmed",
-        "pest_detail": "害虫名称（无则留空）",
+        "pest_detail": "",
         "disease_presence": "none/suspected/confirmed",
-        "disease_detail": "病害名称（无则留空）"
-    },
-    "issues_found": [
-        {
-            "type": "nutrient/pest/disease/water/other",
-            "name": "具体问题名称",
-            "severity": "mild/moderate/severe",
-            "confidence": 0.85,
-            "description": "中文症状描述"
-        }
-    ],
-    "recommended_actions": [
-        {
-            "action": "irrigate/fertigate/alert/none",
-            "urgency": "immediate/today/this_week/routine",
-            "detail": "具体操作说明（中文）"
-        }
-    ],
-    "summary": "一段中文总结，描述当前作物状况和关键发现"
-}
+        "disease_detail": ""
+    }},
+    "issues_found": [],
+    "recommended_actions": [],
+    "summary": "一段中文总结"
+}}
 
 规则：
-- 如果叶片发黄、老叶先黄 → nutrient_status 为 deficient-N，推荐 fertilize
-- 如果叶片萎蔫、土壤干裂 → water_status 为 drought-stressed，推荐 irrigate
-- 如果看到虫洞、虫粪、成虫 → pest_presence 为 confirmed，推荐 alert
-- 如果叶片有斑点、白粉、霉层 → disease_presence 为 confirmed，推荐 alert
-- 如果画面中无作物或无法判断 → recommended_actions 为空数组，summary 注明
-- urgency: 严重→immediate，中等→today，轻微→this_week，无问题→routine"""
+- 如果识别到病害 → disease_presence=confirmed，recommended_actions包含alert
+- urgency: severe→immediate, moderate→today, mild→this_week, 健康→routine"""
 
 
 class CropMonitorAgent(BaseAgent):
@@ -111,7 +92,7 @@ class CropMonitorAgent(BaseAgent):
                 if loc:
                     extra += f"\n拍摄位置: {loc}。"
 
-            result = self._call_vision_api(image_base64, mime_type, extra)
+            result = self._call_dl_model(image_base64, mime_type, extra)
             return {"success": True, "analysis": result}
 
         except Exception as e:
@@ -136,17 +117,16 @@ class CropMonitorAgent(BaseAgent):
             state.final_answer = "📷 请上传一张农作物照片，我来帮你分析。"
             return state
 
-        if not os.getenv("VISION_MODEL"):
+        if not ENABLE_IMAGE_ANALYSIS:
             state.final_answer = (
-                "⚠️ 图片分析未启用。\n\n"
-                f"当前 LLM_MODEL={LLM_MODEL} 可能不支持图片。\n"
-                "请在 .env 中配置 VISION_MODEL 为支持多模态的模型。"
+                "图片分析未启用。\n\n"
+                "请在 .env 中配置 DL_DEFAULT_MODEL 或将模型权重放入 models/weights/。"
             )
             return state
 
         try:
             extra = state.user_question or "请分析这张农作物监测照片"
-            result = self._call_vision_api(state.image_data, state.image_mime_type or "image/jpeg", extra)
+            result = self._call_dl_model(state.image_data, state.image_mime_type or "image/jpeg", extra)
             state.image_analysis_result = result
             state.final_answer = self._format_result(result)
             state.image_data = None
@@ -159,50 +139,68 @@ class CropMonitorAgent(BaseAgent):
 
     # ── Vision API 调用 ──────────────────────────
 
-    def _call_vision_api(self, image_base64: str, mime_type: str,
-                         extra_text: str = "") -> Dict:
-        """调用 Vision 模型分析图片（复用 image_analysis.py 模式）"""
-        url = f"{VISION_BASE_URL}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {VISION_API_KEY}",
-            "Content-Type": "application/json",
-        }
+    def _call_dl_model(self, image_base64: str, mime_type: str,
+                       extra_text: str = "") -> Dict:
+        """使用本地DL模型分类 + LLM增强生成完整评估"""
+        import base64
+        from core.model_registry_factory import get_model_registry
+        from core.model_executor import ModelExecutor
+        from models.base import ModelInput
 
-        prompt_text = MONITOR_PROMPT
+        # Step 1: 本地DL模型分类
+        registry = get_model_registry()
+        executor = ModelExecutor(registry)
+
+        model_id = DL_DEFAULT_MODEL
+        if not model_id:
+            models = registry.list_models()
+            if not models:
+                raise Exception("没有可用的DL模型")
+            model_id = models[0].model_id
+
+        image_bytes = base64.b64decode(image_base64)
+        model_input = ModelInput(image_bytes=image_bytes, top_k=3)
+        result = executor.infer_sync(model_id, model_input)
+
+        if not result.success:
+            raise Exception(f"模型推理失败: {result.error_code}")
+
+        # Step 2: LLM根据分类结果生成结构化健康评估
+        dl_text = ", ".join(
+            f"{p.class_name}({p.confidence:.2f})"
+            for p in result.predictions[:3]
+        )
         if extra_text:
-            prompt_text = MONITOR_PROMPT + "\n" + extra_text
+            dl_text += "\n" + extra_text
 
-        payload = {
-            "model": VISION_MODEL,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt_text},
-                    {"type": "image_url", "image_url": {
-                        "url": f"data:{mime_type};base64,{image_base64}"}},
-                ],
-            }],
-            "max_tokens": VISION_MAX_TOKENS,
-            "temperature": VISION_TEMPERATURE,
-        }
+        llm_result = self._invoke_llm_structured(dl_text)
+        llm_result["dl_predictions"] = [
+            {"class_name": p.class_name, "confidence": round(p.confidence, 4)}
+            for p in result.predictions
+        ]
+        llm_result["inference_time_ms"] = result.inference_time_ms
+        return llm_result
 
-        resp = requests.post(url, headers=headers, json=payload, timeout=180)
-        if resp.status_code != 200:
-            raise Exception(f"Vision API {resp.status_code}: {resp.text[:300]}")
-
+    def _invoke_llm_structured(self, dl_result_text: str) -> Dict:
+        """调用LLM生成结构化健康评估"""
         try:
-            body = resp.json()
-            content = body["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, json.JSONDecodeError) as e:
-            logger.warning("Vision API 响应解析失败: %s", e)
-            raise Exception(f"Vision API 返回格式异常: {resp.text[:200]}")
+            from ..utils import _get_llm
+            prompt = LLM_ENHANCE_PROMPT.format(dl_result=dl_result_text)
+            llm = _get_llm()
+            response = llm.invoke(prompt)
+            cont = response.content if hasattr(response, 'content') else str(response)
+            return self._parse_json(cont)
+        except Exception as e:
+            logger.warning("LLM结构化生成失败: %s", e)
+            return {
+                "crop_type": "unknown", "growth_stage": "unknown",
+                "health_assessment": {"overall": "unknown"},
+                "issues_found": [],
+                "recommended_actions": [],
+                "summary": f"DL识别: {dl_result_text}",
+            }
 
-        if not content or not content.strip():
-            raise Exception("Vision API 返回了空内容")
-
-        return self._parse_json(content)
-
-    # ── JSON 解析（复用 image_analysis.py 逻辑）──
+    # ── JSON 解析ysis.py 逻辑）──
 
     def _parse_json(self, content: str) -> dict:
         """从 LLM 响应中提取 JSON，支持截断恢复"""
