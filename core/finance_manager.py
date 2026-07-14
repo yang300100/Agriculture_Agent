@@ -107,7 +107,13 @@ class FinanceStorage:
                     json.dump([], f)
 
     def load_costs(self) -> List[Dict]:
-        """加载所有成本记录"""
+        """加载所有成本记录（优先DB）"""
+        try:
+            db_result = self._load_from_db("cost")
+            if db_result is not None:
+                return db_result
+        except Exception:
+            pass
         try:
             with open(self.costs_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -115,13 +121,29 @@ class FinanceStorage:
             print(f"加载成本记录失败: {e}")
             return []
 
+    def _get_username(self) -> str:
+        """从存储目录提取用户名"""
+        return os.path.basename(self.storage_dir.rstrip("/\\"))
+
     def save_costs(self, costs: List[Dict]):
-        """保存成本记录"""
+        """保存成本记录（双写DB+JSON）"""
+        # JSON写入
         with open(self.costs_file, 'w', encoding='utf-8') as f:
             json.dump(costs, f, ensure_ascii=False, indent=2)
+        # DB写入
+        try:
+            self._sync_to_db(costs, "cost")
+        except Exception:
+            pass
 
     def load_income(self) -> List[Dict]:
-        """加载所有收入记录"""
+        """加载所有收入记录（优先DB）"""
+        try:
+            db_result = self._load_from_db("income")
+            if db_result is not None:
+                return db_result
+        except Exception:
+            pass
         try:
             with open(self.income_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -130,9 +152,66 @@ class FinanceStorage:
             return []
 
     def save_income(self, income: List[Dict]):
-        """保存收入记录"""
+        """保存收入记录（双写DB+JSON）"""
         with open(self.income_file, 'w', encoding='utf-8') as f:
             json.dump(income, f, ensure_ascii=False, indent=2)
+        try:
+            self._sync_to_db(income, "income")
+        except Exception:
+            pass
+
+    def _sync_to_db(self, records: List[Dict], record_type: str):
+        """同步记录到数据库"""
+        from core.database.repository.finance import FinanceRepository
+        from core.database.repository.users import UserRepository
+        user_repo = UserRepository()
+        user = user_repo.get_by_username(self._get_username())
+        if not user:
+            return
+        repo = FinanceRepository()
+        items = [{
+            "date": r.get("date", ""),
+            "crop": r.get("crop", ""),
+            "plot": r.get("plot", ""),
+            "record_type": record_type,
+            "category": r.get("cost_type") or r.get("income_type", ""),
+            "item_name": r.get("item_name", ""),
+            "quantity": r.get("quantity"),
+            "unit": r.get("unit", ""),
+            "unit_price": r.get("unit_price"),
+            "total_amount": r.get("total_amount", 0),
+            "buyer": r.get("buyer", ""),
+            "notes": r.get("notes", ""),
+        } for r in records]
+        repo.replace_all_for_user(user.id, items)
+
+    def _load_from_db(self, record_type: str):
+        """从数据库加载记录"""
+        from core.database.repository.finance import FinanceRepository
+        from core.database.repository.users import UserRepository
+        user_repo = UserRepository()
+        user = user_repo.get_by_username(self._get_username())
+        if not user:
+            return None
+        repo = FinanceRepository()
+        db_records = repo.find_by(user_id=user.id, record_type=record_type)
+        if not db_records:
+            return None
+        return [{
+            "id": r.id,
+            "date": r.date.isoformat() if r.date else "",
+            "crop": r.crop,
+            "plot": r.plot,
+            "cost_type" if record_type == "cost" else "income_type": r.category,
+            "item_name": r.item_name,
+            "quantity": r.quantity,
+            "unit": r.unit,
+            "unit_price": r.unit_price,
+            "total_amount": r.total_amount,
+            "buyer": r.buyer,
+            "notes": r.notes,
+            "created_at": r.created_at.isoformat() if r.created_at else "",
+        } for r in db_records]
 
 
 class FinanceManager:
