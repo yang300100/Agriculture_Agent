@@ -13,11 +13,18 @@ LLM_ENHANCE_PROMPT = """你是一位农业病虫害诊断专家。根据图像�
 - 病害/问题：{class_name}
 - 置信度：{confidence}
 
-请提供：
-1. 该病害/虫害的详细描述和典型症状
-2. 具体防治方法和用药建议
-3. 预防措施和后续管理
-4. 对当前作物生长阶段的影响评估"""
+请以 JSON 格式返回（只输出 JSON，不要额外解释）：
+{{
+    "crop_type": "识别到的作物类型（如 小麦/番茄/水稻/未知）",
+    "growth_stage": "作物生长阶段（如 苗期/生长期/开花期/成熟期/未知）",
+    "severity": "严重程度（轻微/中等/严重）",
+    "overall_health": "整体健康评估（良好/一般/较差）",
+    "description": "该病害/虫害的详细描述和典型症状（100字内）",
+    "recommendations": ["防治建议1", "防治建议2", "防治建议3"],
+    "urgency": "紧急程度（立即处理/近期处理/持续观察）",
+    "linked_action": "建议的设备操作（irrigate/ventilate/heat/shade/none）",
+    "linked_params": {{"duration": 建议持续分钟数}}
+}}"""
 
 
 def image_analysis_node(state: AgentState) -> AgentState:
@@ -87,29 +94,54 @@ def _call_dl_model(state: AgentState) -> dict:
         "recommendations": enhanced.get("recommendations", []),
         "urgency": enhanced.get("urgency", "近期处理"),
         "llm_advice": enhanced.get("advice", ""),
+        # 硬件联动字段：图像识别结果可触发设备操作
+        "linked_action": enhanced.get("linked_action", "none"),
+        "linked_params": enhanced.get("linked_params", {}),
     }
 
 
 def _invoke_llm_enhance(class_name: str, confidence: float, state: AgentState) -> dict:
-    """调用LLM根据分类结果生成防治建议"""
+    """调用LLM根据分类结果生成防治建议，解析结构化JSON"""
     from ..utils import _get_llm
     try:
         prompt = LLM_ENHANCE_PROMPT.format(class_name=class_name, confidence=confidence)
         llm = _get_llm()
         response = llm.invoke(prompt)
         text = response.content if hasattr(response, "content") else str(response)
-        # 尝试从LLM回答中提取结构化信息
+        # 使用 _parse() 从 LLM 响应中提取结构化 JSON
+        parsed = _parse(text)
+        if parsed.get("error"):
+            logger.warning("LLM增强JSON解析失败，使用原始文本: %s", parsed["error"])
+            return {
+                "advice": text,
+                "description": "",
+                "severity": "中等",
+                "overall_health": "一般",
+                "recommendations": [],
+                "urgency": "近期处理",
+                "linked_action": "none",
+                "linked_params": {},
+            }
         return {
             "advice": text,
-            "description": "",
-            "severity": "中等",
-            "overall_health": "一般",
-            "recommendations": [],
-            "urgency": "近期处理",
+            "crop_type": parsed.get("crop_type", ""),
+            "growth_stage": parsed.get("growth_stage", ""),
+            "severity": parsed.get("severity", "中等"),
+            "overall_health": parsed.get("overall_health", "一般"),
+            "description": parsed.get("description", ""),
+            "recommendations": parsed.get("recommendations", []),
+            "urgency": parsed.get("urgency", "近期处理"),
+            "linked_action": parsed.get("linked_action", "none"),
+            "linked_params": parsed.get("linked_params", {}),
         }
     except Exception as e:
         logger.warning("LLM增强失败: %s", e)
-        return {"advice": f"模型识别为: {class_name}（置信度: {confidence}）"}
+        return {
+            "advice": f"模型识别为: {class_name}（置信度: {confidence}）",
+            "severity": "中等", "overall_health": "一般",
+            "recommendations": [], "urgency": "近期处理",
+            "linked_action": "none", "linked_params": {},
+        }
 
 
 def image_analysis_answer_node(state: AgentState) -> AgentState:
@@ -148,6 +180,26 @@ def image_analysis_answer_node(state: AgentState) -> AgentState:
 
     if a.get("error"):
         parts.append(f"\n⚠️ **分析出错**: {a['error']}")
+
+    # ── 硬件联动：将图像识别触发的设备操作写入 state ──
+    linked_action = a.get("linked_action", "none")
+    linked_params = a.get("linked_params", {})
+    if linked_action and linked_action != "none":
+        action_labels = {
+            "irrigate": "灌溉", "ventilate": "通风", "heat": "加热",
+            "shade": "遮阳", "light": "补光",
+        }
+        action_label = action_labels.get(linked_action, linked_action)
+        parts.append(f"\n🔧 **建议设备操作**: {action_label}（参数: {linked_params}）")
+        # 存入 pending_action，由 orchestrator 路由到 DeviceAgent 自动执行
+        state.pending_action = {
+            "device_id": "",   # 由 DeviceAgent 动态发现匹配设备
+            "command": "start",
+            "params": linked_params,
+            "reason": f"图像识别联动: {a.get('detected_issues', [{}])[0].get('name', '未知病害')}",
+            "source": "image_analysis",
+            "linked_action": linked_action,
+        }
 
     state.final_answer = "\n".join(parts) if parts else "图片分析未产生结果。"
     state.image_data = None

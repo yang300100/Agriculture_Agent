@@ -242,7 +242,11 @@ def setup_registry(username: str = "default", loop=None):
                 if mode == "tcp":
                     host = conn.get("host", "127.0.0.1")
                     raw_port = conn.get("port", 502)
-                    port = f"{host}:{raw_port}"
+                    # IPv6 地址需要用方括号包裹: [::1]:502
+                    if ":" in host and not host.startswith("["):
+                        port = f"[{host}]:{raw_port}"
+                    else:
+                        port = f"{host}:{raw_port}"
                 else:
                     port = str(conn.get("port", "/dev/ttyUSB0"))
                 if port not in port_groups:

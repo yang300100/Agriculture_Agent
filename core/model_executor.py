@@ -42,7 +42,7 @@ class ModelExecutor:
         return last_result or ModelOutput.error(model_id, "MAX_RETRIES_EXCEEDED")
 
     def infer_sync(self, model_id: str, model_input: ModelInput) -> ModelOutput:
-        """同步推理桥接"""
+        """同步推理桥接 — 自动处理运行中的事件循环（如 Streamlit 环境）"""
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
@@ -52,4 +52,15 @@ class ModelExecutor:
                 return loop.run_until_complete(self.infer(model_id, model_input))
             finally:
                 loop.close()
-        return loop.run_until_complete(self.infer(model_id, model_input))
+
+        # 检查事件循环是否正在运行（如 Streamlit 的 asyncio 上下文中）
+        if loop.is_running():
+            # 在独立线程中创建新事件循环来执行异步推理
+            import concurrent.futures
+            def _run_in_new_loop():
+                return asyncio.run(self.infer(model_id, model_input))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_in_new_loop)
+                return future.result(timeout=self.timeout_ms / 1000)
+        else:
+            return loop.run_until_complete(self.infer(model_id, model_input))

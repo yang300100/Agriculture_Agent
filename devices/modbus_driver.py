@@ -108,9 +108,23 @@ class ModbusDriver(BaseDeviceDriver):
 
         try:
             if self._mode == "tcp":
-                # 使用 rsplit 从右侧分割一次，正确处理 IPv6 地址（如 [::1]:502 或 ::1:502）
+                # 解析 host:port，正确处理 IPv6 地址: [::1]:502, ::1:502, 127.0.0.1:502
                 if ":" in self._port:
-                    host, port_str = self._port.rsplit(":", 1)
+                    # 检测方括号包裹的 IPv6（如 [::1]:5020）
+                    if self._port.startswith("[") and "]" in self._port:
+                        bracket_end = self._port.index("]")
+                        host = self._port[1:bracket_end]
+                        port_str = self._port[bracket_end + 1:].lstrip(":") or "502"
+                    else:
+                        # 尝试判断是 IPv6 还是 IPv4:port
+                        # IPv6 含多个冒号，IPv4 仅一个冒号分隔 host:port
+                        colon_count = self._port.count(":")
+                        if colon_count > 1:
+                            # IPv6 地址（无方括号），从最后一个冒号分割
+                            host, port_str = self._port.rsplit(":", 1)
+                        else:
+                            # IPv4:port 或 host:port
+                            host, port_str = self._port.rsplit(":", 1)
                 else:
                     host, port_str = self._port, "502"
                 self._client = ModbusTcpClient(host=host, port=int(port_str), timeout=self._timeout)
@@ -215,7 +229,7 @@ class ModbusDriver(BaseDeviceDriver):
 
             # 写 HR[2]=命令码, HR[3]=duration(秒), 一次性写入确保原子性
             duration = int(command.params.get("duration", 0)) * 60  # 分钟转秒
-            result = self._client.write_registers(2, [cmd_val, duration], device_id=slave_id)
+            result = self._client.write_registers(2, [cmd_val, duration], slave=slave_id)
             if result.isError():
                 return DeviceResult(
                     success=False, device_id=device_id,
@@ -282,7 +296,7 @@ class ModbusDriver(BaseDeviceDriver):
         try:
             slave_id = dev["info"]["slave_id"]
             # 读 HR[0-14] 覆盖控制寄存器 + 传感器数据
-            result = self._client.read_holding_registers(0, count=15, device_id=slave_id)
+            result = self._client.read_holding_registers(0, count=15, slave=slave_id)
             if not result.isError():
                 registers = result.registers
                 new_state = {

@@ -74,13 +74,16 @@ class ONNXBackend(BaseModelBackend):
             elapsed_ms = (time.perf_counter() - start) * 1000
 
             logits = outputs[0][0]
+            # softmax 归一化，确保 confidence 在 0-1 范围内（对齐 TorchBackend 行为）
+            exp_logits = np.exp(logits - np.max(logits))  # 减去 max 防数值溢出
+            probs = exp_logits / np.sum(exp_logits)
             top_k = min(model_input.top_k, len(model_info.classes))
-            top_indices = np.argsort(logits)[::-1][:top_k]
+            top_indices = np.argsort(probs)[::-1][:top_k]
 
             predictions = [
                 Prediction(
                     class_name=model_info.classes[idx] if idx < len(model_info.classes) else f"class_{idx}",
-                    confidence=float(logits[idx]),
+                    confidence=float(probs[idx]),
                     index=int(idx),
                 )
                 for idx in top_indices

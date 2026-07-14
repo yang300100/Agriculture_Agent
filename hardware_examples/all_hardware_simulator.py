@@ -311,25 +311,73 @@ class UnifiedDeviceManager:
         import base64
         if dev["_type"] != "capture":
             return {"success": False, "message": f"{name} 不支持拍照"}
+        # 优先读取桌面真实图片（用于病害识别测试），不存在则生成模拟 JPEG
         path = os.path.join(os.path.expanduser("~"), "Desktop", "病害1.jpg")
-        if not os.path.exists(path):
-            log(name, "拍照失败", "图片不存在", source)
-            return {"success": False, "message": "桌面病害1.jpg 不存在"}
+        if os.path.exists(path):
+            try:
+                with open(path, "rb") as f:
+                    data = f.read()
+                dev["last_capture_time"] = datetime.now().isoformat()
+                log(name, "拍照成功", f"{len(data)//1024}KB (真实图片)", source)
+                return {
+                    "success": True,
+                    "message": f"OK ({len(data)} bytes)",
+                    "image_base64": base64.b64encode(data).decode("utf-8"),
+                    "metadata": {"width": 640, "height": 480, "size_bytes": len(data),
+                                 "timestamp": datetime.now().isoformat(), "source": "desktop_image"},
+                }
+            except Exception as e:
+                log(name, "读取真实图片失败，回退模拟", str(e), source)
+        # fallback: 生成模拟 JPEG 图像（最小有效 JPEG，约 1KB 绿色图）
         try:
-            with open(path, "rb") as f:
-                data = f.read()
+            sim_data = self._generate_simulated_jpeg()
             dev["last_capture_time"] = datetime.now().isoformat()
-            log(name, "拍照成功", f"{len(data)//1024}KB", source)
+            log(name, "拍照成功", f"{len(sim_data)}B (模拟图片)", source)
             return {
                 "success": True,
-                "message": f"OK ({len(data)} bytes)",
-                "image_base64": base64.b64encode(data).decode("utf-8"),
-                "metadata": {"width": 640, "height": 480, "size_bytes": len(data),
-                             "timestamp": datetime.now().isoformat()},
+                "message": f"OK — 模拟图片 ({len(sim_data)} bytes)",
+                "image_base64": base64.b64encode(sim_data).decode("utf-8"),
+                "metadata": {"width": 320, "height": 240, "size_bytes": len(sim_data),
+                             "timestamp": datetime.now().isoformat(), "source": "simulated"},
             }
         except Exception as e:
             log(name, "拍照失败", str(e), source)
             return {"success": False, "message": str(e)}
+
+    @staticmethod
+    def _generate_simulated_jpeg() -> bytes:
+        """生成最小有效 JPEG 图像（绿色模拟作物画面）"""
+        import struct
+        # 最小 JPEG: SOI + APP0/JFIF + DQT + SOF0 + DHT + SOS + compressed data + EOI
+        # 使用一个极简的 1x1 绿色像素 JPEG
+        jpeg = bytes([
+            0xFF, 0xD8,  # SOI
+            0xFF, 0xE0,  # APP0
+            0x00, 0x10,  # len
+            0x4A, 0x46, 0x49, 0x46, 0x00,  # "JFIF\0"
+            0x01, 0x01,  # v1.1
+            0x00,        # units
+            0x00, 0x01, 0x00, 0x01,  # 1x1 dpi
+            0x00, 0x00,  # thumbnail
+            # DQT
+            0xFF, 0xDB, 0x00, 0x43, 0x00,
+        ] + bytes([0x10] * 64) + bytes([  # quant table
+            # SOF0
+            0xFF, 0xC0, 0x00, 0x0B, 0x08,
+            0x00, 0x01, 0x00, 0x01,  # 1x1
+            0x01, 0x01, 0x00,
+            # DHT
+            0xFF, 0xC4, 0x00, 0x1F, 0x00,
+            0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            # SOS + compressed
+            0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00,
+            0x00, 0x00,  # dummy MCU
+            # EOI
+            0xFF, 0xD9,
+        ])
+        return jpeg
 
 
 def _fmt_params(p: dict) -> str:

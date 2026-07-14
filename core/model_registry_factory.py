@@ -1,6 +1,7 @@
 """模型注册中心工厂 — 初始化 + 自动发现"""
 import os
 import logging
+import threading
 from typing import Optional
 
 from models.registry import ModelRegistry
@@ -12,13 +13,17 @@ from models.presets import PRESETS
 logger = logging.getLogger(__name__)
 
 _model_registry: Optional[ModelRegistry] = None
+_registry_lock = threading.Lock()
 
 
 def get_model_registry() -> ModelRegistry:
-    """获取全局模型注册中心（单例）"""
+    """获取全局模型注册中心（单例，线程安全）"""
     global _model_registry
     if _model_registry is None:
-        _model_registry = setup_model_registry()
+        with _registry_lock:
+            # 双重检查：锁内再次检查防止竞态
+            if _model_registry is None:
+                _model_registry = setup_model_registry()
     return _model_registry
 
 
@@ -59,26 +64,43 @@ def setup_model_registry() -> ModelRegistry:
                 classes=preset.get("classes", []),
                 preprocessing=preset.get("preprocessing", {}),
             )
-            # 同步加载模型
+            # 同步加载模型（确保注册表映射与模型加载同步完成）
             backend_instance = registry._backends.get(backend)
             if backend_instance:
                 import asyncio
+                loaded = [False]  # 用列表包装以便在线程中修改
                 try:
                     loop = asyncio.get_event_loop()
                     if loop.is_running():
-                        import threading
+                        # 在独立线程中加载模型，加载完成后更新映射
                         def _load():
                             new_loop = asyncio.new_event_loop()
-                            new_loop.run_until_complete(backend_instance.load_model(info))
-                            new_loop.close()
-                        threading.Thread(target=_load, daemon=True).start()
+                            try:
+                                ok = new_loop.run_until_complete(backend_instance.load_model(info))
+                                if ok:
+                                    registry._model_map[info.model_id] = backend
+                                    registry._model_info[info.model_id] = info
+                                    loaded[0] = True
+                            finally:
+                                new_loop.close()
+                        t = threading.Thread(target=_load, daemon=True)
+                        t.start()
+                        t.join(timeout=10)  # 等待最多10秒加载完成
+                        if not loaded[0]:
+                            logger.warning("模型 %s 加载超时或失败，注册表未更新", info.model_id)
                     else:
-                        loop.run_until_complete(backend_instance.load_model(info))
+                        ok = loop.run_until_complete(backend_instance.load_model(info))
+                        if ok:
+                            registry._model_map[info.model_id] = backend
+                            registry._model_info[info.model_id] = info
                 except RuntimeError:
                     loop = asyncio.new_event_loop()
-                    loop.run_until_complete(backend_instance.load_model(info))
-                    loop.close()
-                registry._model_map[info.model_id] = backend
-                registry._model_info[info.model_id] = info
+                    try:
+                        ok = loop.run_until_complete(backend_instance.load_model(info))
+                        if ok:
+                            registry._model_map[info.model_id] = backend
+                            registry._model_info[info.model_id] = info
+                    finally:
+                        loop.close()
 
     return registry
