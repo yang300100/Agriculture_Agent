@@ -44,15 +44,20 @@ class PlotManager:
     # ── CRUD ──────────────────────────────────────
 
     def list_plots(self) -> List[Dict]:
-        """列出所有地块"""
-        if not os.path.exists(self._plot_path):
+        """从DB列出所有地块"""
+        from core.database.repository.fields import FieldRepository
+        from core.database.repository.users import UserRepository
+        user_repo = UserRepository()
+        user = user_repo.get_by_username(self.username)
+        if not user:
             return []
-        try:
-            with open(self._plot_path, "r", encoding="utf-8") as f:
-                plots = json.load(f)
-            return plots if isinstance(plots, list) else []
-        except Exception:
-            return []
+        repo = FieldRepository()
+        fields = repo.find_by(user_id=user.id)
+        return [{
+            "plot_id": str(f.id), "name": f.name,
+            "lat": f.center_lat or 0, "lon": f.center_lon or 0,
+            "crop": f.current_crop or "", "area_mu": f.area_mu or 0,
+        } for f in fields]
 
     def get_plot(self, plot_id: str) -> Optional[Dict]:
         """获取单个地块"""
@@ -62,34 +67,22 @@ class PlotManager:
         return None
 
     def save_plots(self, plots: List[Dict]):
-        """保存地块列表（原子写入 + DB同步）"""
-        tmp = self._plot_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(plots, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, self._plot_path)
-        # DB同步（地块坐标信息同步到fields表的plot相关字段）
-        try:
-            from core.database.repository.users import UserRepository
-            user_repo = UserRepository()
-            user = user_repo.get_by_username(self.username)
-            if user:
-                from core.database.repository.fields import FieldRepository
-                repo = FieldRepository()
-                existing = repo.find_by(user_id=user.id)
-                existing_names = {f.name for f in existing}
-                for p in plots:
-                    if p.get("name") not in existing_names:
-                        repo.create(
-                            user_id=user.id,
-                            name=p.get("name", p.get("plot_id", "")),
-                            coordinates=json.dumps([[p.get("lon", 0), p.get("lat", 0)]], ensure_ascii=False),
-                            center_lat=p.get("lat"),
-                            center_lon=p.get("lon"),
-                            area_mu=p.get("area_mu", 0),
-                            current_crop=p.get("crop", ""),
-                        )
-        except Exception as e:
-            logger.debug("数据库同步地块失败: %s", e)
+        """保存地块列表到DB"""
+        from core.database.repository.fields import FieldRepository
+        from core.database.repository.users import UserRepository
+        user_repo = UserRepository()
+        user = user_repo.get_by_username(self.username)
+        if not user:
+            return
+        repo = FieldRepository()
+        items = [{
+            "name": p.get("name", p.get("plot_id", "")),
+            "coordinates": json.dumps([[p.get("lon", 0), p.get("lat", 0)]], ensure_ascii=False),
+            "center_lat": p.get("lat"), "center_lon": p.get("lon"),
+            "area_mu": p.get("area_mu", 0),
+            "current_crop": p.get("crop", ""),
+        } for p in plots]
+        repo.replace_all_for_user(user.id, items)
 
     def add_plot(self, plot_id: str, name: str, lat: float, lon: float,
                  crop: str = "", area_mu: float = 0.0) -> Dict:

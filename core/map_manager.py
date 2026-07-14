@@ -34,62 +34,67 @@ class FieldBoundary(BaseModel):
 class MapManager:
     """地图管理器 - 处理地块的增删改查和面积计算"""
 
-    def __init__(self, storage_dir: str = None):
-        if storage_dir:
-            self.DATA_FILE = os.path.join(storage_dir, "fields.json")
-        else:
-            self.DATA_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "fields.json")
+    def __init__(self, username: str = "default"):
+        from core.database.engine import init_db
+        init_db()
+        # 兼容旧调用方传 storage_dir 路径的情况
+        if "/" in username or "\\" in username:
+            username = os.path.basename(username.rstrip("/\\"))
+        self._username = username or "default"
+        from core.database.repository.users import UserRepository
+        repo = UserRepository()
+        self._user = repo.get_by_username(username)
+        if not self._user:
+            self._user = repo.create(username=username, password_hash="")
         self.fields: List[FieldBoundary] = []
-        self._ensure_data_dir()
         self._load_data()
 
-    def _ensure_data_dir(self):
-        """确保数据目录存在"""
-        data_dir = os.path.dirname(self.DATA_FILE)
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
+    @property
+    def _uid(self) -> int:
+        return self._user.id
 
     def _load_data(self):
-        """从JSON文件加载地块数据"""
-        if os.path.exists(self.DATA_FILE):
+        """从DB加载地块数据"""
+        from core.database.repository.fields import FieldRepository
+        repo = FieldRepository()
+        db_fields = repo.find_by(user_id=self._uid)
+        self.fields = []
+        for f in db_fields:
             try:
-                with open(self.DATA_FILE, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.fields = [FieldBoundary(**item) for item in data]
-            except Exception as e:
-                print(f"加载地块数据失败: {e}")
-                self.fields = []
+                coords = json.loads(f.coordinates) if f.coordinates else []
+                history = json.loads(f.planting_history) if f.planting_history else []
+            except Exception:
+                coords = []
+                history = []
+            self.fields.append(FieldBoundary(
+                name=f.name, coordinates=coords,
+                center_lat=f.center_lat or 0, center_lon=f.center_lon or 0,
+                area_mu=f.area_mu or 0, area_m2=f.area_m2 or 0,
+                soil_type=f.soil_type or "", current_crop=f.current_crop or "",
+                planting_history=history,
+            ))
 
     def _save_data(self):
-        """保存地块数据到JSON文件 + DB同步"""
-        try:
-            with open(self.DATA_FILE, 'w', encoding='utf-8') as f:
-                json.dump([field.model_dump() for field in self.fields], f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"保存地块数据失败: {e}")
-        # DB同步
-        try:
-            from core.database.repository.fields import FieldRepository
-            from core.database.repository.users import UserRepository
-            user_repo = UserRepository()
-            user = user_repo.get_by_username("default")
-            if not user:
-                user = user_repo.create(username="default", password_hash="")
-            repo = FieldRepository()
-            items = [{
+        """保存地块数据到DB"""
+        from core.database.repository.fields import FieldRepository
+        repo = FieldRepository()
+        items = []
+        for f in self.fields:
+            try:
+                coords = f.coordinates
+                history = getattr(f, 'planting_history', [])
+            except Exception:
+                coords = []
+                history = []
+            items.append({
                 "name": f.name,
-                "coordinates": json.dumps(f.coordinates, ensure_ascii=False),
-                "center_lat": f.center_lat,
-                "center_lon": f.center_lon,
-                "area_mu": f.area_mu,
-                "area_m2": f.area_m2,
-                "soil_type": f.soil_type,
-                "current_crop": f.current_crop,
-                "planting_history": json.dumps(f.planting_history, ensure_ascii=False) if hasattr(f, 'planting_history') and f.planting_history else "[]",
-            } for f in self.fields]
-            repo.replace_all_for_user(user.id, items)
-        except Exception as e:
-            logger.debug("数据库同步地块失败: %s", e)
+                "coordinates": json.dumps(coords, ensure_ascii=False),
+                "center_lat": f.center_lat, "center_lon": f.center_lon,
+                "area_mu": f.area_mu, "area_m2": f.area_m2,
+                "soil_type": f.soil_type, "current_crop": f.current_crop,
+                "planting_history": json.dumps(history, ensure_ascii=False),
+            })
+        repo.replace_all_for_user(self._uid, items)
 
     @staticmethod
     def calculate_area(coordinates: List[List[float]]) -> Tuple[float, float]:

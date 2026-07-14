@@ -74,61 +74,51 @@ class ReminderStorage:
     """提醒数据存储"""
 
     def __init__(self, storage_dir: str = None):
-        storage_dir = storage_dir or DEFAULT_STORAGE_DIR
-        self.storage_dir = storage_dir
-        self.reminders_file = os.path.join(storage_dir, "reminders.json")
-        self._ensure_storage()
+        from core.database.engine import init_db
+        init_db()
+        from core.database.repository.users import UserRepository
+        repo = UserRepository()
+        self._user = repo.get_by_username("default")
+        if not self._user:
+            self._user = repo.create(username="default", password_hash="")
 
-    def _ensure_storage(self):
-        """确保存储目录和文件存在"""
-        if not os.path.exists(self.storage_dir):
-            os.makedirs(self.storage_dir)
-
-        if not os.path.exists(self.reminders_file):
-            with open(self.reminders_file, 'w', encoding='utf-8') as f:
-                json.dump([], f)
+    @property
+    def _uid(self) -> int:
+        return self._user.id
 
     def load_reminders(self) -> List[Dict[str, Any]]:
-        """加载所有提醒"""
-        try:
-            with open(self.reminders_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"加载提醒失败: {e}")
-            return []
+        """从DB加载所有提醒"""
+        from core.database.repository.reminders import ReminderRepository
+        repo = ReminderRepository()
+        reminders = repo.find_by(user_id=self._uid)
+        return [{
+            "id": r.id, "crop": r.crop, "reminder_type": r.reminder_type,
+            "task_description": r.task_description, "growth_stage": r.growth_stage,
+            "frequency": r.frequency, "interval_days": r.interval_days,
+            "time_of_day": r.time_of_day, "advance_hours": r.advance_hours or 0,
+            "channels": r.channels, "status": r.status,
+            "last_triggered": r.last_triggered.isoformat() if r.last_triggered else "",
+            "next_trigger": r.next_trigger.isoformat() if r.next_trigger else "",
+            "created_at": r.created_at.isoformat() if r.created_at else "",
+        } for r in reminders]
 
     def save_reminders(self, reminders: List[Dict[str, Any]]):
-        """保存所有提醒（DB同步）"""
-        try:
-            with open(self.reminders_file, 'w', encoding='utf-8') as f:
-                json.dump(reminders, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"保存提醒失败: {e}")
-        # DB同步
-        try:
-            from core.database.repository.reminders import ReminderRepository
-            from core.database.repository.users import UserRepository
-            user_repo = UserRepository()
-            user = user_repo.get_by_username("default")
-            if not user:
-                user = user_repo.create(username="default", password_hash="")
-            repo = ReminderRepository()
-            items = [{
-                "crop": r.get("crop", ""),
-                "reminder_type": r.get("reminder_type", ""),
-                "task_description": r.get("task_description", ""),
-                "growth_stage": r.get("growth_stage", ""),
-                "frequency": r.get("frequency", "once"),
-                "interval_days": r.get("interval_days"),
-                "time_of_day": r.get("time_of_day"),
-                "advance_hours": r.get("advance_hours", 0),
-                "channels": json.dumps(r.get("channels", []), ensure_ascii=False),
-                "status": r.get("status", "active"),
-                "next_trigger": r.get("next_trigger"),
-            } for r in reminders]
-            repo.replace_all_for_user(user.id, items)
-        except Exception as e:
-            logger.debug("数据库同步提醒失败: %s", e)
+        """保存所有提醒到DB"""
+        from core.database.repository.reminders import ReminderRepository
+        repo = ReminderRepository()
+        items = [{
+        "crop": r.get("crop", ""), "reminder_type": r.get("reminder_type", ""),
+        "task_description": r.get("task_description", ""),
+        "growth_stage": r.get("growth_stage", ""),
+        "frequency": r.get("frequency", "once"),
+        "interval_days": r.get("interval_days"),
+        "time_of_day": r.get("time_of_day"),
+        "advance_hours": r.get("advance_hours", 0),
+        "channels": r.get("channels", "[]"),
+        "status": r.get("status", "active"),
+        "next_trigger": r.get("next_trigger"),
+        } for r in reminders]
+        repo.replace_all_for_user(self._uid, items)
 
     def add_reminder(self, reminder: Dict[str, Any]):
         """添加单个提醒"""

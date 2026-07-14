@@ -88,86 +88,35 @@ class CropFinancialSummary:
 
 
 class FinanceStorage:
-    """财务数据存储"""
+    """财务数据存储（纯SQLite）"""
 
     def __init__(self, storage_dir: str = None):
-        self.storage_dir = storage_dir or DEFAULT_STORAGE_DIR
-        self.costs_file = os.path.join(self.storage_dir, "finance_costs.json")
-        self.income_file = os.path.join(self.storage_dir, "finance_income.json")
-        self._ensure_storage()
+        from core.database.engine import init_db
+        init_db()
+        self._username = os.path.basename((storage_dir or DEFAULT_STORAGE_DIR).rstrip("/\\"))
 
-    def _ensure_storage(self):
-        """确保存储目录和文件存在"""
-        if not os.path.exists(self.storage_dir):
-            os.makedirs(self.storage_dir)
-
-        for file_path in [self.costs_file, self.income_file]:
-            if not os.path.exists(file_path):
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump([], f)
+    def _get_user_id(self) -> int:
+        from core.database.repository.users import UserRepository
+        repo = UserRepository()
+        user = repo.get_by_username(self._username)
+        if not user:
+            user = repo.create(username=self._username, password_hash="")
+        return user.id
 
     def load_costs(self) -> List[Dict]:
-        """加载所有成本记录（优先DB）"""
-        try:
-            db_result = self._load_from_db("cost")
-            if db_result is not None:
-                return db_result
-        except Exception:
-            pass
-        try:
-            with open(self.costs_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"加载成本记录失败: {e}")
-            return []
-
-    def _get_username(self) -> str:
-        """从存储目录提取用户名"""
-        return os.path.basename(self.storage_dir.rstrip("/\\"))
+        return self._load_from_db("cost")
 
     def save_costs(self, costs: List[Dict]):
-        """保存成本记录（双写DB+JSON）"""
-        # JSON写入
-        with open(self.costs_file, 'w', encoding='utf-8') as f:
-            json.dump(costs, f, ensure_ascii=False, indent=2)
-        # DB写入
-        try:
-            self._sync_to_db(costs, "cost")
-        except Exception:
-            pass
+        self._sync_to_db(costs, "cost")
 
     def load_income(self) -> List[Dict]:
-        """加载所有收入记录（优先DB）"""
-        try:
-            db_result = self._load_from_db("income")
-            if db_result is not None:
-                return db_result
-        except Exception:
-            pass
-        try:
-            with open(self.income_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"加载收入记录失败: {e}")
-            return []
+        return self._load_from_db("income")
 
     def save_income(self, income: List[Dict]):
-        """保存收入记录（双写DB+JSON）"""
-        with open(self.income_file, 'w', encoding='utf-8') as f:
-            json.dump(income, f, ensure_ascii=False, indent=2)
-        try:
-            self._sync_to_db(income, "income")
-        except Exception:
-            pass
+        self._sync_to_db(income, "income")
 
     def _sync_to_db(self, records: List[Dict], record_type: str):
-        """同步记录到数据库"""
         from core.database.repository.finance import FinanceRepository
-        from core.database.repository.users import UserRepository
-        user_repo = UserRepository()
-        user = user_repo.get_by_username(self._get_username())
-        if not user:
-            return
         repo = FinanceRepository()
         items = [{
             "date": r.get("date", ""),
@@ -183,20 +132,14 @@ class FinanceStorage:
             "buyer": r.get("buyer", ""),
             "notes": r.get("notes", ""),
         } for r in records]
-        repo.replace_all_for_user(user.id, items)
+        repo.replace_all_for_user(self._get_user_id(), items)
 
-    def _load_from_db(self, record_type: str):
-        """从数据库加载记录"""
+    def _load_from_db(self, record_type: str) -> List[Dict]:
         from core.database.repository.finance import FinanceRepository
-        from core.database.repository.users import UserRepository
-        user_repo = UserRepository()
-        user = user_repo.get_by_username(self._get_username())
-        if not user:
-            return None
         repo = FinanceRepository()
-        db_records = repo.find_by(user_id=user.id, record_type=record_type)
+        db_records = repo.find_by(user_id=self._get_user_id(), record_type=record_type)
         if not db_records:
-            return None
+            return []
         return [{
             "id": r.id,
             "date": r.date.isoformat() if r.date else "",
