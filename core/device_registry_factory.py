@@ -466,17 +466,28 @@ def invalidate_registry_cache(username: str = None):
                     try:
                         tmp_loop.run_until_complete(registry.disconnect_all())
                     except Exception:
-                        pass
-                    tmp_loop.close()
+                        logger.warning("缓存清理时断开驱动失败", exc_info=True)
+                    finally:
+                        try:
+                            tmp_loop.close()
+                        except Exception:
+                            pass
+                        _asyncio.set_event_loop(None)
                 except Exception:
                     pass
         else:
             import asyncio as _asyncio
             for u, (registry, _) in list(_registry_cache.items()):
+                tmp_loop = None
                 try:
                     tmp_loop = _asyncio.new_event_loop()
                     tmp_loop.run_until_complete(registry.disconnect_all())
-                    tmp_loop.close()
                 except Exception:
-                    pass
+                    logger.warning("缓存清理时断开驱动失败 [%s]", u, exc_info=True)
+                finally:
+                    if tmp_loop is not None:
+                        try:
+                            tmp_loop.close()
+                        except Exception:
+                            pass
             _registry_cache.clear()
