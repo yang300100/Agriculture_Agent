@@ -127,7 +127,9 @@ def _safe_parse_capabilities(cap_strs: List[str]) -> list:
             caps.append(DeviceCapability(c))
         except ValueError:
             logger.warning("忽略无效的设备能力: %r", c)
-    return caps or [DeviceCapability("irrigate")]
+    if not caps:
+        logger.warning("设备能力解析结果为空，将不赋予任何能力")
+    return caps
 
 
 def setup_registry(username: str = "default", loop=None):
