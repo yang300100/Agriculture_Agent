@@ -1,7 +1,7 @@
 """农事日历页 — 数据走 API"""
 
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.api_client import api
 
 def render_calendar_page():
@@ -23,17 +23,25 @@ def render_calendar_page():
     for t in tasks:
         if t.get("status") == "已完成":
             continue
-        sd = t.get("start_date", "") or t.get("end_date", "")
         ed = t.get("end_date", "")
         if not ed:
             continue
+        end_date = _parse_date(ed) or datetime.now().date()
+        sd = t.get("start_date", "")
+        start_date = _parse_date(sd) if sd else None
+        # 没有明确起始日期的任务：取截止日期前3-7天作为展示起始
+        if not start_date or start_date == datetime.now().date():
+            days_before = 7 if t.get("priority") == "high" else 3
+            start_date = max(
+                datetime.now().date(),
+                end_date - timedelta(days=days_before),
+            )
         crop = t.get('crop', '任务')
-        # 任务归入对应作物分组，与进度条在同一行
         items.append({
             "group": crop,
             "task": f"📋 {t.get('title', '')}",
-            "start": _parse_date(sd) or datetime.now().date(),
-            "end": _parse_date(ed) or datetime.now().date(),
+            "start": start_date,
+            "end": end_date,
             "progress": t.get("progress", 0),
         })
 
