@@ -194,6 +194,32 @@ class DeviceExecutor:
     # ── 日志 ──────────────────────────────────
 
     def get_logs(self, limit: int = 50) -> List[Dict]:
+        # 优先从数据库读取
+        try:
+            from core.database.repository.devices import DeviceLogRepository
+            from core.database.repository.users import UserRepository
+            user_repo = UserRepository()
+            user = user_repo.get_by_username(self.username)
+            if user:
+                log_repo = DeviceLogRepository()
+                db_logs = log_repo.get_recent(user.id, limit)
+                if db_logs:
+                    return [{
+                        "timestamp": log.created_at.isoformat() if log.created_at else "",
+                        "device_id": log.device_id,
+                        "command": log.command,
+                        "params": json.loads(log.params) if log.params else {},
+                        "trigger": log.trigger,
+                        "rule_id": log.rule_id,
+                        "decision": log.decision,
+                        "success": bool(log.success),
+                        "attempts": log.attempts,
+                        "message": log.message,
+                        "error_code": log.error_code or "",
+                    } for log in db_logs]
+        except Exception:
+            pass
+        # JSON兜底
         path = self._log_path()
         if not os.path.exists(path):
             return []
@@ -237,6 +263,31 @@ class DeviceExecutor:
                 # 原子替换失败，回退到直接写入
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(logs, f, ensure_ascii=False, indent=2)
+
+        # 同步写入数据库
+        try:
+            from core.database.repository.devices import DeviceLogRepository
+            from core.database.repository.users import UserRepository
+            user_repo = UserRepository()
+            user = user_repo.get_by_username(self.username)
+            if user:
+                log_repo = DeviceLogRepository()
+                log_repo.create(
+                    user_id=user.id,
+                    device_id=device_id,
+                    command=command.command,
+                    params=json.dumps(command.params, ensure_ascii=False) if command.params else "{}",
+                    trigger=trigger,
+                    rule_id=rule_id,
+                    decision=decision,
+                    status="success" if result.success else "failed",
+                    success=1 if result.success else 0,
+                    attempts=attempts,
+                    message=result.message or "",
+                    error_code=result.error_code or "",
+                )
+        except Exception as e:
+            logger.debug("数据库写入操作日志失败: %s", e)
 
     def _make_log_entry(self, device_id, command, result, trigger, rule_id, decision, attempts) -> Dict:
         return {

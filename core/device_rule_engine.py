@@ -104,6 +104,31 @@ class RuleEngine:
         return os.path.join(DEFAULT_DATA_DIR, self.username, "device_rules.json")
 
     def _load_rules(self) -> None:
+        # 优先从数据库加载
+        try:
+            from core.database.repository.devices import DeviceRuleRepository
+            from core.database.repository.users import UserRepository
+            user_repo = UserRepository()
+            user = user_repo.get_by_username(self.username)
+            if user:
+                repo = DeviceRuleRepository()
+                db_rules = repo.find_by(user_id=user.id)
+                if db_rules:
+                    self.rules = [{
+                        "id": r.id,
+                        "name": r.name,
+                        "enabled": bool(r.enabled),
+                        "trigger": {"conditions": json.loads(r.conditions) if r.conditions else []},
+                        "action": json.loads(r.actions) if r.actions else {},
+                        "constraints": json.loads(r.constraints) if r.constraints else {},
+                        "created_at": r.created_at.isoformat() if r.created_at else "",
+                    } for r in db_rules]
+                    logger.info("规则引擎(DB): 已加载 %d 条规则", len(self.rules))
+                    return
+        except Exception as e:
+            logger.debug("数据库加载规则失败，回退JSON: %s", e)
+
+        # JSON兜底
         path = self._rules_path()
         if not os.path.exists(path):
             self.rules = []
@@ -126,19 +151,36 @@ class RuleEngine:
                         if not isinstance(self.rules, list):
                             self.rules = []
                     logger.warning("规则引擎: 已从备份恢复 %d 条规则", len(self.rules))
-                    # 恢复后立即保存到原文件
                     self._save_rules()
                     return
                 except Exception as e2:
                     logger.error("备份恢复也失败: %s", e2)
-            # 保留损坏文件作为 .corrupted 备份
             self._backup_corrupted(path)
             self.rules = []
 
     def _save_rules(self) -> None:
+        # 写入数据库
+        try:
+            from core.database.repository.devices import DeviceRuleRepository
+            from core.database.repository.users import UserRepository
+            user_repo = UserRepository()
+            user = user_repo.get_by_username(self.username)
+            if user:
+                repo = DeviceRuleRepository()
+                items = [{
+                    "name": r.get("name", ""),
+                    "enabled": 1 if r.get("enabled", True) else 0,
+                    "conditions": json.dumps(r.get("trigger", {}).get("conditions", []), ensure_ascii=False),
+                    "actions": json.dumps(r.get("action", {}), ensure_ascii=False),
+                    "constraints": json.dumps(r.get("constraints", {}), ensure_ascii=False),
+                } for r in self.rules]
+                repo.replace_all_for_user(user.id, items)
+        except Exception as e:
+            logger.debug("数据库写入规则失败: %s", e)
+
+        # JSON兜底
         path = self._rules_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        # 原子写入：先写临时文件，再原子重命名
         tmp_path = path + ".tmp"
         data = {"rules": self.rules, "updated_at": datetime.now().isoformat()}
         try:
