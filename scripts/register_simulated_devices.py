@@ -34,11 +34,11 @@ DEVICES = [
     # ── Modbus ──
     {"device_id": "env_sensor_01", "name": "环境温湿度传感器", "driver": "modbus",
      "capabilities": ["read_sensor"], "sensors": ["temperature", "humidity", "soil_moisture", "co2_ppm"],
-     "connection": {"mode": "tcp", "host": "127.0.0.1", "port": 5020, "slave_id": 1},
+     "connection": {"mode": "tcp", "host": "127.0.0.1", "port": "5020", "slave_id": 1},
      "location": "温室A区-中心"},
     {"device_id": "greenhouse_camera_01", "name": "温室监控摄像头", "driver": "modbus",
      "capabilities": ["capture"], "sensors": [],
-     "connection": {"mode": "tcp", "host": "127.0.0.1", "port": 5020, "slave_id": 2},
+     "connection": {"mode": "tcp", "host": "127.0.0.1", "port": "5020", "slave_id": 2},
      "location": "温室A区-入口"},
 ]
 

@@ -198,51 +198,53 @@ class ModbusDriver(BaseDeviceDriver):
             dev = self._devices[device_id]
             slave_id = dev["info"]["slave_id"]
 
+            # 命令码映射（与模拟器 HR[2] 对齐）
+            CMD_MAP = {
+                "power_on": 1, "boot": 1,
+                "power_off": 2, "shutdown": 2,
+                "start": 3, "stop": 4, "reset": 5,
+            }
+            cmd_val = CMD_MAP.get(command.command)
+            if cmd_val is None:
+                return DeviceResult(
+                    success=False, device_id=device_id,
+                    executed_command=command.command,
+                    message=f"Modbus 驱动不支持命令 '{command.command}'",
+                    error_code="UNSUPPORTED_COMMAND",
+                )
+
+            # 写 HR[2]=命令码, HR[3]=duration(秒), 一次性写入确保原子性
+            duration = int(command.params.get("duration", 0)) * 60  # 分钟转秒
+            result = self._client.write_registers(2, [cmd_val, duration], device_id=slave_id)
+            if result.isError():
+                return DeviceResult(
+                    success=False, device_id=device_id,
+                    executed_command=command.command,
+                    message=f"[Modbus] 指令失败 (从站 {slave_id}): 写入错误",
+                    error_code="MODBUS_EXCEPTION",
+                )
+
+            # 乐观更新本地状态（实际状态由 read_state 刷新）
             if command.command == "start":
-                # 写保持寄存器 HR[0] = 1 (启动)
-                result = self._client.write_register(0, 1, slave=slave_id)
-                if not result.isError():
-                    dev["state"]["power"] = True
-                    dev["state"]["status"] = "running"
-                    return DeviceResult(
-                        success=True, device_id=device_id,
-                        executed_command="start",
-                        actual_params=command.params,
-                        message=f"[Modbus] 从站 {slave_id} 已启动",
-                    )
-                else:
-                    return DeviceResult(
-                        success=False, device_id=device_id,
-                        executed_command="start",
-                        message=f"[Modbus] 启动失败 (从站 {slave_id}): Modbus 写入错误",
-                        error_code="MODBUS_EXCEPTION",
-                    )
+                dev["state"]["power"] = True
+                dev["state"]["status"] = "running"
+            elif command.command in ("stop",):
+                dev["state"]["status"] = "standby"
+            elif command.command in ("power_on", "boot"):
+                dev["state"]["power"] = True
+                dev["state"]["status"] = "standby"
+            elif command.command in ("power_off", "shutdown"):
+                dev["state"]["power"] = False
+                dev["state"]["status"] = "powered_off"
+            elif command.command == "reset":
+                dev["state"]["power"] = True
+                dev["state"]["status"] = "standby"
 
-            elif command.command == "stop":
-                # 写保持寄存器 HR[0] = 0 (停止)
-                result = self._client.write_register(0, 0, slave=slave_id)
-                if not result.isError():
-                    dev["state"]["power"] = False
-                    dev["state"]["status"] = "idle"
-                    return DeviceResult(
-                        success=True, device_id=device_id,
-                        executed_command="stop",
-                        message=f"[Modbus] 从站 {slave_id} 已停止",
-                    )
-                else:
-                    return DeviceResult(
-                        success=False, device_id=device_id,
-                        executed_command="stop",
-                        message=f"[Modbus] 停止失败 (从站 {slave_id}): Modbus 写入错误",
-                        error_code="MODBUS_EXCEPTION",
-                    )
-
-            # 无法识别的命令：使用更明确的错误码和消息
             return DeviceResult(
-                success=False, device_id=device_id,
+                success=True, device_id=device_id,
                 executed_command=command.command,
-                message=f"Modbus 驱动不支持命令 '{command.command}'，仅支持 start / stop",
-                error_code="UNSUPPORTED_COMMAND",
+                actual_params=command.params,
+                message=f"[Modbus] 从站 {slave_id} 已执行 {command.command}",
             )
 
         except Exception as e:
@@ -258,7 +260,17 @@ class ModbusDriver(BaseDeviceDriver):
     # ── 状态读取 ──────────────────────────────
 
     async def read_state(self, device_id: str) -> Dict[str, Any]:
-        """读取 Modbus 从设备状态"""
+        """读取 Modbus 从设备状态
+
+        寄存器布局（与模拟器 ModbusTcpServer 对齐）:
+          HR[0]: 设备状态 (0=关机, 1=待机, 2=工作中, 3=故障)
+          HR[1]: 电源 (0=关, 1=开)
+          HR[10]: 温度 × 10
+          HR[11]: 湿度 × 10
+          HR[12]: 土壤湿度 × 10
+          HR[13]: pH × 10
+          HR[14]: 光照 / 100
+        """
         if device_id not in self._devices:
             return {"error": f"设备 '{device_id}' 不存在"}
 
@@ -266,22 +278,32 @@ class ModbusDriver(BaseDeviceDriver):
         if not self._connected:
             return {**dev["state"], "_driver": "modbus", "_read_at": datetime.now().isoformat()}
 
+        STATUS_RMAP = {0: "powered_off", 1: "standby", 2: "running", 3: "error"}
         try:
             slave_id = dev["info"]["slave_id"]
-            # 读保持寄存器 HR[0-3] (电源, 状态, 设定值, 当前值)
-            result = self._client.read_holding_registers(0, 4, slave=slave_id)
+            # 读 HR[0-14] 覆盖控制寄存器 + 传感器数据
+            result = self._client.read_holding_registers(0, count=15, device_id=slave_id)
             if not result.isError():
                 registers = result.registers
-                dev["state"].update({
-                    "power": registers[0] == 1,
-                    "status": {0: "idle", 1: "running", 2: "error"}.get(registers[1], "unknown"),
-                    "setpoint": registers[2],
-                    "current_value": registers[3],
-                })
+                new_state = {
+                    "status": STATUS_RMAP.get(registers[0], "powered_off"),
+                    "power": registers[1] == 1,
+                }
+                # 传感器数据（如果有值）
+                if len(registers) > 10:
+                    if registers[10] > 0:
+                        new_state["temperature"] = registers[10] / 10.0
+                    if registers[11] > 0:
+                        new_state["humidity"] = registers[11] / 10.0
+                    if registers[12] > 0:
+                        new_state["soil_moisture"] = registers[12] / 10.0
+                    if registers[13] > 0:
+                        new_state["ph"] = registers[13] / 10.0
+                    if registers[14] > 0:
+                        new_state["light_lux"] = registers[14] * 100
+                dev["state"].update(new_state)
         except Exception as e:
             logger.debug("Modbus 读状态失败: %s", e)
-            # 异常时也要标记 driver 和 read_at，并设置 error 状态
-            # 不返回静默的旧数据，而是明确告知调用方读取出错了
             return {
                 **dev["state"],
                 "status": "error",

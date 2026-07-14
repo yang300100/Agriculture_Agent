@@ -194,10 +194,50 @@ Agent 支持通过 4 种协议接入真实 IoT 设备，实现自主控制。通
 
 | 驱动 | 协议 | 适用硬件 | 需要额外安装 |
 |------|------|---------|------------|
-| **Simulator** | 本地内存 | 开发测试（6 个内置虚拟设备） | 无 |
+| **Simulator** | 本地内存 | 开发测试（7 个内置虚拟设备） | 无 |
 | **MQTT** | MQTT 3.1.1 | ESP32/ESP8266、树莓派、任意 MQTT 设备 | `pip install paho-mqtt` |
 | **HTTP REST** | HTTP | 智能插座(Tasmota/ESPHome)、树莓派 GPIO 控制器 | 无（使用 `requests`） |
 | **Modbus** | RTU/TCP | PLC、变频器、工业传感器 | `pip install pymodbus` |
+
+### 硬件模拟器（开发测试用）
+
+无需真实硬件即可测试全部 IoT 功能。模拟器启动**完整三协议栈**（HTTP/MQTT/Modbus），终端/前端/API 均通过真实协议通道控制设备，所有操作实时反馈到终端。
+
+```bash
+# 一键启动全部协议模拟器
+python hardware_examples/all_hardware_simulator.py
+```
+
+**架构**：
+```
+UnifiedDeviceManager（共享状态）
+ ├── 🌐 HTTP Server (Flask :5000)  ← 灌溉泵/补光灯/施肥机
+ ├── 📡 MQTT Broker (内嵌 :1883) + 设备处理器  ← 通风扇/加热器
+ ├── 🔧 Modbus TCP Server (内嵌 :5020)  ← 温湿度传感器/摄像头
+ └── 🖥️ 终端 CLI（协议客户端）
+      ├── HTTP 设备 → requests.post(:5000)
+      ├── MQTT 设备 → MQTT publish(:1883)
+      └── Modbus 设备 → TCP write(:5020)
+```
+
+**设备协议分布**：
+| 设备 | 协议 | 地址 |
+|------|------|------|
+| 灌溉泵 / 补光灯 / 施肥一体机 | HTTP | :5000 |
+| 通风扇 / 加热器 | MQTT | :1883 |
+| 温湿度传感器 / 摄像头 | Modbus TCP | :5020 |
+
+**终端命令**：
+```bash
+▸ list                    # 查看所有设备状态（含协议标签）
+▸ boot pump               # 灌溉泵通电 → 通过 HTTP POST 发送
+▸ start pump dur=30       # 灌溉泵工作30分钟 → HTTP POST
+▸ start fan speed=60      # 通风扇60%转速 → MQTT publish
+▸ stop fan                # 停止通风扇 → MQTT publish
+▸ shutdown pump           # 关机断电
+```
+
+所有设备**默认通电待机**，启动即可操作。前端操控设备时终端实时显示协议层反馈。
 
 ### 接入步骤
 

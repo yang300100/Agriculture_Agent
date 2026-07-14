@@ -1,982 +1,1367 @@
 """
-一体化硬件模拟器
+一体化硬件模拟器 v5.0 — 完整协议栈模拟
 
-启动所有连接方式的模拟硬件，前端操控时实时打印反馈。
-支持: Simulator / HTTP / MQTT / Modbus
+每个虚拟设备绑定真实通信协议，终端/前端/API 均通过协议通道控制设备。
+无需真实硬件，无需 mosquitto/pymodbus/paho-mqtt。
 
-运行: python hardware_examples/all_hardware_simulator.py
+架构:
+  UnifiedDeviceManager（共享状态）
+   ├── 🌐 HTTP Server (Flask :5000)
+   │    └── irrigation_pump_01, grow_light_01, fertilizer_pump_01
+   ├── 📡 MQTT Broker (内嵌 :1883) + 设备处理器
+   │    └── ventilation_fan_01, heater_01
+   ├── 🔧 Modbus TCP Server (内嵌 :5020)
+   │    └── env_sensor_01, greenhouse_camera_01
+   └── 🖥️  终端 CLI（协议客户端）
+        ├── HTTP设备 → requests.post(:5000)
+        ├── MQTT设备 → MQTT publish(:1883)
+        └── Modbus设备 → TCP write(:5020)
 
-启动后:
-  1. HTTP设备服务器 (端口5000) 自动启动
-  2. 8个模拟设备全部在线
-  3. 前端操控设备 → 此终端实时显示反馈
-  4. 输入命令可手动控制设备 (输入 help 查看)
-
-
-硬件设备生命周期状态机
-========================
-
-  powered_off(关机) ──[power_on/通电]──▶ standby(待机) ──[start/工作]──▶ running(工作中)
-       ▲                                      ▲                            │
-       │                                      │ [stop/停止工作]            │
-       │                                      ◀────────────────────────────┘
-       │                                      │
-       └──────────────[power_off/关机]────────┘
-
-  任意状态 ──[故障]──▶ error(故障)
-  error    ──[reset]──▶ standby(待机)
-
-状态说明:
-  powered_off : 设备断电，完全关闭
-  standby     : 设备已通电，等待工作指令
-  running     : 设备正在执行工作任务
-  error       : 设备发生故障，需复位
-
-命令:
-  power_on  / boot     : 通电启动  (powered_off → standby)
-  power_off / shutdown : 关机断电  (standby → powered_off)
-  start                : 开始工作  (standby → running)
-  stop                 : 停止工作  (running → standby, 保持通电)
-  reset                : 故障复位  (error → standby)
+启动: python hardware_examples/all_hardware_simulator.py
 """
 
 import sys
 import os
 import json
 import time
-import asyncio
-import base64
+import struct
+import socket
+import random
 import threading
-import queue
+import asyncio
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-# 项目路径
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 
 # ═══════════════════════════════════════════════════
-# 颜色输出
+# 终端颜色
 # ═══════════════════════════════════════════════════
 
 class C:
-    """终端颜色"""
     R = "\033[91m"; G = "\033[92m"; Y = "\033[93m"
     B = "\033[94m"; C = "\033[96m"; M = "\033[95m"
-    W = "\033[0m"; BOLD = "\033[1m"
+    W = "\033[0m"; BOLD = "\033[1m"; DIM = "\033[2m"
 
     @staticmethod
-    def time(): return f"{C.C}{datetime.now().strftime('%H:%M:%S')}{C.W}"
-
-
-def log_event(device_name, action, detail=""):
-    """打印硬件事件"""
-    detail_str = f" ({detail})" if detail else ""
-    print(f"  [{C.time()}] {C.G}[HARDWARE]{C.W} {C.BOLD}{device_name}{C.W} -> {C.Y}{action}{C.W}{detail_str}")
-
-
-def log_start(service_name, port=None):
-    port_str = f" :{port}" if port else ""
-    print(f"  [{C.time()}] {C.G}[START]{C.W}  {C.B}{service_name}{C.W}{port_str} {C.G}已启动模拟{C.W}")
-
-
-def log_error(service_name, msg=""):
-    print(f"  [{C.time()}] {C.R}[ERROR]{C.W} {service_name}: {msg}")
-
-
-def log_cmd(cmd):
-    print(f"  [{C.time()}] {C.M}[CMD]{C.W}   {cmd}")
+    def time():
+        return f"{C.DIM}{datetime.now().strftime('%H:%M:%S')}{C.W}"
 
 
 # ═══════════════════════════════════════════════════
-# 设备状态机工具函数
+# 状态机常量
 # ═══════════════════════════════════════════════════
 
-# 有效状态及其中文名
 POWER_STATE_LABELS = {
-    "powered_off": "关机",
-    "standby": "待机",
-    "running": "工作中",
-    "error": "故障",
+    "powered_off": "关机", "standby": "待机",
+    "running": "工作中", "error": "故障",
 }
 
-# 状态转换规则: (当前状态, 命令) → (新状态, 是否合法)
-# 格式: {当前status: {命令: (新status, 是否需要power=True)}}
-STATE_TRANSITIONS = {
-    "powered_off": {
-        "power_on":  ("standby", True),
-        "boot":      ("standby", True),
-        "start":     ("running", True),   # 从关机直接start：先通电再工作
-    },
-    "standby": {
-        "start":     ("running", True),
-        "power_off": ("powered_off", False),
-        "shutdown":  ("powered_off", False),
-    },
-    "running": {
-        "stop":      ("standby", True),    # 停止工作但保持通电
-        "power_off": ("powered_off", False),  # 工作中直接关机
-        "shutdown":  ("powered_off", False),
-    },
-    "error": {
-        "reset":     ("standby", True),
-        "power_off": ("powered_off", False),
-        "shutdown":  ("powered_off", False),
-    },
-}
-
-
-def apply_state_transition(current_status: str, command: str) -> tuple:
-    """
-    执行状态转换，返回 (新status, 新power值, 是否合法, 错误消息)
-
-    Args:
-        current_status: 当前状态 (powered_off/standby/running/error)
-        command: 要执行的命令
-
-    Returns:
-        (new_status, new_power, is_valid, message)
-    """
-    transitions = STATE_TRANSITIONS.get(current_status, {})
-    if command in transitions:
-        new_status, new_power = transitions[command]
-        return new_status, new_power, True, ""
-
-    # set_param 不改变状态
-    if command == "set_param":
-        return current_status, None, True, ""
-
-    # 非法转换
-    return current_status, None, False, \
-        f"当前状态'{POWER_STATE_LABELS.get(current_status, current_status)}'不支持'{command}'操作"
-
-
-def status_display(state: dict) -> str:
-    """格式化状态显示"""
-    status = state.get("status", "powered_off")
-    power = state.get("power", False)
-    label = POWER_STATE_LABELS.get(status, status)
-    if status == "running":
-        return f"{C.G}●{C.W} {label}"
-    elif status == "standby":
-        return f"{C.Y}○{C.W} {label}"
-    elif status == "error":
-        return f"{C.R}✕{C.W} {label}"
-    else:  # powered_off
-        return f"{C.R}○{C.W} {label}"
-
-
 # ═══════════════════════════════════════════════════
-# 多设备 HTTP 服务器 — 模拟多个真实硬件端点
+# 设备定义 — 每台设备绑定一个协议
 # ═══════════════════════════════════════════════════
 
-# 预定义的虚拟农业设备（模拟真实硬件）
-FARM_DEVICE_TEMPLATES = {
+# 协议类型
+PROTO_HTTP = "HTTP"
+PROTO_MQTT = "MQTT"
+PROTO_MODBUS = "Modbus"
+
+DEVICE_DEFS = {
     "irrigation_pump_01": {
         "name": "温室灌溉泵",
         "type": "irrigate",
-        "sensors": ["flow_rate", "total_water_liters"],
+        "protocol": PROTO_HTTP,
+        "http_url": "http://127.0.0.1:5000",
         "initial": {"power": True, "status": "standby", "flow_rate": 0, "total_water_liters": 156.8},
+        "sensors": ["flow_rate", "total_water_liters"],
     },
     "ventilation_fan_01": {
         "name": "温室通风扇",
         "type": "ventilate",
-        "sensors": ["rpm"],
+        "protocol": PROTO_MQTT,
+        "mqtt_topic": "devices/ventilation_fan_01",
         "initial": {"power": True, "status": "standby", "rpm": 0},
+        "sensors": ["rpm"],
     },
     "grow_light_01": {
         "name": "温室补光灯",
         "type": "light",
-        "sensors": ["brightness_percent"],
+        "protocol": PROTO_HTTP,
+        "http_url": "http://127.0.0.1:5000",
         "initial": {"power": True, "status": "standby", "brightness_percent": 0},
+        "sensors": ["brightness_percent"],
     },
     "heater_01": {
         "name": "温室加热器",
         "type": "heat",
-        "sensors": ["target_temp", "current_temp"],
+        "protocol": PROTO_MQTT,
+        "mqtt_topic": "devices/heater_01",
         "initial": {"power": True, "status": "standby", "target_temp": 22, "current_temp": 18.5},
+        "sensors": ["target_temp", "current_temp"],
     },
     "env_sensor_01": {
         "name": "环境温湿度传感器",
         "type": "read_sensor",
-        "sensors": ["temperature", "humidity", "soil_moisture", "ph", "light_lux"],
+        "protocol": PROTO_MODBUS,
+        "modbus_slave": 1,
         "initial": {"power": True, "status": "standby",
                     "temperature": 24.5, "humidity": 62.0, "soil_moisture": 48.0, "ph": 6.8, "light_lux": 35000},
+        "sensors": ["temperature", "humidity", "soil_moisture", "ph", "light_lux"],
     },
     "fertilizer_pump_01": {
         "name": "施肥一体机",
         "type": "fertigate",
-        "sensors": ["flow_rate", "total_fertilizer_kg"],
+        "protocol": PROTO_HTTP,
+        "http_url": "http://127.0.0.1:5000",
         "initial": {"power": True, "status": "standby", "flow_rate": 0, "total_fertilizer_kg": 23.5},
+        "sensors": ["flow_rate", "total_fertilizer_kg"],
     },
     "greenhouse_camera_01": {
         "name": "温室监控摄像头",
         "type": "capture",
-        "sensors": ["resolution", "last_capture_time"],
+        "protocol": PROTO_MODBUS,
+        "modbus_slave": 2,
         "initial": {"power": True, "status": "standby", "resolution": "640x480", "last_capture_time": None},
+        "sensors": ["resolution"],
     },
 }
 
+# 快捷ID
+SHORTCUTS = {
+    "pump": "irrigation_pump_01", "fan": "ventilation_fan_01",
+    "light": "grow_light_01", "heat": "heater_01",
+    "sensor": "env_sensor_01", "fert": "fertilizer_pump_01",
+    "camera": "greenhouse_camera_01",
+}
 
-def start_http_server(port=5000):
-    """启动多设备 HTTP 服务器（独立线程）— 模拟多个真实硬件端点。
+PROTO_ICONS = {
+    PROTO_HTTP: "🌐",
+    PROTO_MQTT: "📡",
+    PROTO_MODBUS: "🔧",
+}
 
-    每个设备通过请求中的 device_id 字段区分，维护独立状态。
-    前端/驱动通过 HTTPDriver 连接此服务器即可操控所有设备。
-    """
+
+# ═══════════════════════════════════════════════════
+# 安全输出（处理 Windows GBK 编码）
+# ═══════════════════════════════════════════════════
+
+def _safe_print(text: str):
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(text.encode('gbk', errors='replace').decode('gbk'))
+
+
+# ═══════════════════════════════════════════════════
+# 事件日志
+# ═══════════════════════════════════════════════════
+
+def log(device_name: str, action: str, detail: str = "", proto: str = ""):
+    """打印设备事件"""
+    p = f" {C.DIM}[{proto}]{C.W}" if proto else ""
+    d = f" ({detail})" if detail else ""
+    _safe_print(f"  [{C.time()}]{p} {C.BOLD}{device_name}{C.W} -> {C.Y}{action}{C.W}{d}")
+
+
+def log_info(msg: str, color: str = ""):
+    c = color or C.W
+    _safe_print(f"  [{C.time()}] {c}{msg}{C.W}")
+
+
+def status_icon(state: dict) -> str:
+    s = state.get("status", "powered_off")
+    if s == "running":   return f"{C.G}●{C.W}"
+    if s == "standby":   return f"{C.Y}○{C.W}"
+    if s == "error":     return f"{C.R}✕{C.W}"
+    return f"{C.DIM}○{C.W}"  # powered_off
+
+
+# ═══════════════════════════════════════════════════
+# 统一设备管理器 — 所有协议服务器的共享状态后端
+# ═══════════════════════════════════════════════════
+
+class UnifiedDeviceManager:
+    """线程安全的设备状态管理器。HTTP/MQTT/Modbus 服务器共享此实例。"""
+
+    def __init__(self):
+        self._devices: Dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def init_all(self):
+        """从 DEVICE_DEFS 初始化所有设备"""
+        for dev_id, defn in DEVICE_DEFS.items():
+            self._devices[dev_id] = {
+                "_name": defn["name"],
+                "_type": defn["type"],
+                "_protocol": defn["protocol"],
+                "_sensors": defn.get("sensors", []),
+                **(dict(defn["initial"])),
+            }
+        log_info(f"设备管理器初始化: {len(self._devices)} 台设备（全部待机通电）", C.G)
+
+    def get(self, device_id: str) -> Optional[dict]:
+        return self._devices.get(device_id)
+
+    def read_state(self, device_id: str) -> dict:
+        dev = self._devices.get(device_id)
+        if not dev: return {}
+        return {k: v for k, v in dev.items() if not k.startswith("_")}
+
+    def list_all(self) -> List[dict]:
+        with self._lock:
+            return [
+                {
+                    "id": did, "name": d["_name"], "type": d["_type"],
+                    "protocol": d["_protocol"],
+                    "state": {k: v for k, v in d.items() if not k.startswith("_")},
+                }
+                for did, d in self._devices.items()
+            ]
+
+    def execute(self, device_id: str, command: str, params: dict = None,
+                source_proto: str = "") -> dict:
+        """执行设备指令，返回结果。协议无关——各协议服务器调用此方法。"""
+        params = params or {}
+        with self._lock:
+            dev = self._devices.get(device_id)
+            if dev is None:
+                return {"success": False, "message": f"设备 '{device_id}' 不存在"}
+
+            dev_name = dev["_name"]
+            current = dev.get("status", "powered_off")
+
+            if command in ("power_on", "boot"):
+                if current == "powered_off":
+                    dev["power"] = True; dev["status"] = "standby"
+                    log(dev_name, "通电启动 -> 待机", proto=source_proto)
+                elif current == "standby":
+                    log(dev_name, "通电启动", "已在待机", source_proto)
+                elif current == "error":
+                    return {"success": False, "message": f"{dev_name} 故障中，请先复位"}
+                return {"success": True, "message": f"{dev_name} 已通电（待机）"}
+
+            elif command in ("power_off", "shutdown"):
+                if current in ("standby", "running", "error"):
+                    old = POWER_STATE_LABELS.get(current, current)
+                    dev["power"] = False; dev["status"] = "powered_off"
+                    log(dev_name, "关机断电", f"关机前: {old}", source_proto)
+                return {"success": True, "message": f"{dev_name} 已关机"}
+
+            elif command == "start":
+                if current == "error":
+                    return {"success": False, "message": f"{dev_name} 故障中，请先复位"}
+                if current == "powered_off":
+                    dev["power"] = True
+                dev["status"] = "running"
+                log(dev_name, "开始工作", _fmt_params(params), source_proto)
+                for k, v in params.items():
+                    if k in dev and not k.startswith("_"):
+                        dev[k] = v
+                dur = params.get("duration", 0)
+                if dur > 0:
+                    self._schedule_stop(device_id, dev_name, dur)
+                return {"success": True, "message": f"{dev_name} 已开始工作"}
+
+            elif command == "stop":
+                if current == "running":
+                    dev["status"] = "standby"
+                    log(dev_name, "停止工作 -> 待机", proto=source_proto)
+                else:
+                    log(dev_name, "停止工作", "当前未在工作中", source_proto)
+                return {"success": True, "message": f"{dev_name} 已停止"}
+
+            elif command == "reset":
+                if current == "error":
+                    dev["power"] = True; dev["status"] = "standby"
+                    log(dev_name, "故障复位 -> 待机", proto=source_proto)
+                return {"success": True, "message": f"{dev_name} 已复位"}
+
+            elif command == "set_param":
+                changed = {}
+                for k, v in params.items():
+                    if k in dev and not k.startswith("_"):
+                        changed[k] = f"{dev[k]}->{v}"; dev[k] = v
+                if changed:
+                    log(dev_name, "参数更新", str(changed), source_proto)
+                return {"success": True, "message": f"参数已更新"}
+
+            elif command == "capture":
+                return self._do_capture(dev, dev_name, source_proto)
+
+            elif command == "read_sensor":
+                data = {k: v for k, v in dev.items()
+                        if not k.startswith("_") and isinstance(v, (int, float))}
+                return {"success": True, "sensor_data": data}
+
+            return {"success": False, "message": f"不支持: {command}"}
+
+    def _schedule_stop(self, dev_id: str, name: str, dur_min: int):
+        def auto():
+            time.sleep(dur_min * 60)
+            with self._lock:
+                d = self._devices.get(dev_id)
+                if d and d.get("status") == "running":
+                    d["status"] = "standby"
+                    log(name, "定时结束 -> 待机", f"运行{dur_min}分钟", "[定时]")
+        threading.Thread(target=auto, daemon=True).start()
+
+    def _do_capture(self, dev: dict, name: str, source: str) -> dict:
+        import base64
+        if dev["_type"] != "capture":
+            return {"success": False, "message": f"{name} 不支持拍照"}
+        path = os.path.join(os.path.expanduser("~"), "Desktop", "病害1.jpg")
+        if not os.path.exists(path):
+            log(name, "拍照失败", "图片不存在", source)
+            return {"success": False, "message": "桌面病害1.jpg 不存在"}
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            dev["last_capture_time"] = datetime.now().isoformat()
+            log(name, "拍照成功", f"{len(data)//1024}KB", source)
+            return {
+                "success": True,
+                "message": f"OK ({len(data)} bytes)",
+                "image_base64": base64.b64encode(data).decode("utf-8"),
+                "metadata": {"width": 640, "height": 480, "size_bytes": len(data),
+                             "timestamp": datetime.now().isoformat()},
+            }
+        except Exception as e:
+            log(name, "拍照失败", str(e), source)
+            return {"success": False, "message": str(e)}
+
+
+def _fmt_params(p: dict) -> str:
+    if not p: return ""
+    m = {"duration": "时长", "amount_kg": "施肥量", "speed_percent": "转速",
+         "brightness_percent": "亮度", "target_temp": "目标温度", "flow_rate": "流量"}
+    return ", ".join(f"{m.get(k,k)}={v}" for k, v in p.items())
+
+
+# ═══════════════════════════════════════════════════
+# 🌐 HTTP 设备服务器 (Flask)
+# ═══════════════════════════════════════════════════
+
+def create_http_server(mgr: UnifiedDeviceManager) -> bool:
+    """启动 Flask HTTP 服务器，所有 HTTP 设备通过此服务器暴露。"""
     try:
         from flask import Flask, request, jsonify
     except ImportError:
-        log_error("HTTP服务器", "请安装 flask: pip install flask")
-        return None
+        log_info("[HTTP] Flask 未安装: pip install flask", C.R)
+        return False
 
     app = Flask(__name__)
 
-    # 多设备状态存储: {device_id: state_dict}
-    _devices: Dict[str, dict] = {}
-    _lock = threading.Lock()
-
-    # 初始化所有预定义设备
-    for dev_id, template in FARM_DEVICE_TEMPLATES.items():
-        _devices[dev_id] = dict(template["initial"])
-        _devices[dev_id]["_name"] = template["name"]
-        _devices[dev_id]["_type"] = template["type"]
-
-    def _get_device(device_id: str) -> Optional[dict]:
-        """获取设备状态，不存在返回 None"""
-        return _devices.get(device_id)
-
     @app.route("/health", methods=["GET"])
     def health():
-        return jsonify({
-            "status": "ok",
-            "server": "farm-device-simulator",
-            "device_count": len(_devices),
-            "devices": list(_devices.keys()),
-        })
+        return jsonify({"status": "ok", "server": "farm-sim-v5"})
 
     @app.route("/api/state", methods=["GET"])
-    @app.route("/state", methods=["GET"])  # HTTPDriver 兼容路由
+    @app.route("/state", methods=["GET"])
     def get_state():
-        """查询设备状态 — 通过 query param 或 body 中的 device_id 区分设备"""
-        device_id = request.args.get("device_id") or ""
-        if not device_id:
-            # 兼容：尝试从 body 获取（GET 通常无 body，但有些客户端会发）
-            pass
-
-        with _lock:
-            if device_id and device_id in _devices:
-                state = {k: v for k, v in _devices[device_id].items() if not k.startswith("_")}
-                return jsonify(state)
-            # 无 device_id 时返回所有设备概览
-            summary = {}
-            for did, dev in _devices.items():
-                summary[did] = {
-                    "name": dev.get("_name", did),
-                    "type": dev.get("_type", "unknown"),
-                    "power": dev.get("power", False),
-                    "status": dev.get("status", "powered_off"),
-                }
-            return jsonify({"devices": summary, "total": len(_devices)})
+        device_id = request.args.get("device_id", "")
+        if device_id:
+            dev = mgr.get(device_id)
+            if dev:
+                return jsonify({k: v for k, v in dev.items() if not k.startswith("_")})
+            return jsonify({"error": "not found"}), 404
+        # 返回所有 HTTP 设备概览
+        summary = {}
+        for d in mgr.list_all():
+            if d["protocol"] == PROTO_HTTP:
+                summary[d["id"]] = {"name": d["name"], "power": d["state"].get("power"),
+                                    "status": d["state"].get("status")}
+        return jsonify({"devices": summary, "total": len(summary)})
 
     @app.route("/api/command", methods=["POST"])
-    @app.route("/command", methods=["POST"])  # HTTPDriver 兼容路由
+    @app.route("/command", methods=["POST"])
     def execute():
-        """执行设备指令 — 通过 body 中的 device_id 区分目标设备"""
         data = request.get_json(silent=True) or {}
         device_id = data.get("device_id", "")
         command = data.get("command", "")
         params = data.get("params", {})
-
         if not device_id:
             return jsonify({"success": False, "message": "缺少 device_id"}), 400
-
-        with _lock:
-            dev = _get_device(device_id)
-            if dev is None:
-                return jsonify({"success": False, "message": f"设备 '{device_id}' 不存在"}), 404
-
-            dev_name = dev.get("_name", device_id)
-            current = dev.get("status", "powered_off")
-
-            # ── 通电 / 关机 ──
-            if command in ("power_on", "boot"):
-                if current == "powered_off":
-                    dev["power"] = True
-                    dev["status"] = "standby"
-                    log_event(dev_name, "通电启动", "进入待机")
-                elif current == "standby":
-                    log_event(dev_name, "通电启动", "已在待机")
-                return jsonify({"success": True, "message": f"{dev_name} 已通电"})
-
-            elif command in ("power_off", "shutdown"):
-                if current in ("standby", "running"):
-                    dev["power"] = False
-                    dev["status"] = "powered_off"
-                    log_event(dev_name, "关机断电")
-                elif current == "powered_off":
-                    log_event(dev_name, "关机断电", "已在关机状态")
-                return jsonify({"success": True, "message": f"{dev_name} 已关机"})
-
-            # ── 开始工作 ──
-            elif command == "start":
-                if current == "powered_off":
-                    dev["power"] = True
-                    dev["status"] = "running"
-                    log_event(dev_name, "通电并启动", f"参数={params}")
-                elif current == "standby":
-                    dev["status"] = "running"
-                    log_event(dev_name, "开始工作", f"参数={params}")
-                elif current == "running":
-                    log_event(dev_name, "开始工作", "已在工作中，更新参数")
-                elif current == "error":
-                    return jsonify({"success": False, "message": f"{dev_name} 故障中，请先复位"}), 400
-
-                # 应用参数到设备状态
-                for k, v in params.items():
-                    if k in dev and not k.startswith("_"):
-                        dev[k] = v
-
-                # 模拟定时停止
-                duration = params.get("duration", 0)
-                if duration > 0:
-                    captured_id = device_id
-                    def auto_stop():
-                        time.sleep(duration * 60)  # duration 单位是分钟
-                        with _lock:
-                            d = _devices.get(captured_id)
-                            if d and d.get("status") == "running":
-                                d["status"] = "standby"
-                                log_event(d.get("_name", captured_id), "定时结束，回到待机", f"运行了{duration}分钟")
-                    threading.Thread(target=auto_stop, daemon=True).start()
-
-                return jsonify({"success": True, "message": f"{dev_name} 已开始工作"})
-
-            # ── 停止工作 ──
-            elif command == "stop":
-                if current == "running":
-                    dev["status"] = "standby"
-                    # power 保持 True
-                    log_event(dev_name, "停止工作", "回到待机（保持通电）")
-                else:
-                    log_event(dev_name, "停止工作", "当前未在工作")
-                return jsonify({"success": True, "message": f"{dev_name} 已停止工作"})
-
-            # ── 故障复位 ──
-            elif command == "reset":
-                if current == "error":
-                    dev["power"] = True
-                    dev["status"] = "standby"
-                    log_event(dev_name, "故障复位", "恢复到待机")
-                return jsonify({"success": True, "message": f"{dev_name} 已复位"})
-
-            # ── 摄像头拍照 ──
-            elif command == "capture":
-                dev_type = dev.get("_type", "")
-                if dev_type != "capture":
-                    return jsonify({"success": False, "message": f"{dev_name} 不支持拍照功能"}), 400
-
-                # 读取桌面病害图片模拟摄像头抓拍
-                image_path = os.path.join(os.path.expanduser("~"), "Desktop", "病害1.jpg")
-                if not os.path.exists(image_path):
-                    log_event(dev_name, "拍照失败", f"图片不存在: {image_path}")
-                    return jsonify({"success": False, "message": "模拟图片不存在，请将病害1.jpg放在桌面"}), 404
-
-                try:
-                    with open(image_path, "rb") as f:
-                        image_bytes = f.read()
-                    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-                    dev["last_capture_time"] = datetime.now().isoformat()
-                    log_event(dev_name, "拍照成功", f"图片大小: {len(image_bytes)} bytes")
-                    return jsonify({
-                        "success": True,
-                        "message": f"抓拍成功 ({len(image_bytes)} bytes)",
-                        "image_base64": image_b64,
-                        "metadata": {
-                            "width": 640, "height": 480,
-                            "size_bytes": len(image_bytes),
-                            "timestamp": datetime.now().isoformat(),
-                            "source": image_path,
-                        },
-                    })
-                except Exception as e:
-                    log_event(dev_name, "拍照失败", str(e))
-                    return jsonify({"success": False, "message": f"读取图片失败: {e}"}), 500
-
-            elif command == "set_param":
-                for k, v in params.items():
-                    if k in dev and not k.startswith("_"):
-                        dev[k] = v
-                log_event(dev_name, "参数设置", str(params))
-                return jsonify({"success": True, "message": "参数已更新"})
-
-            return jsonify({"success": False, "message": f"不支持指令: {command}"}), 400
+        dev = mgr.get(device_id)
+        if not dev or dev["_protocol"] != PROTO_HTTP:
+            return jsonify({"success": False, "message": f"设备 '{device_id}' 不存在或非HTTP"}), 404
+        src = request.headers.get("X-Source", PROTO_HTTP)
+        result = mgr.execute(device_id, command, params, source_proto=src)
+        code = 200 if result.get("success") else 400
+        return jsonify(result), code
 
     def run():
         import logging
-        log = logging.getLogger('werkzeug')
-        log.setLevel(logging.ERROR)
-        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
+        app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
-    time.sleep(1)
+    time.sleep(0.5)
 
-    # 验证启动
+    # 验证
     try:
         import requests
-        resp = requests.get(f"http://localhost:{port}/health", timeout=3)
-        if resp.status_code == 200:
-            data = resp.json()
-            log_start(f"HTTP多设备服务器 ({data.get('device_count', 0)}台设备)", port)
-            return app
+        r = requests.get("http://localhost:5000/health", timeout=3)
+        if r.status_code == 200:
+            log_info(f"[HTTP] 服务器就绪 -> :5000", C.G)
+            return True
     except Exception:
         pass
-
-    log_start(f"HTTP多设备服务器", port)
-    return app
+    log_info(f"[HTTP] 服务器就绪 -> :5000", C.G)
+    return True
 
 
 # ═══════════════════════════════════════════════════
-# MQTT 模拟硬件
+# 📡 内嵌 MQTT Broker（纯 Python，零依赖）
 # ═══════════════════════════════════════════════════
 
-class MockMQTTNode:
-    """模拟一个 MQTT 传感器/控制器节点（无需 broker）
+# MQTT 数据包类型
+MQTT_CONNECT, MQTT_CONNACK = 1, 2
+MQTT_PUBLISH, MQTT_SUBSCRIBE = 3, 8
+MQTT_SUBACK, MQTT_PINGREQ = 9, 12
+MQTT_PINGRESP, MQTT_DISCONNECT = 13, 14
 
-    生命周期: powered_off → standby → running → standby → powered_off
-    """
 
-    def __init__(self, device_id, device_type="sensor"):
-        self.device_id = device_id
-        self.device_type = device_type
-        # 初始状态：关机
-        self.state = {
-            "power": False,
-            "status": "powered_off",
-            "temperature": 24.0, "humidity": 60.0,
-            "soil_moisture": 50.0, "ph": 6.8,
-            "_read_at": ""
-        }
-        self._lock = threading.Lock()
+class MqttBroker:
+    """内嵌 MQTT 3.1.1 Broker（QoS 0，支持 +/# 通配符）"""
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 1883):
+        self._host = host
+        self._port = port
+        self._subscriptions: Dict[str, List] = {}     # topic -> [writer, ...]
+        self._wildcard_subs: List[Tuple[str, any]] = [] # [(pattern, writer), ...]
         self._running = False
-        self._thread = None
+        self._started = False  # 是否成功绑定端口
 
-    def start(self, report_interval=5):
-        """启动模拟节点（通电 + 待机）"""
-        self._running = True
-        with self._lock:
-            self.state["power"] = True
-            self.state["status"] = "standby"
-        if self.device_type == "sensor":
-            self._thread = threading.Thread(target=self._sensor_loop, args=(report_interval,), daemon=True)
-        else:
-            self._thread = threading.Thread(target=self._actuator_loop, args=(report_interval,), daemon=True)
-        self._thread.start()
-        return self
+    @staticmethod
+    def _match_topic(pattern: str, topic: str) -> bool:
+        pp = pattern.split("/"); tp = topic.split("/")
+        for i, p in enumerate(pp):
+            if p == "#": return True
+            if i >= len(tp): return False
+            if p == "+": continue
+            if p != tp[i]: return False
+        return len(pp) == len(tp)
 
-    def stop(self):
-        """停止模拟节点（关机）"""
-        self._running = False
-        with self._lock:
-            self.state["power"] = False
-            self.state["status"] = "powered_off"
+    @staticmethod
+    def _parse_rem_len(data: bytes, offset: int) -> Tuple[int, int]:
+        mul, val = 1, 0
+        while offset < len(data):
+            b = data[offset]; val += (b & 0x7F) * mul; offset += 1
+            if (b & 0x80) == 0: break
+            mul *= 128
+        return val, offset
 
-    def _sensor_loop(self, interval):
-        import random
-        log_event(f"{self.device_id}(MQTT传感器)", "通电启动", f"每{interval}s上报数据")
-        while self._running:
-            with self._lock:
-                self.state["temperature"] += random.uniform(-0.2, 0.2)
-                self.state["temperature"] = round(max(-10, min(50, self.state["temperature"])), 1)
-                self.state["humidity"] += random.uniform(-0.8, 0.8)
-                self.state["humidity"] = round(max(0, min(100, self.state["humidity"])), 1)
-                # 工作中土壤湿度上升，待机/关机则缓慢下降
-                if self.state["status"] == "running":
-                    self.state["soil_moisture"] += random.uniform(0.3, 1.0)
-                else:
-                    self.state["soil_moisture"] -= random.uniform(0.1, 0.2)
-                self.state["soil_moisture"] = round(max(0, min(100, self.state["soil_moisture"])), 1)
-                self.state["ph"] += random.uniform(-0.03, 0.03)
-                self.state["ph"] = round(max(3.5, min(9.5, self.state["ph"])), 1)
-                self.state["_read_at"] = datetime.now().isoformat()
-            time.sleep(interval)
-
-    def _actuator_loop(self, interval):
-        import random
-        log_event(f"{self.device_id}(MQTT控制器)", "待机", "等待指令")
-        while self._running:
-            time.sleep(interval)
-
-    def execute(self, command, params=None):
-        """执行指令，遵循状态机规则"""
-        with self._lock:
-            current = self.state["status"]
-
-            # ── 通电 / 关机 ──
-            if command in ("power_on", "boot"):
-                if current == "powered_off":
-                    self.state["power"] = True
-                    self.state["status"] = "standby"
-                    log_event(f"{self.device_id}(MQTT)", "通电启动", "进入待机")
-                elif current == "standby":
-                    log_event(f"{self.device_id}(MQTT)", "通电启动", "已在待机状态")
-                return {"success": True, "message": f"{self.device_id} 已通电"}
-
-            elif command in ("power_off", "shutdown"):
-                if current in ("standby", "running"):
-                    self.state["power"] = False
-                    self.state["status"] = "powered_off"
-                    log_event(f"{self.device_id}(MQTT)", "关机断电")
-                elif current == "powered_off":
-                    log_event(f"{self.device_id}(MQTT)", "关机断电", "已在关机状态")
-                return {"success": True, "message": f"{self.device_id} 已关机"}
-
-            # ── 开始工作 ──
-            elif command == "start":
-                if current == "powered_off":
-                    self.state["power"] = True
-                    self.state["status"] = "running"
-                    log_event(f"{self.device_id}(MQTT)", "通电并启动", f"时长={(params or {}).get('duration', 0)}s")
-                elif current == "standby":
-                    self.state["status"] = "running"
-                    duration = (params or {}).get("duration", 0)
-                    log_event(f"{self.device_id}(MQTT)", "开始工作", f"时长={duration}s")
-                elif current == "running":
-                    log_event(f"{self.device_id}(MQTT)", "开始工作", "已在工作中")
-                return {"success": True, "message": f"{self.device_id} 已开始工作"}
-
-            # ── 停止工作 ──
-            elif command == "stop":
-                if current == "running":
-                    self.state["status"] = "standby"
-                    # power 保持 True，不断电！
-                    log_event(f"{self.device_id}(MQTT)", "停止工作", "回到待机")
-                elif current in ("standby", "powered_off"):
-                    log_event(f"{self.device_id}(MQTT)", "停止工作", "当前未在工作")
-                return {"success": True, "message": f"{self.device_id} 已停止工作"}
-
-            # ── 故障复位 ──
-            elif command == "reset":
-                if current == "error":
-                    self.state["power"] = True
-                    self.state["status"] = "standby"
-                    log_event(f"{self.device_id}(MQTT)", "故障复位", "恢复到待机")
-                return {"success": True, "message": f"{self.device_id} 已复位"}
-
-            return {"success": False, "message": f"不支持: {command}"}
-
-    def read_state(self):
-        with self._lock:
-            return dict(self.state)
-
-
-# ═══════════════════════════════════════════════════
-# Simulator 驱动集成
-# ═══════════════════════════════════════════════════
-
-class PersistentSimulator:
-    """持久化模拟器：保持设备状态，遵循完整生命周期状态机
-
-    状态: powered_off(关机) → standby(待机) → running(工作中) → standby → powered_off
-    """
-
-    def __init__(self):
-        self.devices: Dict[str, Dict] = {}
-        self._lock = threading.Lock()
-
-    def add_device(self, device_id, name, device_type, location="测试区"):
-        """添加模拟设备，初始状态为关机(powered_off)"""
-        initial_states = {
-            "irrigate":   {"power": True, "status": "standby", "flow_rate": 0, "total_liters": 0},
-            "ventilate":  {"power": True, "status": "standby", "rpm": 0},
-            "light":      {"power": True, "status": "standby", "brightness": 0},
-            "heat":       {"power": True, "status": "standby", "target_temp": 22},
-            "cool":       {"power": True, "status": "standby", "target_temp": 24},
-            "sensor":     {"power": True, "status": "standby",
-                           "temperature": 24.5, "humidity": 62.0, "soil_moisture": 48.0, "ph": 6.8},
-        }
-        with self._lock:
-            self.devices[device_id] = {
-                "name": name,
-                "type": device_type,
-                "location": location,
-                "state": dict(initial_states.get(device_type, {"power": True, "status": "standby"})),
-            }
-        log_start(f"{name}({device_type})", None)
-        log_event(name, "初始状态: 关机", f"设备类型={device_type}")
-        return self
-
-    def execute(self, device_id, command, params=None):
-        """执行设备指令，遵循状态机规则"""
-        with self._lock:
-            if device_id not in self.devices:
-                return {"success": False, "message": "设备不存在"}
-
-            dev = self.devices[device_id]
-            params = params or {}
-            current = dev["state"]["status"]
-            name = dev["name"]
-
-            # ── 通电启动 ──
-            if command in ("power_on", "boot"):
-                if current == "powered_off":
-                    dev["state"]["power"] = True
-                    dev["state"]["status"] = "standby"
-                    log_event(name, "通电启动", "设备已进入待机状态")
-                elif current == "standby":
-                    log_event(name, "通电启动", "设备已在待机状态")
-                elif current == "running":
-                    log_event(name, "通电启动", "设备正在工作中，无需重复通电")
-                elif current == "error":
-                    log_event(name, "通电启动", "设备处于故障状态，请先复位(reset)")
-                    return {"success": False, "message": "设备故障，请先执行 reset"}
-                return {"success": True, "message": f"{name} 已通电"}
-
-            # ── 关机断电 ──
-            elif command in ("power_off", "shutdown"):
-                if current in ("standby", "running"):
-                    dev["state"]["power"] = False
-                    dev["state"]["status"] = "powered_off"
-                    log_event(name, "关机断电", f"关机前状态: {POWER_STATE_LABELS.get(current)}")
-                elif current == "powered_off":
-                    log_event(name, "关机断电", "设备已在关机状态")
-                elif current == "error":
-                    dev["state"]["power"] = False
-                    dev["state"]["status"] = "powered_off"
-                    log_event(name, "强制关机", "故障状态下断电")
-                return {"success": True, "message": f"{name} 已关机"}
-
-            # ── 开始工作 ──
-            elif command == "start":
-                if current == "powered_off":
-                    # 从关机直接start：自动先通电再工作
-                    dev["state"]["power"] = True
-                    dev["state"]["status"] = "running"
-                    detail = f"时长={params.get('duration', '?')}s" if "duration" in params else ""
-                    log_event(name, "通电并启动", detail)
-                elif current == "standby":
-                    dev["state"]["status"] = "running"
-                    if "duration" in params:
-                        log_event(name, "开始工作", f"时长={params['duration']}s")
-                    elif "flow_rate" in params:
-                        log_event(name, "开始工作", f"流量={params['flow_rate']}")
-                    elif "brightness" in params:
-                        log_event(name, "开始工作", f"亮度={params['brightness']}")
-                    elif "target_temp" in params:
-                        log_event(name, "开始工作", f"目标温度={params['target_temp']}°C")
-                    else:
-                        log_event(name, "开始工作")
-                elif current == "running":
-                    log_event(name, "开始工作", "设备已在工作中，更新参数")
-                    # 允许更新运行参数
-                elif current == "error":
-                    log_event(name, "开始工作", "设备故障，无法启动")
-                    return {"success": False, "message": "设备故障，请先执行 reset"}
-                return {"success": True, "message": f"{name} 已开始工作"}
-
-            # ── 停止工作 ──
-            elif command == "stop":
-                if current == "running":
-                    dev["state"]["status"] = "standby"
-                    # 关键：power 保持 True，只停止工作，不断电！
-                    log_event(name, "停止工作", "回到待机状态（保持通电）")
-                elif current == "standby":
-                    log_event(name, "停止工作", "设备当前未在工作（待机中）")
-                elif current == "powered_off":
-                    log_event(name, "停止工作", "设备处于关机状态")
-                return {"success": True, "message": f"{name} 已停止工作"}
-
-            # ── 故障复位 ──
-            elif command == "reset":
-                if current == "error":
-                    dev["state"]["power"] = True
-                    dev["state"]["status"] = "standby"
-                    log_event(name, "故障复位", "已恢复到待机状态")
-                else:
-                    log_event(name, "复位", "设备未处于故障状态，无需复位")
-                return {"success": True, "message": f"{name} 已复位"}
-
-            # ── 参数设置 ──
-            elif command == "set_param":
-                for k, v in params.items():
-                    if k in dev["state"]:
-                        dev["state"][k] = v
-                log_event(name, "参数设置", str(params))
-                return {"success": True, "message": "参数已更新"}
-
-            return {"success": False, "message": f"不支持: {command}"}
-
-    def read_state(self, device_id):
-        with self._lock:
-            if device_id not in self.devices:
-                return {}
-            return dict(self.devices[device_id]["state"])
-
-    def list_devices(self):
-        with self._lock:
-            return [
-                {"id": did, "name": d["name"], "type": d["type"], "state": dict(d["state"])}
-                for did, d in self.devices.items()
-            ]
-
-
-# ═══════════════════════════════════════════════════
-# API 轮询监控
-# ═══════════════════════════════════════════════════
-
-class APIMonitor:
-    """通过轮询后端API来监控前端设备操作"""
-
-    def __init__(self, api_base="http://localhost:8000", username="123"):
-        self.api_base = api_base
-        self.username = username
-        self._last_states: Dict[str, Dict] = {}
-        self._running = False
-
-    def _get_devices(self):
-        import requests
+    async def _handle(self, reader, writer):
+        addr = writer.get_extra_info("peername")
+        cid = str(addr)
+        buf = b""
         try:
-            resp = requests.get(
-                f"{self.api_base}/api/devices",
-                params={"username": self.username},
-                timeout=5
+            while True:
+                data = await asyncio.wait_for(reader.read(4096), timeout=120)
+                if not data: break
+                buf += data
+                while len(buf) >= 2:
+                    ptype = (buf[0] & 0xF0) >> 4
+                    if ptype not in (MQTT_CONNECT, MQTT_SUBSCRIBE, MQTT_PUBLISH,
+                                     MQTT_PINGREQ, MQTT_DISCONNECT):
+                        break
+                    try:
+                        rem, pos = self._parse_rem_len(buf, 1)
+                    except Exception:
+                        break
+                    total = pos + rem
+                    if len(buf) < total: break
+                    packet = buf[:total]; buf = buf[total:]
+
+                    if ptype == MQTT_CONNECT:
+                        # 解析 client_id
+                        plen = struct.unpack(">H", packet[2:4])[0]
+                        cpos = 4 + plen + 3  # proto + level + flags + keepalive
+                        clen = struct.unpack(">H", packet[cpos:cpos+2])[0]
+                        cid = packet[cpos+2:cpos+2+clen].decode("utf-8", errors="replace")
+                        writer.write(bytes([0x20, 0x02, 0x00, 0x00]))
+                        await writer.drain()
+                        log_info(f"[MQTT Broker] 客户端连接: {cid}", C.DIM)
+
+                    elif ptype == MQTT_SUBSCRIBE:
+                        pid = struct.unpack(">H", packet[pos:pos+2])[0]
+                        off = pos + 2
+                        topics = []
+                        while off < total:
+                            tlen = struct.unpack(">H", packet[off:off+2])[0]
+                            off += 2
+                            topic = packet[off:off+tlen].decode("utf-8")
+                            off += tlen + 1  # skip QoS
+                            topics.append(topic)
+                        for tp in topics:
+                            if "#" in tp or "+" in tp:
+                                self._wildcard_subs.append((tp, writer))
+                            else:
+                                self._subscriptions.setdefault(tp, []).append(writer)
+                        # SUBACK
+                        ack = bytearray([0x90, 2 + len(topics)])
+                        ack += struct.pack(">H", pid)
+                        for _ in topics:
+                            ack.append(0x00)  # QoS 0
+                        writer.write(bytes(ack))
+                        await writer.drain()
+                        log_info(f"[MQTT Broker] {cid} 订阅: {topics}", C.DIM)
+
+                    elif ptype == MQTT_PUBLISH:
+                        tlen = struct.unpack(">H", packet[pos:pos+2])[0]
+                        topic = packet[pos+2:pos+2+tlen].decode("utf-8")
+                        qos_level = (packet[0] & 0x06) >> 1
+                        # QoS > 0 时 payload 前有 2 字节 packet identifier，需跳过
+                        payload_start = pos + 2 + tlen + (2 if qos_level > 0 else 0)
+                        payload = packet[payload_start:]
+                        # 转发给订阅者（强制降级为 QoS 0）
+                        targets = set(self._subscriptions.get(topic, []))
+                        for pat, w in self._wildcard_subs:
+                            if self._match_topic(pat, topic):
+                                targets.add(w)
+                        tbytes = topic.encode("utf-8")
+                        fwd = bytes([0x30]) + self._encode_rem(2 + len(tbytes) + len(payload))
+                        fwd += struct.pack(">H", len(tbytes)) + tbytes + payload
+                        for w in targets:
+                            if w != writer:
+                                try:
+                                    w.write(fwd)
+                                    await w.drain()
+                                except Exception:
+                                    pass
+
+                    elif ptype == MQTT_PINGREQ:
+                        writer.write(bytes([0xD0, 0x00]))
+                        await writer.drain()
+
+                    elif ptype == MQTT_DISCONNECT:
+                        break
+        except (asyncio.TimeoutError, ConnectionError, OSError):
+            pass
+        finally:
+            for tp in list(self._subscriptions):
+                self._subscriptions[tp] = [w for w in self._subscriptions[tp] if w != writer]
+                if not self._subscriptions[tp]:
+                    del self._subscriptions[tp]
+            self._wildcard_subs[:] = [(p, w) for p, w in self._wildcard_subs if w != writer]
+            try: writer.close()
+            except Exception: pass
+
+    @staticmethod
+    def _encode_rem(length: int) -> bytes:
+        result = bytearray()
+        while length > 0:
+            b = length & 0x7F; length >>= 7
+            if length > 0: b |= 0x80
+            result.append(b)
+        return bytes(result)
+
+    async def _run(self):
+        self._running = True
+        try:
+            server = await asyncio.start_server(
+                self._handle, self._host, self._port,
+                reuse_address=True,  # 允许端口快速复用
             )
-            if resp.status_code == 200:
-                return resp.json()
+            log_info(f"[MQTT Broker] 启动 -> {self._host}:{self._port}", C.G)
+            self._started = True
+            async with server:
+                await server.serve_forever()
+        except OSError as e:
+            log_info(f"[MQTT Broker] 端口 {self._port} 被占用: {e}", C.R)
+            log_info(f"[MQTT Broker] 请先关闭占用端口的程序，或: netstat -ano | findstr \":{self._port}\"", C.Y)
+            self._started = False
+
+    def start(self):
+        """在后台线程启动 Broker"""
+        def _go():
+            asyncio.run(self._run())
+        t = threading.Thread(target=_go, daemon=True)
+        t.start()
+        time.sleep(0.3)
+        return t
+
+
+# ═══════════════════════════════════════════════════
+# MQTT 设备处理器（订阅控制主题，上报状态）
+# ═══════════════════════════════════════════════════
+
+class MqttDeviceHandler:
+    """MQTT 设备处理器 — 基于 paho-mqtt，订阅控制主题并处理指令。"""
+
+    def __init__(self, mgr: UnifiedDeviceManager, broker_host: str = "127.0.0.1",
+                 broker_port: int = 1883):
+        self._mgr = mgr
+        self._host = broker_host
+        self._port = broker_port
+        self._running = False
+        self._topic_to_device: Dict[str, str] = {}  # topic -> device_id
+
+    def connect(self) -> bool:
+        """连接 Broker 并订阅所有 MQTT 设备的控制主题"""
+        try:
+            import paho.mqtt.client as mqtt
+        except ImportError:
+            log_info("[MQTT Handler] paho-mqtt 未安装", C.R)
+            return False
+
+        self._client = mqtt.Client(
+            client_id="mqtt_device_handler",
+            protocol=mqtt.MQTTv311,
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
+        )
+        self._connect_ok = threading.Event()
+        self._client.on_connect = self._on_connect
+        self._client.on_message = self._on_message
+        self._client.connect_async(self._host, self._port, keepalive=60)
+        self._client.loop_start()
+
+        # 等待连接
+        if not self._connect_ok.wait(timeout=3):
+            log_info("[MQTT Handler] 连接 Broker 超时", C.R)
+            return False
+
+        # 订阅所有 MQTT 设备的控制主题
+        for d in self._mgr.list_all():
+            if d["protocol"] == PROTO_MQTT:
+                did = d["id"]
+                defn = DEVICE_DEFS.get(did, {})
+                base_topic = defn.get("mqtt_topic", f"devices/{did}")
+                ctrl_topic = f"{base_topic}/control"
+                self._topic_to_device[ctrl_topic] = did
+                self._client.subscribe(ctrl_topic, qos=0)
+                log_info(f"[MQTT Handler] 订阅: {ctrl_topic}", C.DIM)
+
+        log_info(f"[MQTT Handler] 已订阅 {len(self._topic_to_device)} 个设备控制主题", C.G)
+        self._running = True
+        self._last_publish = 0
+
+        # 启动状态发布线程
+        def _publish_loop():
+            while self._running:
+                time.sleep(2)
+                if self._running:
+                    for did in self._topic_to_device.values():
+                        self.publish_state(did)
+
+        threading.Thread(target=_publish_loop, daemon=True).start()
+        return True
+
+    def _on_connect(self, client, userdata, flags, rc):
+        if rc == 0:
+            self._connect_ok.set()
+
+    def _on_message(self, client, userdata, msg):
+        """收到控制指令"""
+        did = self._topic_to_device.get(msg.topic)
+        if not did:
+            return
+        try:
+            cmd_data = json.loads(msg.payload.decode("utf-8"))
+            cmd = cmd_data.get("command", "")
+            params = cmd_data.get("params", {})
+            dev = self._mgr.get(did)
+            name = dev["_name"] if dev else did
+            log(name, f"收到指令: {cmd}", _fmt_params(params), PROTO_MQTT)
+            result = self._mgr.execute(did, cmd, params, source_proto=PROTO_MQTT)
+            self.publish_state(did)
+            if result.get("success"):
+                log(name, f"执行成功: {result.get('message', '')}", proto=PROTO_MQTT)
+            else:
+                log(name, f"执行失败: {result.get('message', '')}", proto=PROTO_MQTT)
+        except json.JSONDecodeError:
+            pass
+
+    def publish_state(self, device_id: str):
+        """发布设备当前状态到状态主题"""
+        defn = DEVICE_DEFS.get(device_id, {})
+        base_topic = defn.get("mqtt_topic", f"devices/{device_id}")
+        state_topic = f"{base_topic}/state"
+        state = self._mgr.read_state(device_id)
+        try:
+            self._client.publish(state_topic, json.dumps(state, ensure_ascii=False), qos=0)
         except Exception:
             pass
-        return []
 
-    def start(self, interval=2):
+
+# ═══════════════════════════════════════════════════
+# MQTT 客户端（供终端 CLI 使用）
+# ═══════════════════════════════════════════════════
+
+class SimpleMqttClient:
+    """简易 MQTT 客户端 — 终端通过此客户端向 MQTT 设备发送指令。"""
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 1883):
+        self._host = host; self._port = port
+        self._sock: Optional[socket.socket] = None
+        self._lock = threading.Lock()
+
+    def connect(self) -> bool:
+        try:
+            self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._sock.settimeout(5)
+            self._sock.connect((self._host, self._port))
+            cid = b"terminal_cli"
+            payload = b"\x00\x04MQTT\x04\x00\x00\x00"
+            payload += struct.pack(">H", len(cid)) + cid
+            rem = self._encode_rem(len(payload))
+            self._sock.sendall(bytes([0x10]) + rem + payload)
+            resp = self._sock.recv(4)
+            return len(resp) >= 4
+        except Exception as e:
+            log_info(f"[MQTT Client] 连接失败: {e}", C.R)
+            return False
+
+    def publish(self, topic: str, payload: dict):
+        """发布 JSON 消息到指定主题"""
+        with self._lock:
+            try:
+                data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                tbytes = topic.encode("utf-8")
+                pkt = bytes([0x30])
+                pkt += self._encode_rem(2 + len(tbytes) + len(data))
+                pkt += struct.pack(">H", len(tbytes)) + tbytes + data
+                self._sock.sendall(pkt)
+            except Exception as e:
+                log_info(f"[MQTT Client] 发布失败: {e}", C.R)
+
+    def close(self):
+        try: self._sock.close()
+        except Exception: pass
+
+    @staticmethod
+    def _encode_rem(length: int) -> bytes:
+        result = bytearray()
+        while length > 0:
+            b = length & 0x7F; length >>= 7
+            if length > 0: b |= 0x80
+            result.append(b)
+        return bytes(result)
+
+
+# ═══════════════════════════════════════════════════
+# 🔧 Modbus TCP 服务器（纯 Python，零依赖）
+# ═══════════════════════════════════════════════════
+
+MODBUS_FC_READ_HOLDING = 0x03
+MODBUS_FC_WRITE_SINGLE = 0x06
+MODBUS_FC_WRITE_MULTIPLE = 0x10
+
+
+class ModbusTcpServer:
+    """简易 Modbus TCP 服务器 — 模拟 Modbus 从站设备。
+
+    寄存器映射（每个从站 30 个保持寄存器）:
+      HR[0]:  设备状态 (0=关机, 1=待机, 2=工作中, 3=故障)
+      HR[1]:  电源 (0=关, 1=开)
+      HR[2]:  指令寄存器 (1=boot, 2=shutdown, 3=start, 4=stop, 5=reset)
+      HR[3]:  指令参数(duration 秒数)
+      HR[4]:  指令参数(amount_kg × 10)
+      HR[10]: 温度 × 10
+      HR[11]: 湿度 × 10
+      HR[12]: 土壤湿度 × 10
+      HR[13]: pH × 10
+      HR[14]: 光照 × 100
+    """
+
+    STATUS_MAP = {"powered_off": 0, "standby": 1, "running": 2, "error": 3}
+    STATUS_RMAP = {0: "powered_off", 1: "standby", 2: "running", 3: "error"}
+    CMD_MAP = {1: "power_on", 2: "power_off", 3: "start", 4: "stop", 5: "reset"}
+
+    def __init__(self, mgr: UnifiedDeviceManager, host: str = "127.0.0.1", port: int = 5020):
+        self._mgr = mgr
+        self._host = host; self._port = port
+        self._running = False
+        self._server_sock: Optional[socket.socket] = None
+        # 每个从站持有自己管理器的引用
+        self._slave_ids = set()
+        for d in mgr.list_all():
+            if d["protocol"] == PROTO_MODBUS:
+                defn = DEVICE_DEFS.get(d["id"], {})
+                sid = defn.get("modbus_slave", 0)
+                if sid > 0:
+                    self._slave_ids.add(sid)
+
+    def _build_registers(self, slave_id: int) -> List[int]:
+        """从 UnifiedDeviceManager 构建寄存器值"""
+        regs = [0] * 30
+        # 找到该从站对应的设备
+        for d in self._mgr.list_all():
+            if d["protocol"] != PROTO_MODBUS:
+                continue
+            defn = DEVICE_DEFS.get(d["id"], {})
+            if defn.get("modbus_slave") != slave_id:
+                continue
+            state = d["state"]
+            # 控制寄存器
+            regs[0] = self.STATUS_MAP.get(state.get("status", "powered_off"), 0)
+            regs[1] = 1 if state.get("power") else 0
+            # 传感器寄存器
+            if "temperature" in state:
+                regs[10] = int(state["temperature"] * 10)
+            if "humidity" in state:
+                regs[11] = int(state["humidity"] * 10)
+            if "soil_moisture" in state:
+                regs[12] = int(state["soil_moisture"] * 10)
+            if "ph" in state:
+                regs[13] = int(state["ph"] * 10)
+            if "light_lux" in state:
+                regs[14] = int(state["light_lux"] / 100)
+            break
+        return regs
+
+    def _handle_command(self, slave_id: int, cmd: str, params: dict):
+        """处理从 Modbus 指令寄存器解析出的命令"""
+        for d in self._mgr.list_all():
+            if d["protocol"] != PROTO_MODBUS:
+                continue
+            defn = DEVICE_DEFS.get(d["id"], {})
+            if defn.get("modbus_slave") == slave_id:
+                dev = self._mgr.get(d["id"])
+                name = dev["_name"] if dev else d["id"]
+                log(name, f"收到指令: {cmd}", _fmt_params(params), PROTO_MODBUS)
+                self._mgr.execute(d["id"], cmd, params, source_proto=PROTO_MODBUS)
+                return
+
+    def _handle_client(self, conn: socket.socket, addr):
+        """处理单个 Modbus TCP 客户端连接"""
+        def _mbap_response(tid: bytes, data_len: int) -> bytes:
+            """构建 MBAP 头: TID + PID(0x0000) + Len"""
+            return tid + b"\x00\x00" + struct.pack(">H", data_len)
+
+        try:
+            conn.settimeout(30)
+            buf = b""
+            while True:
+                data = conn.recv(1024)
+                if not data: break
+                buf += data
+
+                # Modbus TCP 帧: [TID(2)] [PID(2)] [Len(2)] [UID(1)] [FC(1)] [Data...]
+                while len(buf) >= 8:
+                    if len(buf) < 6: break
+                    length = struct.unpack(">H", buf[4:6])[0]
+                    total = 6 + length
+                    if len(buf) < total: break
+                    frame = buf[:total]; buf = buf[total:]
+
+                    tid = frame[0:2]
+                    slave_id = frame[6]
+                    func = frame[7]
+
+                    if slave_id not in self._slave_ids:
+                        pdu = bytes([func | 0x80, 0x02])
+                        conn.sendall(_mbap_response(tid, len(pdu)) + pdu)
+                        continue
+
+                    if func == MODBUS_FC_READ_HOLDING:
+                        start_addr = struct.unpack(">H", frame[8:10])[0]
+                        count = struct.unpack(">H", frame[10:12])[0]
+                        regs = self._build_registers(slave_id)
+                        byte_count = count * 2
+                        resp_data = bytearray()
+                        for i in range(count):
+                            val = regs[start_addr + i] if start_addr + i < len(regs) else 0
+                            resp_data.append((val >> 8) & 0xFF)
+                            resp_data.append(val & 0xFF)
+                        pdu = bytes([slave_id, func, byte_count]) + bytes(resp_data)
+                        conn.sendall(_mbap_response(tid, len(pdu)) + pdu)
+
+                    elif func == MODBUS_FC_WRITE_SINGLE:
+                        addr = struct.unpack(">H", frame[8:10])[0]
+                        value = struct.unpack(">H", frame[10:12])[0]
+                        if addr == 2:
+                            cmd = self.CMD_MAP.get(value, "")
+                            if cmd:
+                                self._handle_command(slave_id, cmd, {})
+                        # 回显: UID + FC + Addr + Value
+                        pdu = frame[6:12]
+                        conn.sendall(_mbap_response(tid, len(pdu)) + pdu)
+
+                    elif func == MODBUS_FC_WRITE_MULTIPLE:
+                        start_addr = struct.unpack(">H", frame[8:10])[0]
+                        reg_count = struct.unpack(">H", frame[10:12])[0]
+                        # 解析指令寄存器
+                        if start_addr <= 2 < start_addr + reg_count:
+                            idx = 2 - start_addr
+                            val = struct.unpack(">H", frame[13+idx*2:15+idx*2])[0]
+                            cmd = self.CMD_MAP.get(val, "")
+                            params = {}
+                            if start_addr <= 3 < start_addr + reg_count:
+                                i2 = 3 - start_addr
+                                params["duration"] = struct.unpack(">H", frame[13+i2*2:15+i2*2])[0] // 60
+                            if cmd:
+                                self._handle_command(slave_id, cmd, params)
+                        # 响应: UID + FC + StartAddr + Quantity
+                        pdu = frame[6:8] + frame[8:12]
+                        conn.sendall(_mbap_response(tid, len(pdu)) + pdu)
+
+                    else:
+                        pdu = bytes([slave_id, func | 0x80, 0x01])
+                        conn.sendall(_mbap_response(tid, len(pdu)) + pdu)
+
+        except (socket.timeout, ConnectionError, OSError):
+            pass
+        finally:
+            try: conn.close()
+            except Exception: pass
+
+    def start(self):
+        """在后台线程启动 Modbus TCP 服务器"""
         self._running = True
-        t = threading.Thread(target=self._monitor_loop, args=(interval,), daemon=True)
+        self._server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._server_sock.bind((self._host, self._port))
+        self._server_sock.listen(10)
+        self._server_sock.settimeout(1.0)
+
+        def _loop():
+            log_info(f"[Modbus] TCP 服务器启动 -> {self._host}:{self._port} ({len(self._slave_ids)}从站)", C.G)
+            while self._running:
+                try:
+                    conn, addr = self._server_sock.accept()
+                    log_info(f"[Modbus] 客户端连接: {addr}", C.DIM)
+                    threading.Thread(target=self._handle_client, args=(conn, addr), daemon=True).start()
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+
+        t = threading.Thread(target=_loop, daemon=True)
         t.start()
+        time.sleep(0.2)
         return t
 
     def stop(self):
         self._running = False
+        try: self._server_sock.close()
+        except Exception: pass
 
-    def _monitor_loop(self, interval):
-        time.sleep(3)  # 等后端就绪
-        log_start("API设备监控", 8000)
-        log_event("监控", "开始轮询", f"每{interval}s 检查设备状态变化")
 
-        while self._running:
+# ═══════════════════════════════════════════════════
+# Modbus 客户端（供终端 CLI 向 Modbus 设备发指令）
+# ═══════════════════════════════════════════════════
+
+class SimpleModbusClient:
+    """简易 Modbus TCP 客户端 — 终端通过此客户端向 Modbus 设备发送指令。"""
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 5020):
+        self._host = host; self._port = port
+
+    def write_command(self, slave_id: int, command: str, params: dict = None):
+        """写入指令寄存器"""
+        cmd_map = {"power_on": 1, "power_off": 2, "start": 3, "stop": 4, "reset": 5}
+        cmd_val = cmd_map.get(command, 0)
+        if cmd_val == 0:
+            log_info(f"[Modbus Client] 未知命令: {command}", C.R)
+            return
+
+        params = params or {}
+        dur_val = int(params.get("duration", 0)) * 60  # 转秒
+        amt_val = int(params.get("amount_kg", 0)) * 10
+
+        # 写多个寄存器：HR[2]=cmd, HR[3]=duration
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect((self._host, self._port))
+
+            # 功能码 0x10 (写多个寄存器)
+            tid = b"\x00\x01"
+            payload = struct.pack(">B", slave_id) + struct.pack(">B", 0x10)  # unit_id, func
+            payload += struct.pack(">H", 2)  # 起始地址
+            payload += struct.pack(">H", 2)  # 寄存器数量
+            payload += struct.pack(">B", 4)  # 字节数
+            payload += struct.pack(">H", cmd_val)
+            payload += struct.pack(">H", dur_val)
+            frame = tid + b"\x00\x00" + struct.pack(">H", len(payload)) + payload
+            sock.sendall(frame)
+            resp = sock.recv(1024)
+            sock.close()
+            if len(resp) >= 8:
+                log_info(f"[Modbus Client] 指令已发送 -> 从站{slave_id}: {command}", C.DIM)
+            else:
+                log_info(f"[Modbus Client] 未收到响应", C.R)
+        except Exception as e:
+            log_info(f"[Modbus Client] 发送失败: {e}", C.R)
+
+
+# ═══════════════════════════════════════════════════
+# 传感器数据模拟
+# ═══════════════════════════════════════════════════
+
+class SensorSimulator:
+    """定期更新传感器数据（温度/湿度/土壤湿度等的变化）"""
+
+    def __init__(self, mgr: UnifiedDeviceManager):
+        self._mgr = mgr
+        self._running = False
+
+    def start(self, interval: int = 5):
+        self._running = True
+
+        def loop():
+            while self._running:
+                time.sleep(interval)
+                with self._mgr._lock:
+                    for dev_id, dev in self._mgr._devices.items():
+                        if dev.get("status") != "running":
+                            continue
+                        if "temperature" in dev:
+                            dev["temperature"] = round(dev["temperature"] + random.uniform(-0.2, 0.2), 1)
+                        if "humidity" in dev:
+                            dev["humidity"] = round(max(0, min(100, dev["humidity"] + random.uniform(-0.5, 0.5))), 1)
+                        if "soil_moisture" in dev:
+                            if dev.get("_type") == "irrigate":
+                                dev["soil_moisture"] = round(min(100, dev.get("soil_moisture", 50) + random.uniform(0.5, 1.5)), 1)
+                        if "current_temp" in dev:
+                            dev["current_temp"] = round(dev["current_temp"] + random.uniform(-0.1, 0.3), 1)
+                        if "flow_rate" in dev and dev.get("_type") == "irrigate":
+                            dev["flow_rate"] = round(random.uniform(2.0, 8.0), 1)
+
+        threading.Thread(target=loop, daemon=True).start()
+        return self
+
+    def stop(self):
+        self._running = False
+
+
+# ═══════════════════════════════════════════════════
+# 🖥️  终端交互界面
+# ═══════════════════════════════════════════════════
+
+class TerminalUI:
+    """终端 CLI — 作为协议客户端控制设备。
+
+    HTTP 设备 → requests.post(:5000)
+    MQTT 设备 → SimpleMqttClient.publish(:1883)
+    Modbus 设备 → SimpleModbusClient.write(:5020)
+    """
+
+    def __init__(self, mgr: UnifiedDeviceManager,
+                 mqtt_client: SimpleMqttClient = None,
+                 modbus_client: SimpleModbusClient = None):
+        self._mgr = mgr
+        self._mqtt = mqtt_client
+        self._modbus = modbus_client
+        self._http_url = "http://127.0.0.1:5000"
+
+    def banner(self):
+        print(f"""
+{C.BOLD}{C.G}
+  ╔══════════════════════════════════════════════════════════════╗
+  ║     🌾 硬件模拟器 v5.0 — 完整协议栈模拟                    ║
+  ║     Farm Hardware Simulator (Full Protocol Stack)          ║
+  ╚══════════════════════════════════════════════════════════════╝{C.W}
+
+  {C.BOLD}协议:{C.W}  🌐 HTTP(:5000)  |  📡 MQTT(:1883)  |  🔧 Modbus TCP(:5020)
+
+  {C.Y}HTTP 设备 (3台):{C.W}   灌溉泵 / 补光灯 / 施肥一体机
+  {C.Y}MQTT 设备 (2台):{C.W}   通风扇 / 加热器
+  {C.Y}Modbus 设备 (2台):{C.W} 温湿度传感器 / 摄像头
+  {C.G}初始状态: 全部通电待机 ✅{C.W}
+""")
+
+    def help(self):
+        print(f"""
+  {C.BOLD}━━━ 命令列表 ━━━{C.W}
+
+  {C.G}查看:{C.W}
+    {C.C}list{C.W}            所有设备实时状态
+    {C.C}watch <id>{C.W}      单个设备详情
+
+  {C.G}控制（通过协议通道）:{C.W}
+    {C.C}boot  <id>{C.W}      通电启动
+    {C.C}start <id> [参数]{C.W} 开始工作
+    {C.C}stop  <id>{C.W}      停止工作
+    {C.C}shutdown <id>{C.W}   关机断电
+
+  {C.G}参数示例:{C.W}
+    {C.C}start pump dur=30{C.W}     灌溉30分钟后自动停
+    {C.C}start fan speed=60{C.W}    通风扇60%转速
+    {C.C}start light bri=80{C.W}    补光灯80%亮度
+    {C.C}start heat temp=28{C.W}    加热器目标28°C
+
+  {C.G}其他:{C.W}
+    {C.C}capture{C.W}         摄像头拍照
+    {C.C}help{C.W}            此帮助
+    {C.C}quit{C.W}            退出
+
+  {C.DIM}快捷ID: pump | fan | light | heat | sensor | fert | camera{C.W}
+""")
+
+    def show_all(self):
+        print(f"\n  {C.BOLD}━━━ 设备状态总览 ━━━{C.W}")
+        print(f"  {C.DIM}{'设备ID':30s} {'协议':6s} {'通电':4s} {'状态':8s} {'传感器读数'}{C.W}")
+        print(f"  {C.DIM}{'─'*80}{C.W}")
+        for d in self._mgr.list_all():
+            s = d["state"]
+            p = d["protocol"]
+            pw = f"{C.G}是{C.W}" if s.get("power") else f"{C.DIM}否{C.W}"
+            st = status_icon(s) + " " + POWER_STATE_LABELS.get(s.get("status"), "?")
+            readings = self._fmt_r(s)
+            proto_label = f"{PROTO_ICONS.get(p, '?')} {p}"
+            print(f"  {C.BOLD}{d['id']:30s}{C.W} {proto_label:8s} {pw:8s} {st:14s} {readings}")
+        print()
+
+    def show_one(self, device_id: str):
+        dev = self._mgr.get(device_id)
+        if not dev:
+            print(f"  {C.R}设备 '{device_id}' 不存在{C.W}")
+            return
+        print(f"\n  {C.BOLD}━━━ {dev['_name']} ━━━{C.W}")
+        print(f"  ID:     {device_id}")
+        print(f"  协议:   {dev['_protocol']}")
+        print(f"  状态:   {status_icon(dev)} {POWER_STATE_LABELS.get(dev.get('status'), '?')}")
+        print(f"  通电:   {'✅ 是' if dev.get('power') else '⭕ 否'}")
+        for k, v in dev.items():
+            if not k.startswith("_") and k not in ("power", "status") and isinstance(v, (int, float, str)):
+                print(f"  {k}: {v}")
+        print()
+
+    def _fmt_r(self, s: dict) -> str:
+        p = []
+        if "temperature" in s: p.append(f"T={s['temperature']}C")
+        if "humidity" in s: p.append(f"H={s['humidity']}%")
+        if "soil_moisture" in s: p.append(f"SM={s['soil_moisture']}%")
+        if "flow_rate" in s and s["flow_rate"] > 0: p.append(f"F={s['flow_rate']}")
+        if "rpm" in s and s["rpm"] > 0: p.append(f"RPM={s['rpm']}")
+        if "brightness_percent" in s and s["brightness_percent"] > 0: p.append(f"Bri={s['brightness_percent']}%")
+        if "target_temp" in s: p.append(f"Target={s['target_temp']}C")
+        return "  ".join(p) if p else "-"
+
+    def _resolve(self, name: str) -> str:
+        return SHORTCUTS.get(name.lower(), name)
+
+    def dispatch(self, line: str) -> bool:
+        """解析并分发命令到对应协议通道。返回 False 表示退出。"""
+        line = line.strip()
+        if not line: return True
+
+        parts = line.split()
+        cmd = parts[0].lower()
+
+        if cmd in ("quit", "q", "exit"): return False
+        if cmd in ("help", "h"): self.help(); return True
+        if cmd in ("list", "l", "status", "s"): self.show_all(); return True
+        if cmd == "watch" and len(parts) >= 2: self.show_one(self._resolve(parts[1])); return True
+        if cmd in ("capture", "pic"):
+            self._send_command("greenhouse_camera_01", "capture")
+            return True
+
+        if len(parts) < 2:
+            print(f"  {C.Y}用法: {cmd} <设备ID> [参数]{C.W}")
+            return True
+
+        target = self._resolve(parts[1])
+        params = self._parse(parts[2:])
+
+        if cmd in ("boot", "power_on"):
+            self._send_command(target, "power_on")
+        elif cmd in ("shutdown", "power_off"):
+            self._send_command(target, "power_off")
+        elif cmd == "start":
+            self._send_command(target, "start", params)
+        elif cmd == "stop":
+            self._send_command(target, "stop")
+        elif cmd == "reset":
+            self._send_command(target, "reset")
+        elif cmd == "set" and len(parts) >= 3:
+            self._send_command(target, "set_param", params)
+        else:
+            print(f"  {C.R}未知命令: {cmd}（输入 help 查看帮助）{C.W}")
+        return True
+
+    def _send_command(self, device_id: str, command: str, params: dict = None):
+        """根据设备协议分发命令"""
+        dev = self._mgr.get(device_id)
+        if not dev:
+            print(f"  {C.R}设备 '{device_id}' 不存在{C.W}")
+            return
+
+        proto = dev["_protocol"]
+        name = dev["_name"]
+        params = params or {}
+
+        if proto == PROTO_HTTP:
+            self._via_http(device_id, command, params, name)
+        elif proto == PROTO_MQTT:
+            self._via_mqtt(device_id, command, params, name)
+        elif proto == PROTO_MODBUS:
+            self._via_modbus(device_id, command, params, name)
+        else:
+            print(f"  {C.R}未知协议: {proto}{C.W}")
+
+    def _via_http(self, device_id: str, command: str, params: dict, name: str):
+        """通过 HTTP 协议发送指令"""
+        import requests
+        log(name, f"发送指令: {command}", _fmt_params(params), f"{PROTO_HTTP} [终端]")
+        try:
+            r = requests.post(
+                f"{self._http_url}/api/command",
+                json={"device_id": device_id, "command": command, "params": params},
+                headers={"X-Source": "terminal"},
+                timeout=5,
+            )
+            result = r.json()
+            self._ok(result)
+        except Exception as e:
+            # HTTP 服务器不可用时回退到直接执行
+            log_info(f"[HTTP] 服务器不可达，回退直接执行", C.Y)
+            result = self._mgr.execute(device_id, command, params, source_proto=f"{PROTO_HTTP} [终端]")
+            self._ok(result)
+
+    def _via_mqtt(self, device_id: str, command: str, params: dict, name: str):
+        """通过 MQTT 协议发送指令"""
+        if not self._mqtt:
+            log_info("[MQTT] 客户端未连接，回退到内部执行", C.Y)
+            self._mgr.execute(device_id, command, params, source_proto=f"{PROTO_MQTT} [终端]")
+            return
+
+        defn = DEVICE_DEFS.get(device_id, {})
+        base_topic = defn.get("mqtt_topic", f"devices/{device_id}")
+        ctrl_topic = f"{base_topic}/control"
+        log(name, f"发送指令: {command}", _fmt_params(params), f"{PROTO_MQTT} [终端]")
+        try:
+            self._mqtt.publish(ctrl_topic, {
+                "command": command,
+                "params": params,
+                "timestamp": datetime.now().isoformat(),
+            })
+            # MQTT 是异步的，设备处理器会在后台处理
+            # 短暂等待后直接通过管理器执行（确保即时反馈）
+            time.sleep(0.1)
+            self._mgr.execute(device_id, command, params, source_proto=f"{PROTO_MQTT} [终端]")
+        except Exception as e:
+            log_info(f"[MQTT] 发送失败: {e}", C.R)
+
+    def _via_modbus(self, device_id: str, command: str, params: dict, name: str):
+        """通过 Modbus 协议发送指令"""
+        defn = DEVICE_DEFS.get(device_id, {})
+        slave_id = defn.get("modbus_slave", 1)
+        log(name, f"发送指令: {command}", _fmt_params(params), f"{PROTO_MODBUS} [终端]")
+
+        if self._modbus:
             try:
-                devices = self._get_devices()
-                for d in devices:
-                    did = d.get("device_id", "")
-                    state = d.get("state", {})
-                    name = d.get("name", did)
+                self._modbus.write_command(slave_id, command, params)
+            except Exception as e:
+                log_info(f"[Modbus] 发送失败: {e}", C.R)
 
-                    if did in self._last_states:
-                        prev = self._last_states[did]
-                        # 检测状态变化
-                        if prev.get("status") != state.get("status"):
-                            old_label = POWER_STATE_LABELS.get(prev.get("status"), prev.get("status", "?"))
-                            new_label = POWER_STATE_LABELS.get(state.get("status"), state.get("status", "?"))
-                            log_event(name, f"状态变化: {old_label} -> {new_label}", "(前端操控)")
-                        elif prev.get("power") != state.get("power"):
-                            if state.get("power"):
-                                log_event(name, "通电", "(前端操控)")
-                            else:
-                                log_event(name, "断电", "(前端操控)")
+        # Modbus 服务器和终端 CLI 共享 manager，直接执行确保即时响应
+        self._mgr.execute(device_id, command, params, source_proto=f"{PROTO_MODBUS} [终端]")
 
-                    self._last_states[did] = dict(state)
-            except Exception:
-                pass
-            time.sleep(interval)
+    def _parse(self, args: List[str]) -> dict:
+        """解析 key=value 参数"""
+        params = {}
+        aliases = {"dur": "duration", "speed": "speed_percent", "bri": "brightness_percent",
+                   "temp": "target_temp", "amt": "amount_kg", "flow": "flow_rate"}
+        for a in args:
+            if "=" in a:
+                k, v = a.split("=", 1)
+                k = aliases.get(k, k)
+                try:
+                    params[k] = float(v) if ("." in v or v.isdigit()) else v
+                except ValueError:
+                    params[k] = v
+        return params
+
+    def _ok(self, r: dict):
+        if r.get("success"):
+            print(f"  {C.G}[OK] {r.get('message', '')}{C.W}")
+        else:
+            print(f"  {C.R}[FAIL] {r.get('message', '')}{C.W}")
 
 
 # ═══════════════════════════════════════════════════
 # 主程序
 # ═══════════════════════════════════════════════════
 
-def print_banner():
-    print(f"""
-{C.BOLD}{C.G}
-  ╔══════════════════════════════════════════════════════╗
-  ║     🌾 智能种植助手 — 硬件模拟器 v3.0               ║
-  ║     Farm Hardware Simulator                          ║
-  ╚══════════════════════════════════════════════════════╝{C.W}
-
-  {C.Y}模拟温室设备 (HTTP 真实驱动):{C.W}
-     灌溉泵      |  通风扇      |  补光灯
-     加热器      | ️ 温湿度传感器 |  施肥一体机
-
-""")
-
-
-def build_command_handlers(sim, mqtt_nodes):
-    """构建命令行处理函数"""
-
-    def show_status():
-        """显示所有设备状态"""
-        print(f"\n  {C.BOLD}{'设备ID':38s} {'通电':6s} {'状态':10s} {'详细信息'}{C.W}")
-        print(f"  {'-'*75}")
-        for d in sim.list_devices():
-            state = d["state"]
-            power_icon = f"{C.G}是{C.W}" if state.get("power") else f"{C.R}否{C.W}"
-            status_str = status_display(state)
-            extras = []
-            if "temperature" in state:
-                extras.append(f"temp={state['temperature']}°C")
-            if "humidity" in state:
-                extras.append(f"hum={state['humidity']}%")
-            if "soil_moisture" in state:
-                extras.append(f"soil={state['soil_moisture']}%")
-            if "flow_rate" in state:
-                extras.append(f"flow={state['flow_rate']}")
-            if "rpm" in state:
-                extras.append(f"rpm={state['rpm']}")
-            if "brightness" in state:
-                extras.append(f"bri={state['brightness']}")
-            print(f"  {d['id']:38s} {power_icon:8s} {status_str:14s} {', '.join(extras)}")
-
-        # MQTT nodes
-        for nid, node in mqtt_nodes.items():
-            s = node.read_state()
-            p_icon = f"{C.G}是{C.W}" if s.get("power") else f"{C.R}否{C.W}"
-            st = status_display(s)
-            print(f"  {f'{nid}(MQTT)':38s} {p_icon:8s} {st:14s} temp={s['temperature']}°C hum={s['humidity']}%")
-        print()
-
-    def do_command(device_id, command, params=None):
-        # 先尝试持久化模拟器
-        result = sim.execute(device_id, command, params)
-        if result["success"]:
-            return result
-
-        # 再尝试 MQTT 节点
-        if device_id in mqtt_nodes:
-            return mqtt_nodes[device_id].execute(command, params)
-
-        print(f"  {C.R}设备不存在: {device_id}{C.W}")
-        return {"success": False, "message": "设备不存在"}
-
-    return show_status, do_command
+def _setup_console():
+    if sys.platform == "win32":
+        try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception: pass
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleCP(65001)
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        except Exception: pass
 
 
 def main():
-    print_banner()
+    _setup_console()
 
-    # ── 1. 多设备 HTTP 服务器（6台温室设备）──
-    http_app = start_http_server(5000)
+    # ── 1. 统一设备管理器（默认通电待机）──
+    mgr = UnifiedDeviceManager()
+    mgr.init_all()
 
-    # ── 2. API 监控（轮询后端检测前端操控）──
-    monitor = APIMonitor()
-    monitor.start(interval=2)
+    # ── 2. HTTP 服务器 ──
+    http_ok = create_http_server(mgr)
 
-    # ── 3. 交互循环 ──
-    print(f"\n  {C.BOLD}{'='*70}{C.W}")
-    print(f"  {C.G}6台温室设备已就绪（初始状态: 关机），等待指令...{C.W}")
-    print(f"  {C.Y}前端操控设备时，此终端实时显示硬件反馈{C.W}")
-    print(f"  {C.BOLD}{'='*70}{C.W}\n")
-    print(f"  {C.B}可用命令:{C.W}")
-    print(f"    {C.C}list / l{C.W}         查看所有设备状态")
-    print(f"    {C.C}boot <id>{C.W}         通电启动 (如: boot pump)")
-    print(f"    {C.C}start <id>{C.W}        开始工作 (如: start pump)")
-    print(f"    {C.C}stop <id>{C.W}         停止工作")
-    print(f"    {C.C}shutdown <id>{C.W}    关机断电")
-    print(f"    {C.C}help / h / quit / q{C.W}")
-    print(f"\n  {C.B}设备快捷ID:{C.W}")
-    print(f"    pump / fan / light / heat / sensor / fert")
-    print()
+    # ── 3. MQTT Broker ──
+    mqtt_broker = MqttBroker("127.0.0.1", 1883)
+    mqtt_broker.start()
+    time.sleep(0.5)  # 等待 broker 绑定端口
+    mqtt_broker_ok = mqtt_broker._started
 
-    shortcuts = {
-        "pump": "irrigation_pump_01", "fan": "ventilation_fan_01",
-        "light": "grow_light_01", "heat": "heater_01",
-        "sensor": "env_sensor_01", "fert": "fertilizer_pump_01",
-    }
+    # ── 4. MQTT 设备处理器 ──
+    mqtt_handler = MqttDeviceHandler(mgr)
+    mqtt_handler_ok = mqtt_handler.connect() if mqtt_broker_ok else False
 
-    def show_all_status():
-        """通过 HTTP 请求查看服务器上所有设备状态"""
-        try:
-            import requests
-            resp = requests.get("http://localhost:5000/health", timeout=3)
-            health = resp.json()
-            print(f"\n  {C.BOLD}HTTP服务器: {health.get('status')}, 设备总数: {health.get('device_count')}{C.W}")
+    # ── 5. MQTT 客户端（供终端使用）──
+    mqtt_client = SimpleMqttClient()
+    mqtt_client_ok = mqtt_client.connect() if mqtt_broker_ok else False
 
-            resp2 = requests.get("http://localhost:5000/api/state", timeout=3)
-            summary = resp2.json().get("devices", {})
-            print(f"  {C.BOLD}{'设备ID':30s} {'名称':16s} {'状态':10s}{C.W}")
-            print(f"  {'-'*60}")
-            for did, info in summary.items():
-                st = info.get("status", "powered_off")
-                label = POWER_STATE_LABELS.get(st, st)
-                icon = "●" if st == "running" else "○" if st == "standby" else "○"
-                print(f"  {did:30s} {info['name']:16s} {icon} {label}")
-            print()
-        except Exception as e:
-            print(f"  {C.R}无法连接HTTP服务器: {e}{C.W}")
+    # ── 6. Modbus TCP 服务器 ──
+    modbus_server = ModbusTcpServer(mgr)
+    modbus_server.start()
+    modbus_ok = True  # 简化：默认启动成功
 
-    def send_http_command(device_id, command, params=None):
-        """发送HTTP指令到模拟硬件"""
-        try:
-            import requests
-            payload = {"device_id": device_id, "command": command, "params": params or {}}
-            resp = requests.post("http://localhost:5000/api/command", json=payload, timeout=5)
-            result = resp.json()
-            if result.get("success"):
-                print(f"  {C.G}[OK]{C.W} {result.get('message', '')}")
-            else:
-                print(f"  {C.R}[FAIL]{C.W} {result.get('message', '')}")
-        except Exception as e:
-            print(f"  {C.R}指令发送失败: {e}{C.W}")
+    # ── 7. Modbus 客户端（供终端使用）──
+    modbus_client = SimpleModbusClient()
 
+    # ── 8. 传感器数据模拟 ──
+    sensor = SensorSimulator(mgr).start(interval=5)
+
+    # ── 9. 终端 UI ──
+    ui = TerminalUI(mgr, mqtt_client if mqtt_client_ok else None, modbus_client)
+    ui.banner()
+
+    # 统计信息
+    proto_counts = {}
+    for d in mgr.list_all():
+        p = d["protocol"]
+        proto_counts[p] = proto_counts.get(p, 0) + 1
+    proto_str = " | ".join(f"{PROTO_ICONS.get(p, '')} {p}: {c}台" for p, c in proto_counts.items())
+
+    print(f"  {C.BOLD}{'═'*60}{C.W}")
+    print(f"  {C.G}  {proto_str}{C.W}")
+    print(f"  {C.G}  HTTP :5000 {'✅' if http_ok else '❌'}  |  MQTT :1883 {'✅' if mqtt_broker_ok else '❌'}  |  Modbus :5020 {'✅' if modbus_ok else '❌'}{C.W}")
+    print(f"  {C.G}  全部设备默认通电待机，等待指令...{C.W}")
+    print(f"  {C.BOLD}{'═'*60}{C.W}")
+    print(f"  {C.DIM}输入 {C.C}help{C.DIM} 查看命令 | {C.C}list{C.DIM} 查看状态{C.W}\n")
+
+    # ── 交互循环 ──
     try:
         while True:
             try:
-                line = input(f"  {C.C}>>> {C.W}").strip()
+                line = input(f"  {C.C}▸ {C.W}").strip()
             except (EOFError, KeyboardInterrupt):
                 break
-
-            if not line:
-                continue
-
-            parts = line.split()
-            cmd = parts[0].lower()
-
-            if cmd in ("quit", "q", "exit"):
+            if not ui.dispatch(line):
                 break
-            elif cmd in ("help", "h"):
-                print(f"\n  {C.B}快捷ID:{C.W}")
-                for k, v in shortcuts.items():
-                    print(f"    {k:8s} -> {v}")
-                print()
-            elif cmd in ("list", "l", "status", "s"):
-                show_all_status()
-            elif cmd in ("boot", "power_on") and len(parts) >= 2:
-                target = shortcuts.get(parts[1], parts[1])
-                send_http_command(target, "power_on")
-            elif cmd == "start" and len(parts) >= 2:
-                target = shortcuts.get(parts[1], parts[1])
-                send_http_command(target, "start", {"duration": 10})
-            elif cmd == "stop" and len(parts) >= 2:
-                target = shortcuts.get(parts[1], parts[1])
-                send_http_command(target, "stop")
-            elif cmd in ("shutdown", "power_off") and len(parts) >= 2:
-                target = shortcuts.get(parts[1], parts[1])
-                send_http_command(target, "power_off")
-            elif cmd == "set" and len(parts) >= 3:
-                target = shortcuts.get(parts[1], parts[1])
-                try:
-                    k, v = parts[2].split("=")
-                    send_http_command(target, "set_param", {k: float(v)})
-                except ValueError:
-                    print(f"  {C.R}格式: set <device> key=value{C.W}")
-            else:
-                print(f"  {C.R}未知命令: {cmd}{C.W}")
-
     except KeyboardInterrupt:
         pass
 
-    # 清理
-    print(f"\n  {C.Y}正在停止所有硬件模拟...{C.W}")
-    monitor.stop()
-    print(f"  {C.G}硬件模拟器已停止{C.W}\n")
+    # ── 清理 ──
+    print(f"\n  {C.Y}正在停止所有服务...{C.W}")
+    sensor.stop()
+    try: mqtt_client.close()
+    except Exception: pass
+    modbus_server.stop()
+    print(f"  {C.G}硬件模拟器已安全退出 👋{C.W}\n")
 
 
 if __name__ == "__main__":

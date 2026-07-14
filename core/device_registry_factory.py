@@ -237,7 +237,14 @@ def setup_registry(username: str = "default", loop=None):
             port_groups: Dict[str, List[dict]] = {}
             for cd in modbus_configs:
                 conn = cd.get("connection", {})
-                port = conn.get("port", "/dev/ttyUSB0")
+                mode = conn.get("mode", "rtu")
+                # 兼容 int/str 类型的 port，TCP 模式组合为 "host:port"
+                if mode == "tcp":
+                    host = conn.get("host", "127.0.0.1")
+                    raw_port = conn.get("port", 502)
+                    port = f"{host}:{raw_port}"
+                else:
+                    port = str(conn.get("port", "/dev/ttyUSB0"))
                 if port not in port_groups:
                     port_groups[port] = []
                 port_groups[port].append(cd)

@@ -811,6 +811,14 @@ def register_routes(app: FastAPI):
             logger.exception("获取设备列表失败")
             return []
 
+    @app.post("/api/devices/refresh")
+    def refresh_devices(username: str = "default"):
+        """清除注册中心缓存，强制重连所有驱动"""
+        from core.device_registry_factory import invalidate_registry_cache
+        invalidate_registry_cache(username)
+        logger.info("设备注册中心缓存已清除 (user=%s)", username)
+        return {"success": True, "message": "Registry cache cleared, drivers will reconnect"}
+
     @app.post("/api/devices")
     def create_device(device_data: Dict, username: str = "default"):
         """添加新的自定义设备"""

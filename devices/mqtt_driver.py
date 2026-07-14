@@ -117,7 +117,7 @@ class MQTTDriver(BaseDeviceDriver):
         # 如果已经连接，自动订阅新设备的状态主题
         if self._connected and self._client is not None:
             try:
-                self._client.subscribe(state_topic, qos=1)
+                self._client.subscribe(state_topic, qos=0)
                 logger.info("MQTT 自动订阅新设备状态: %s → %s", device_id, state_topic)
             except Exception as e:
                 logger.warning("MQTT 自动订阅失败 %s: %s", device_id, e)
@@ -130,7 +130,11 @@ class MQTTDriver(BaseDeviceDriver):
             return True
 
         try:
-            self._client = mqtt.Client(client_id=self._client_id, protocol=mqtt.MQTTv311)
+            self._client = mqtt.Client(
+                client_id=self._client_id,
+                protocol=mqtt.MQTTv311,
+                callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
+            )
             self._client.on_connect = self._on_connect
             self._client.on_message = self._on_message
             self._client.on_disconnect = self._on_disconnect
@@ -138,18 +142,18 @@ class MQTTDriver(BaseDeviceDriver):
             if self._username and self._password:
                 self._client.username_pw_set(self._username, self._password)
 
-            # 使用 asyncio.Event 等待连接确认，替代固定 sleep
-            self._connect_event = asyncio.Event()
+            # 使用 threading.Event（非 asyncio.Event）避免 Windows 跨线程唤醒问题
+            self._connect_event = threading.Event()
             self._client.connect_async(self._broker_host, self._broker_port, keepalive=60)
             self._client.loop_start()
 
-            # 等待连接建立确认或超时
-            try:
-                await asyncio.wait_for(self._connect_event.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
+            # 等待连接确认：用 to_thread 避免阻塞事件循环
+            connected = await asyncio.to_thread(
+                self._connect_event.wait, 3.0  # 3 秒超时
+            )
+            if not connected:
                 logger.debug("MQTT 连接超时 (%s:%d)", self._broker_host, self._broker_port)
                 self._connected = False
-                # 清理后台线程，避免资源泄漏
                 self._client.loop_stop()
                 self._client.disconnect()
                 return False
@@ -160,7 +164,7 @@ class MQTTDriver(BaseDeviceDriver):
             for dev_id, dev in self._devices.items():
                 state_topic = dev["info"].get("state_topic")
                 if state_topic:
-                    self._client.subscribe(state_topic, qos=1)
+                    self._client.subscribe(state_topic, qos=0)
                     logger.info("MQTT 订阅状态: %s → %s", dev_id, state_topic)
 
             logger.info("MQTTDriver: 已连接到 %s:%d (%d 设备)",
@@ -254,12 +258,12 @@ class MQTTDriver(BaseDeviceDriver):
                 "device_id": device_id,
             }
 
-            # 发布到控制主题（在后台线程执行 wait_for_publish，避免阻塞事件循环）
-            msg_info = self._client.publish(topic, json.dumps(payload, ensure_ascii=False), qos=1)
+            # 发布到控制主题（QoS 0，内嵌 Broker 支持）
+            msg_info = self._client.publish(topic, json.dumps(payload, ensure_ascii=False), qos=0)
             try:
-                await asyncio.to_thread(msg_info.wait_for_publish, timeout=5)
-            except asyncio.TimeoutError:
-                logger.warning("MQTT 发布超时: %s → %s", device_id, topic)
+                await asyncio.to_thread(msg_info.wait_for_publish, timeout=3)
+            except (asyncio.TimeoutError, RuntimeError):
+                pass  # QoS 0 无需等待 PUBACK
 
             # 乐观状态更新：最佳努力，仅反映"已下发指令"，实际状态由 state_topic 异步回传确认
             # 注意：如果设备离线，此乐观更新可能会与实际状态不一致，state_topic 消息会覆盖它

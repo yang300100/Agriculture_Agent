@@ -611,5 +611,7 @@ def render_devices_page():
 
     # 刷新按钮
     if st.button("🔄 刷新数据"):
+        # 先通知后端清除注册中心缓存，强制驱动重连
+        api("/api/devices/refresh", method="post")
         invalidate_cache("/api/devices", "/api/actions/pending", "/api/actions/log")
         st.rerun()
