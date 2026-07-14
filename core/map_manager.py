@@ -61,12 +61,35 @@ class MapManager:
                 self.fields = []
 
     def _save_data(self):
-        """保存地块数据到JSON文件"""
+        """保存地块数据到JSON文件 + DB同步"""
         try:
             with open(self.DATA_FILE, 'w', encoding='utf-8') as f:
                 json.dump([field.model_dump() for field in self.fields], f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"保存地块数据失败: {e}")
+        # DB同步
+        try:
+            from core.database.repository.fields import FieldRepository
+            from core.database.repository.users import UserRepository
+            user_repo = UserRepository()
+            user = user_repo.get_by_username("default")
+            if not user:
+                user = user_repo.create(username="default", password_hash="")
+            repo = FieldRepository()
+            items = [{
+                "name": f.name,
+                "coordinates": json.dumps(f.coordinates, ensure_ascii=False),
+                "center_lat": f.center_lat,
+                "center_lon": f.center_lon,
+                "area_mu": f.area_mu,
+                "area_m2": f.area_m2,
+                "soil_type": f.soil_type,
+                "current_crop": f.current_crop,
+                "planting_history": json.dumps(f.planting_history, ensure_ascii=False) if hasattr(f, 'planting_history') and f.planting_history else "[]",
+            } for f in self.fields]
+            repo.replace_all_for_user(user.id, items)
+        except Exception as e:
+            logger.debug("数据库同步地块失败: %s", e)
 
     @staticmethod
     def calculate_area(coordinates: List[List[float]]) -> Tuple[float, float]:

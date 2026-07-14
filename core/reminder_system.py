@@ -98,12 +98,37 @@ class ReminderStorage:
             return []
 
     def save_reminders(self, reminders: List[Dict[str, Any]]):
-        """保存所有提醒"""
+        """保存所有提醒（DB同步）"""
         try:
             with open(self.reminders_file, 'w', encoding='utf-8') as f:
                 json.dump(reminders, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"保存提醒失败: {e}")
+        # DB同步
+        try:
+            from core.database.repository.reminders import ReminderRepository
+            from core.database.repository.users import UserRepository
+            user_repo = UserRepository()
+            user = user_repo.get_by_username("default")
+            if not user:
+                user = user_repo.create(username="default", password_hash="")
+            repo = ReminderRepository()
+            items = [{
+                "crop": r.get("crop", ""),
+                "reminder_type": r.get("reminder_type", ""),
+                "task_description": r.get("task_description", ""),
+                "growth_stage": r.get("growth_stage", ""),
+                "frequency": r.get("frequency", "once"),
+                "interval_days": r.get("interval_days"),
+                "time_of_day": r.get("time_of_day"),
+                "advance_hours": r.get("advance_hours", 0),
+                "channels": json.dumps(r.get("channels", []), ensure_ascii=False),
+                "status": r.get("status", "active"),
+                "next_trigger": r.get("next_trigger"),
+            } for r in reminders]
+            repo.replace_all_for_user(user.id, items)
+        except Exception as e:
+            logger.debug("数据库同步提醒失败: %s", e)
 
     def add_reminder(self, reminder: Dict[str, Any]):
         """添加单个提醒"""

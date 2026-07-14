@@ -95,6 +95,9 @@ class PlantingTracker:
         self.progress_file = os.path.join(storage_dir, "planting_progress.json")
         self._ensure_storage()
 
+    def _get_username(self) -> str:
+        return os.path.basename(self.storage_dir.rstrip("/\\"))
+
     def _ensure_storage(self):
         """确保存储目录和文件存在"""
         if not os.path.exists(self.storage_dir):
@@ -154,20 +157,45 @@ class PlantingTracker:
             return []
 
     def _save_tasks(self, tasks: List[Dict[str, Any]]):
-        """保存任务列表（原子写入）"""
+        """保存任务列表（原子写入 + DB同步）"""
         tmp_path = self.tasks_file + ".tmp"
         try:
             with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump(tasks, f, ensure_ascii=False, indent=2)
             os.replace(tmp_path, self.tasks_file)
         except Exception:
-            # 原子替换失败，记录错误，保留原文件不动（避免直接写入导致文件损坏）
             logger.error("保存任务文件失败（原子替换不可用），数据未写入 %s", self.tasks_file)
             try:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
             except Exception:
                 pass
+        # DB同步
+        try:
+            from core.database.repository.planting import PlantingTaskRepository
+            from core.database.repository.users import UserRepository
+            user_repo = UserRepository()
+            user = user_repo.get_by_username(self._get_username())
+            if user:
+                repo = PlantingTaskRepository()
+                items = [{
+                    "crop": t.get("crop", ""),
+                    "task_type": t.get("task_type", ""),
+                    "title": t.get("title", ""),
+                    "description": t.get("description", ""),
+                    "status": t.get("status", "待办"),
+                    "priority": t.get("priority", "medium"),
+                    "start_date": t.get("start_date"),
+                    "end_date": t.get("end_date"),
+                    "completed_date": t.get("completed_date"),
+                    "device_id": t.get("device_id"),
+                    "device_command": t.get("device_command"),
+                    "device_params": json.dumps(t.get("device_params", {}), ensure_ascii=False) if t.get("device_params") else "{}",
+                    "notes": t.get("notes", ""),
+                } for t in tasks]
+                repo.replace_all_for_user(user.id, items)
+        except Exception as e:
+            logger.debug("数据库同步任务失败: %s", e)
 
     def get_tasks(self, crop: Optional[str] = None, status: Optional[str] = None) -> List[PlantingTask]:
         """获取任务列表，支持筛选"""
@@ -270,20 +298,41 @@ class PlantingTracker:
             return []
 
     def _save_progresses(self, progresses: List[Dict[str, Any]]):
-        """保存进度列表（原子写入）"""
+        """保存进度列表（原子写入 + DB同步）"""
         tmp_path = self.progress_file + ".tmp"
         try:
             with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump(progresses, f, ensure_ascii=False, indent=2)
             os.replace(tmp_path, self.progress_file)
         except Exception:
-            # 原子替换失败，记录错误，保留原文件不动（避免直接写入导致文件损坏）
             logger.error("保存进度文件失败（原子替换不可用），数据未写入 %s", self.progress_file)
             try:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
             except Exception:
                 pass
+        # DB同步
+        try:
+            from core.database.repository.planting import PlantingPlanRepository
+            from core.database.repository.users import UserRepository
+            user_repo = UserRepository()
+            user = user_repo.get_by_username(self._get_username())
+            if user:
+                repo = PlantingPlanRepository()
+                items = [{
+                    "crop": p.get("crop", ""),
+                    "stage": p.get("stage"),
+                    "stage_number": p.get("stage_number"),
+                    "total_stages": p.get("total_stages"),
+                    "start_date": p.get("start_date"),
+                    "expected_end_date": p.get("expected_end_date"),
+                    "actual_end_date": p.get("actual_end_date"),
+                    "progress_percent": p.get("progress_percent", 0),
+                    "status": p.get("status", "active"),
+                } for p in progresses]
+                repo.replace_all_for_user(user.id, items)
+        except Exception as e:
+            logger.debug("数据库同步进度失败: %s", e)
 
     def get_progress(self, crop: Optional[str] = None) -> List[PlantingProgress]:
         """获取进度列表"""

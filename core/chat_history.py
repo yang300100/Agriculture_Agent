@@ -30,6 +30,14 @@ class ChatHistoryStore:
                 json.dump({"sessions": []}, f, ensure_ascii=False, indent=2)
 
     def _load(self) -> Dict:
+        # 优先从数据库加载
+        try:
+            db_data = self._load_from_db()
+            if db_data is not None:
+                return db_data
+        except Exception as e:
+            logger.debug("数据库加载对话失败，回退JSON: %s", e)
+
         if not os.path.exists(self.store_file):
             return {"sessions": []}
         try:
@@ -39,7 +47,6 @@ class ChatHistoryStore:
                 raise ValueError("chat_history.json 格式无效")
             return data
         except json.JSONDecodeError:
-            # JSON 损坏：备份后返回空数据
             if os.path.exists(self.store_file):
                 backup_path = f"{self.store_file}.corrupted.{datetime.now().strftime('%Y%m%d%H%M%S')}"
                 try:
@@ -49,16 +56,73 @@ class ChatHistoryStore:
                     logger.error("备份损坏的 chat_history.json 失败")
             return {"sessions": []}
         except (OSError, IOError) as e:
-            # IO 错误：暂不覆盖文件，保留原始数据
             logger.error("chat_history.json 读取 IO 错误: %s", e)
             raise
 
     def _save(self, data: Dict):
-        # 原子写入：防止写入中途崩溃导致文件损坏
+        # 原子写入JSON
         tmp_file = self.store_file + ".tmp"
         with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp_file, self.store_file)
+        # 同步到数据库
+        try:
+            self._save_to_db(data)
+        except Exception as e:
+            logger.debug("数据库同步对话失败: %s", e)
+
+    def _load_from_db(self) -> Optional[Dict]:
+        from core.database.repository.chat import ChatSessionRepository
+        from core.database.repository.users import UserRepository
+        user_repo = UserRepository()
+        user = user_repo.get_by_username("default")
+        if not user:
+            return None
+        session_repo = ChatSessionRepository()
+        db_sessions = session_repo.find_by(user_id=user.id)
+        if not db_sessions:
+            return None
+        sessions = []
+        for s in db_sessions:
+            sessions.append({
+                "id": str(s.id),
+                "title": s.title or "未命名",
+                "created_at": s.created_at.isoformat() if s.created_at else "",
+                "updated_at": s.updated_at.isoformat() if s.updated_at else "",
+                "message_count": len(s.messages) if s.messages else 0,
+                "messages": [{
+                    "role": m.role,
+                    "content": m.content,
+                } for m in (s.messages or [])],
+            })
+        return {"sessions": sessions}
+
+    def _save_to_db(self, data: Dict):
+        from core.database.engine import init_db
+        from core.database.repository.chat import ChatSessionRepository, ChatMessageRepository
+        from core.database.repository.users import UserRepository
+        init_db()
+        user_repo = UserRepository()
+        user = user_repo.get_by_username("default")
+        if not user:
+            user = user_repo.create(username="default", password_hash="")
+        session_repo = ChatSessionRepository()
+        msg_repo = ChatMessageRepository()
+        # 删除旧会话（替换为最新数据）
+        existing = session_repo.find_by(user_id=user.id)
+        for s in existing:
+            session_repo.delete(s.id)
+        for s in data.get("sessions", []):
+            sid = session_repo.create(
+                user_id=user.id,
+                title=s.get("title", "未命名"),
+            ).id
+            for m in s.get("messages", []):
+                msg_repo.create(
+                    session_id=sid,
+                    role=m.get("role", "user"),
+                    content=m.get("content", ""),
+                )
 
     def save_session(self, session_id: str, messages: List[Dict], title: str = ""):
         """保存一个会话"""
