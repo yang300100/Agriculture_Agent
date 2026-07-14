@@ -221,6 +221,53 @@ if __name__ == "__main__":
     t = threading.Thread(target=_publish_loop, args=(client, args.interval), daemon=True)
     t.start()
 
-    print(f"\n[MQTT模拟器] 运行中 (Broker: {args.broker}:{args.port}, 上报间隔: {args.interval}s)")
-    print("按 Ctrl+C 停止")
-    client.loop_forever()
+    print(f"\n[MQTT模拟器] Broker: {args.broker}:{args.port}, 上报间隔: {args.interval}s")
+    print("[MQTT模拟器] 下方可直接输入命令操控设备（输入 help 查看帮助）")
+
+    # MQTT 网络循环在后台线程
+    def mqtt_loop():
+        client.loop_forever()
+    threading.Thread(target=mqtt_loop, daemon=True).start()
+
+    # 交互命令行
+    import time as _time
+    _time.sleep(1)
+    HELP = """命令: on/off/start/stop/reset/error <设备ID> | set <设备ID> <字段> <值> | state <设备ID> | list | quit"""
+    print(HELP)
+    while True:
+        try:
+            line = input("mqtt> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not line: continue
+        parts = line.split()
+        cmd = parts[0].lower()
+        if cmd == "quit": break
+        elif cmd == "help": print(HELP)
+        elif cmd == "list":
+            with _lock:
+                for did, d in _devices.items():
+                    s = d["state"]
+                    print(f"  {did:25s} {d['name']:15s} [{s.get('status','?'):12s}] power={s.get('power',False)}")
+        elif cmd == "state" and len(parts) >= 2:
+            with _lock:
+                if parts[1] in _devices:
+                    for k, v in sorted(_devices[parts[1]]["state"].items()):
+                        print(f"  {k}: {v}")
+        elif cmd in ("on","off","start","stop","reset","error") and len(parts) >= 2:
+            cmd_map = {"on":"power_on","off":"power_off","start":"start","stop":"stop","reset":"reset","error":"sim_error"}
+            params = {}
+            for p in parts[2:]:
+                if "=" in p:
+                    k, v = p.split("=", 1)
+                    try: params[k] = float(v) if "." in v else int(v)
+                    except: params[k] = v
+            with _lock:
+                ok, msg = _execute(parts[1], cmd_map[cmd], params)
+            print(f"  {'OK' if ok else 'ERR'} {msg}")
+        elif cmd == "set" and len(parts) >= 4:
+            try: val = float(parts[3]) if "." in parts[3] else int(parts[3])
+            except: val = parts[3]
+            with _lock: ok, msg = _execute(parts[1], "set_param", {parts[2]: val})
+            print(f"  {'OK' if ok else 'ERR'} {msg}")
+    client.disconnect()

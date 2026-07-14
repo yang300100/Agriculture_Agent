@@ -171,13 +171,56 @@ if __name__ == "__main__":
     t = threading.Thread(target=_drift_loop, args=(5,), daemon=True)
     t.start()
 
-    print(f"\n[Modbus模拟器] 启动: {args.host}:{args.port}")
-    print(f"  指令: 写寄存器20 (1=开机 2=关机 3=启动 4=停止 5=复位)")
-    print(f"  传感器: 读寄存器10-13 (温度/湿度/土壤湿度/CO2)")
-    print("按 Ctrl+C 停止")
+    print(f"\n[Modbus模拟器] Modbus TCP: {args.host}:{args.port}")
+    print("[Modbus模拟器] 下方可直接输入命令操控设备（输入 help 查看帮助）")
+    print("  指令映射: on=写寄存器20=1, off=2, start=3, stop=4, reset=5, error=写状态=3")
 
-    StartTcpServer(
-        context=context,
-        identity=ModbusDeviceIdentification(),
-        address=(args.host, args.port),
-    )
+    # Modbus server 在后台线程
+    def run_modbus():
+        StartTcpServer(context=context, identity=ModbusDeviceIdentification(),
+                       address=(args.host, args.port))
+    threading.Thread(target=run_modbus, daemon=True).start()
+    import time as _time; _time.sleep(1)
+
+    HELP = "命令: on/off/start/stop/reset/error <从站号> | set <从站号> <寄存器地址> <值> | state <从站号> | list | quit"
+    print(HELP)
+    while True:
+        try:
+            line = input("modbus> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not line: continue
+        parts = line.split()
+        cmd = parts[0].lower()
+        if cmd == "quit": break
+        elif cmd == "help": print(HELP)
+        elif cmd == "list":
+            with _lock:
+                for sid, cfg in SLAVE_CONFIG.items():
+                    regs = _slave_states[sid]
+                    status = ["powered_off","standby","running","error"][min(regs[0], 3)]
+                    print(f"  从站#{sid}: {cfg['name']:15s} [{status:12s}] power={regs[1]}")
+        elif cmd == "state" and len(parts) >= 2:
+            sid = int(parts[1])
+            with _lock:
+                if sid in _slave_states:
+                    regs = _slave_states[sid]
+                    print(f"  status={regs[0]} power={regs[1]} temp={regs[10]/10:.1f}°C humidity={regs[11]/10:.1f}% soil={regs[12]/10:.1f}% co2={regs[13]}ppm")
+        elif cmd in ("on","off","start","stop","reset","error") and len(parts) >= 2:
+            cmd_map = {"on":1,"off":2,"start":3,"stop":4,"reset":5,"error":-1}
+            val = cmd_map[cmd]
+            sid = int(parts[1])
+            with _lock:
+                if val == -1:
+                    _slave_states[sid][0] = 3  # error
+                else:
+                    _slave_states[sid][20] = val
+                    _process_command(sid, _slave_states[sid])
+            status = ["powered_off","standby","running","error"][min(_slave_states[sid][0], 3)]
+            print(f"  从站#{sid}: {SLAVE_CONFIG[sid]['name']} → {status}")
+        elif cmd == "set" and len(parts) >= 4:
+            sid, addr = int(parts[1]), int(parts[2])
+            val = float(parts[3])
+            with _lock:
+                _slave_states[sid][addr] = int(val * 10) if addr >= 10 else int(val)
+            print(f"  从站#{sid} 寄存器{addr} = {val}")

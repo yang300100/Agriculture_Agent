@@ -471,76 +471,33 @@ def render_devices_page():
                                 st.error(f"拍照失败: {result.get('error', '未知错误') if result else '无响应'}")
                         st.divider()
 
-                    # ── 设备电源控制 ──
-                    if device_state_status == "powered_off" or status_val == "offline":
-                        # 关机或离线：重连/刷新（无法直接通电，需重建连接）
-                        if st.button("🔄 重连并刷新", key=f"reconnect_{dev['device_id']}"):
+                    # ── 设备控制 ──
+                    col_r, col_p = st.columns(2)
+                    with col_r:
+                        if st.button("🔄 重连并刷新", key=f"reconnect_{dev['device_id']}", use_container_width=True):
                             invalidate_cache("/api/devices", "/api/actions/log")
                             from core.device_registry_factory import invalidate_registry_cache
                             invalidate_registry_cache(st.session_state.get("username", "default"))
                             st.rerun()
-
-                    elif device_state_status == "standby":
-                        # 待机：可关机 + 可启动工作
-                        col_pwr, _ = st.columns([1, 3])
-                        with col_pwr:
-                            if st.button("⏻ 关机", key=f"power_off_{dev['device_id']}"):
-                                result = api(f"/api/devices/{dev['device_id']}/command", method="post",
-                                            json_data={"command": "power_off", "params": json.dumps({})})
-                                if result and result.get("success"):
-                                    st.success(f"已关机")
-                                    invalidate_cache("/api/devices", "/api/actions/log")
-                                    st.rerun()
-
-                        if "irrigate" in caps:
-                            duration = st.number_input("时长(分)", 1, 120, 30, key=f"dur_{dev['device_id']}")
-                            if st.button("💧 浇水", key=f"irrigate_{dev['device_id']}"):
-                                result = api(f"/api/devices/{dev['device_id']}/command", method="post",
-                                            json_data={"command": "start", "params": json.dumps({"duration": duration})})
-                                if result and result.get("success"):
-                                    st.success(f"{result.get('message', '已执行')}")
-                                    invalidate_cache("/api/devices", "/api/actions/log")
-                                    st.rerun()
-
-                        if "fertigate" in caps:
-                            amount = st.number_input("用量(kg)", 1, 50, 5, key=f"amt_{dev['device_id']}")
-                            if st.button("🌱 施肥", key=f"fertigate_{dev['device_id']}"):
-                                result = api(f"/api/devices/{dev['device_id']}/command", method="post",
-                                            json_data={"command": "start", "params": json.dumps({"amount_kg": amount})})
-                                if result and result.get("success"):
-                                    st.success("已执行")
-                                    st.rerun()
-
-                        if any(c in caps for c in ["ventilate", "light", "heat", "cool"]):
-                            if st.button("▶️ 启动", key=f"start_{dev['device_id']}"):
-                                result = api(f"/api/devices/{dev['device_id']}/command", method="post",
-                                            json_data={"command": "start", "params": json.dumps({})})
-                                if result and result.get("success"):
-                                    st.success("已启动")
-                                    st.rerun()
-
-                    elif device_state_status == "running":
-                        # 工作中：可关机 + 可停止
-                        col_pwr, col_stop = st.columns([1, 1])
-                        with col_pwr:
-                            if st.button("⏻ 关机", key=f"power_off_{dev['device_id']}"):
-                                result = api(f"/api/devices/{dev['device_id']}/command", method="post",
-                                            json_data={"command": "power_off", "params": json.dumps({})})
-                                if result and result.get("success"):
-                                    invalidate_cache("/api/devices", "/api/actions/log")
-                                    st.rerun()
-                        with col_stop:
-                            if st.button("⏹️ 停止", key=f"stop_{dev['device_id']}"):
-                                result = api(f"/api/devices/{dev['device_id']}/command", method="post",
-                                            json_data={"command": "stop", "params": json.dumps({})})
-                                if result and result.get("success"):
-                                    invalidate_cache("/api/devices")
-                                    st.rerun()
-
-                    elif device_state_status == "error":
-                        if st.button("🔄 复位", key=f"reset_{dev['device_id']}"):
-                            result = api(f"/api/devices/{dev['device_id']}/command", method="post",
-                                        json_data={"command": "reset", "params": json.dumps({})})
+                    with col_p:
+                        if device_state_status == "powered_off":
+                            if st.button("⏻ 通电", key=f"power_on_{dev['device_id']}", use_container_width=True):
+                                api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                    json_data={"command": "power_on", "params": json.dumps({})})
+                                invalidate_cache("/api/devices")
+                                st.rerun()
+                        elif device_state_status == "error":
+                            if st.button("🔄 复位", key=f"reset_{dev['device_id']}", use_container_width=True):
+                                api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                    json_data={"command": "reset", "params": json.dumps({})})
+                                invalidate_cache("/api/devices")
+                                st.rerun()
+                        else:
+                            if st.button("⏻ 断电", key=f"power_off_{dev['device_id']}", use_container_width=True):
+                                api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                    json_data={"command": "power_off", "params": json.dumps({})})
+                                invalidate_cache("/api/devices")
+                                st.rerun()
                             if result and result.get("success"):
                                 invalidate_cache("/api/devices")
                                 st.rerun()

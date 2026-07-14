@@ -294,21 +294,117 @@ def health():
 
 # ── 启动 ──────────────────────────────────────
 
+HELP_TEXT = """
+命令列表:
+  on  <设备ID>           通电
+  off <设备ID>           断电
+  start <设备ID> [参数]   启动（如: start irrigation_pump_01 duration=30）
+  stop <设备ID>           停止
+  reset <设备ID>          复位
+  error <设备ID>          模拟故障
+  set <设备ID> <字段> <值> 设置传感器值（如: set env_sensor_01 temperature 35.5）
+  state <设备ID>          查看状态
+  list                    列出所有设备
+  help                    显示此帮助
+  quit                    退出
+"""
+
+
+def interactive_mode():
+    """交互式命令行模式"""
+    _init_devices()
+    print(f"[模拟器] 已初始化 {len(_devices)} 个设备（交互模式）")
+    print("输入 help 查看命令，quit 退出\n")
+
+    while True:
+        try:
+            cmd_line = input("sim> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n退出")
+            break
+
+        if not cmd_line:
+            continue
+
+        parts = cmd_line.split()
+        cmd = parts[0].lower()
+
+        if cmd == "quit":
+            break
+        elif cmd == "help":
+            print(HELP_TEXT)
+        elif cmd == "list":
+            with _lock:
+                for dev_id, dev in sorted(_devices.items()):
+                    s = dev["state"]
+                    print(f"  {dev_id:25s} {dev['info']['name']:15s} [{s.get('status','?'):12s}] "
+                          f"power={s.get('power',False)}")
+        elif cmd == "state" and len(parts) >= 2:
+            dev_id = parts[1]
+            with _lock:
+                if dev_id in _devices:
+                    state = _sensor_drift(dict(_devices[dev_id]["state"]))
+                    for k, v in sorted(state.items()):
+                        if isinstance(v, float):
+                            print(f"  {k}: {v:.1f}")
+                        else:
+                            print(f"  {k}: {v}")
+                else:
+                    print(f"  设备 '{dev_id}' 不存在")
+        elif cmd in ("on", "off", "start", "stop", "reset", "error"):
+            if len(parts) < 2:
+                print(f"  用法: {cmd} <设备ID> [参数]")
+                continue
+            dev_id = parts[1]
+            cmd_map = {"on": "power_on", "off": "power_off", "start": "start",
+                       "stop": "stop", "reset": "reset", "error": "sim_error"}
+            params = {}
+            for p in parts[2:]:
+                if "=" in p:
+                    k, v = p.split("=", 1)
+                    try:
+                        params[k] = float(v) if "." in v else int(v)
+                    except ValueError:
+                        params[k] = v
+            with _lock:
+                ok, msg = _execute_command(dev_id, cmd_map[cmd], params)
+            print(f"  {'✅' if ok else '❌'} {msg}")
+        elif cmd == "set" and len(parts) >= 4:
+            dev_id, field, val = parts[1], parts[2], parts[3]
+            try:
+                val = float(val) if "." in val else int(val)
+            except ValueError:
+                pass
+            with _lock:
+                ok, msg = _execute_command(dev_id, "set_param", {field: val})
+            print(f"  {'✅' if ok else '❌'} {msg}")
+        else:
+            print(f"  未知命令: {cmd}（输入 help 查看帮助）")
+
+
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser(description="HTTP 农业设备模拟器")
-    p.add_argument("--port", type=int, default=5000, help="监听端口（默认5000）")
-    p.add_argument("--host", default="127.0.0.1", help="监听地址")
+    p.add_argument("--port", type=int, default=5000, help="HTTP 监听端口（默认5000）")
+    p.add_argument("--host", default="127.0.0.1", help="HTTP 监听地址")
+    p.add_argument("--no-http", action="store_true", help="仅交互命令行，不启动 HTTP 服务")
     args = p.parse_args()
 
     _init_devices()
-    print(f"[模拟器] 已初始化 {len(_devices)} 个设备")
+    print(f"[HTTP模拟器] 已初始化 {len(_devices)} 个设备")
     for dev_id, dev in _devices.items():
-        print(f"  {dev_id}: {dev['info']['name']} ({', '.join(dev['info']['capabilities'])})")
+        print(f"  {dev_id}: {dev['info']['name']}")
 
-    print(f"\n[模拟器] HTTP 服务启动: http://{args.host}:{args.port}")
-    print(f"  指令端点: POST http://{args.host}:{args.port}/command")
-    print(f"  状态端点: GET  http://{args.host}:{args.port}/state?device_id=...")
-    print(f"  设备列表: GET  http://{args.host}:{args.port}/devices")
-
-    app.run(host=args.host, port=args.port, debug=False)
+    if args.no_http:
+        interactive_mode()
+    else:
+        # HTTP 服务在后台线程启动，主线程留给交互命令行
+        import threading
+        def run_http():
+            app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
+        t = threading.Thread(target=run_http, daemon=True)
+        t.start()
+        import time; time.sleep(1.5)
+        print(f"\n[HTTP模拟器] HTTP 服务: http://{args.host}:{args.port}")
+        print("[HTTP模拟器] 下方可直接输入命令操控设备:")
+        interactive_mode()
