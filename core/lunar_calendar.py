@@ -55,14 +55,13 @@ def _calc_solar_term_dates(year: int) -> dict:
     y = year % 100
     result = {}
     for i, (name, (month, C)) in enumerate(zip(SOLAR_TERMS, _TERM_CONSTANTS)):
-        day = int(y * 0.2422 + C) - int(y / 4)
-        # 前两个节气(小寒/大寒)属于上一年，月份是1月
-        actual_year = year + 1 if name in ("小寒", "大寒") and month == 1 else year
-        # 如果前一年的大寒/小寒需要用前一年计算
-        calc_year = year - 1 if i <= 1 else year
-        if i <= 1:
+        # 小寒/大寒在SOLAR_TERMS中索引为22、23，属于次年1月，需用前一年计算
+        if name in ("小寒", "大寒"):
             calc_y = (year - 1) % 100
             day = int(calc_y * 0.2422 + C) - int(calc_y / 4)
+        else:
+            day = int(y * 0.2422 + C) - int(y / 4)
+        actual_year = year + 1 if name in ("小寒", "大寒") and month == 1 else year
         try:
             result[name] = f"{month:02d}-{day:02d}"
         except (ValueError, OverflowError):
@@ -213,14 +212,22 @@ def _get_term_for_date(dt: date) -> Optional[Dict[str, Any]]:
 
     # 合并：上一年小寒大寒 + 今年全部 + 下一年小寒大寒
     all_terms = {}
+    # 上一年的小寒/大寒（对应今年1月）
     for name in ("小寒", "大寒"):
         if name in prev_terms:
-            all_terms[(name, dt.year - 1)] = prev_terms[name]
-    for name, md in sorted(this_terms.items(), key=lambda x: x[1]):
-        if name in ("小寒", "大寒"):
-            all_terms[(name, dt.year + 1)] = md  # 小寒大寒实际在次年1月
-        else:
+            all_terms[(name, dt.year)] = prev_terms[name]
+    # 今年的其他节气
+    for name, md in this_terms.items():
+        if name not in ("小寒", "大寒"):
             all_terms[(name, dt.year)] = md
+    # 下一年（即今年计算得出、实际在次年1月）的小寒/大寒
+    for name in ("小寒", "大寒"):
+        if name in this_terms:
+            all_terms[(name, dt.year + 1)] = this_terms[name]
+    # 下下一年的小寒/大寒，供跨年边界使用
+    for name in ("小寒", "大寒"):
+        if name in next_terms:
+            all_terms[(name, dt.year + 2)] = next_terms[name]
 
     # 按日期排序
     current_md = dt.strftime("%m-%d")
@@ -273,7 +280,8 @@ def get_lunar_today() -> Dict[str, Any]:
             gan = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
             zhi = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
             zodiacs = ["鼠", "牛", "虎", "兔", "龙", "蛇", "马", "羊", "猴", "鸡", "狗", "猪"]
-            year_ganzhi = gan[lunar.lunar_year % 10] + zhi[lunar.lunar_year % 12]
+            # 天干地支计算需减4偏移：1984年是甲子年(lunar_year=1的偏移基准)
+            year_ganzhi = gan[(lunar.lunar_year - 4) % 10] + zhi[(lunar.lunar_year - 4) % 12]
             result["lunar_year"] = f"{year_ganzhi}年"
             result["lunar_month"] = f"{lunar.lunar_month}月"
             result["lunar_day"] = f"{lunar.lunar_day}日"

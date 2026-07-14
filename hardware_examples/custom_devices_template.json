@@ -1,0 +1,83 @@
+[
+  {
+    "_comment": "===== MQTT 土壤传感器 =====",
+    "device_id": "mqtt_soil_sensor_01",
+    "name": "MQTT 土壤传感器",
+    "driver": "mqtt",
+    "capabilities": ["read_sensor"],
+    "sensors": ["temperature", "humidity", "soil_moisture", "ph"],
+    "location": "大棚A区",
+    "connection": {
+      "host": "localhost",
+      "port": 1883,
+      "control_topic": "devices/mqtt_soil_sensor_01/control",
+      "state_topic": "devices/mqtt_soil_sensor_01/state"
+    }
+  },
+  {
+    "_comment": "===== MQTT 灌溉阀门 =====",
+    "device_id": "mqtt_valve_01",
+    "name": "MQTT 灌溉阀门",
+    "driver": "mqtt",
+    "capabilities": ["irrigate"],
+    "location": "大棚A区",
+    "connection": {
+      "host": "localhost",
+      "port": 1883,
+      "control_topic": "devices/mqtt_valve_01/control",
+      "state_topic": "devices/mqtt_valve_01/state"
+    }
+  },
+  {
+    "_comment": "===== Modbus RTU 控制器 =====",
+    "device_id": "modbus_controller_01",
+    "name": "Modbus 控制器",
+    "driver": "modbus",
+    "capabilities": ["irrigate", "read_sensor"],
+    "sensors": ["temperature", "soil_moisture"],
+    "location": "大棚B区",
+    "connection": {
+      "port": "/dev/ttyUSB0",
+      "slave_id": 1,
+      "mode": "rtu"
+    }
+  },
+  {
+    "_comment": "===== HTTP 智能设备 =====",
+    "device_id": "http_device_01",
+    "name": "HTTP 智能设备",
+    "driver": "http",
+    "capabilities": ["ventilate"],
+    "location": "大棚A区",
+    "connection": {
+      "base_url": "http://localhost:5000",
+      "api_key": ""
+    }
+  },
+  {
+    "_comment": "===== IP 摄像头 =====",
+    "device_id": "camera_01",
+    "name": "大棚监控摄像头",
+    "driver": "camera",
+    "capabilities": ["capture"],
+    "location": "大棚A区",
+    "connection": {
+      "camera_type": "ip",
+      "source": "rtsp://admin:password@192.168.1.10/stream",
+      "username": "admin",
+      "password": "password"
+    }
+  },
+  {
+    "_comment": "===== 自定义虚拟设备 =====",
+    "device_id": "my_custom_pump_01",
+    "name": "自定义水泵",
+    "driver": "simulator",
+    "capabilities": ["irrigate"],
+    "location": "大棚C区",
+    "initial_state": {
+      "power": false,
+      "status": "idle"
+    }
+  }
+]

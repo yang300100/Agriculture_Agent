@@ -110,12 +110,11 @@ def _calculate_suitability(crop: str, region: str, soil: str, goals: List[str]) 
     """计算作物适宜度评分 (0-100)"""
     score = 70  # 基础分
 
-    # 区域匹配加分
+    # 区域匹配加分：检查所有匹配的区域
     for r, crops in REGION_CROPS.items():
         if region[:2] in r or r in region[:2]:
             if crop in crops:
                 score += 15
-            break
 
     # 目标匹配
     cash_crops = ["棉花", "大豆", "花生"]

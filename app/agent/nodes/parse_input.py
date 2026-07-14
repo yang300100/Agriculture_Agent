@@ -3,7 +3,7 @@
 import re, logging
 from langchain_core.messages import HumanMessage
 from ..state import AgentState
-from ..utils import trim_short_memory
+from ..utils import trim_short_memory, extract_facts_from_conversation
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +41,13 @@ def _extract_voice_command(question: str) -> dict:
             if m:
                 groups = m.groups()
                 if intent == "finance_query" and len(groups) >= 3:
+                    try:
+                        amount = float(groups[2])
+                    except ValueError:
+                        amount = None
                     return {
                         "intent_type": intent,
-                        "params": {"crop": groups[0], "trans_type": groups[1], "amount": float(groups[2])},
+                        "params": {"crop": groups[0], "trans_type": groups[1], "amount": amount},
                     }
                 elif intent == "reminder_setup" and len(groups) >= 2:
                     return {
@@ -67,6 +71,7 @@ def _extract_voice_command(question: str) -> dict:
 
 def parse_user_input(state: AgentState) -> AgentState:
     """解析用户输入，提取问题，同步用户信息到短期记忆"""
+    state.progress_message = "正在理解您的问题..."
     for msg in reversed(state.messages):
         if isinstance(msg, HumanMessage):
             state.user_question = msg.content.strip()
@@ -91,18 +96,11 @@ def parse_user_input(state: AgentState) -> AgentState:
             state.user_question = params["raw"]
         logger.info("语音指令: intent=%s params=%s", state.intent_type, params)
 
-    # 同步用户档案到短期记忆
+    # 同步用户档案到短期记忆（仅补充缺失的字段，不覆盖已有信息）
     user_profile = state.user_profile
-    if user_profile.get("region"):
-        state.short_term_facts["region"] = user_profile["region"]
-    if user_profile.get("soil_type"):
-        state.short_term_facts["soil_type"] = user_profile["soil_type"]
-    if user_profile.get("farm_size"):
-        state.short_term_facts["farm_size"] = user_profile["farm_size"]
-    if user_profile.get("experience"):
-        state.short_term_facts["experience"] = user_profile["experience"]
-    if user_profile.get("goals"):
-        state.short_term_facts["goals"] = user_profile["goals"]
+    for key in ["region", "soil_type", "farm_size", "experience", "goals"]:
+        if user_profile.get(key) and key not in state.short_term_facts:
+            state.short_term_facts[key] = user_profile[key]
 
     # 提取用户提及的前季作物（用于轮作建议）
     for pattern in ["去年种了", "之前种了", "上季种了", "上茬种了", "前茬是", "种过"]:
@@ -116,4 +114,11 @@ def parse_user_input(state: AgentState) -> AgentState:
 
     state.long_term_profile["conversation_round"] = state.long_term_profile.get("conversation_round", 0) + 1
     state.messages = trim_short_memory(state.messages, 8)
+
+    # 从对话中提取关键事实填充 short_term_facts（补充不覆盖已有值）
+    new_facts = extract_facts_from_conversation(state)
+    for key, value in new_facts.items():
+        if not state.short_term_facts.get(key):
+            state.short_term_facts[key] = value
+
     return state

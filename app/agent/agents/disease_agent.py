@@ -35,7 +35,8 @@ class DiseaseAgent(BaseAgent):
         from knowledge.simple_agriculture_rag import SimpleAgricultureRAG
         from knowledge.faiss_agriculture_rag import FAISSAgricultureRAG
         rag = SimpleAgricultureRAG()
-        faiss = FAISSAgricultureRAG() if FAISSAgricultureRAG().is_available else None
+        _faiss = FAISSAgricultureRAG()
+        faiss = _faiss if _faiss.is_available else None
         state = rag_retrieval_node(state, rag, faiss)
         state = llm_expert_answer(state)
         return self._append_weather_if_spray(state)
@@ -44,6 +45,8 @@ class DiseaseAgent(BaseAgent):
         """如果防治方案涉及喷药，自动查询气象 Agent 判断施药窗口"""
         answer = state.final_answer or ""
         crop = state.short_term_facts.get("crop", "")
+        if not crop:
+            crop = state.user_profile.get("crop", "")
         question = state.user_question or ""
 
         # 判断是否需要喷药建议
@@ -53,9 +56,13 @@ class DiseaseAgent(BaseAgent):
 
         # 调用气象 Agent
         try:
+            # 确保 crop 传入 weather_state 的 short_term_facts（可能当前 state 无 crop）
+            wx_facts = dict(state.short_term_facts)
+            if not wx_facts.get("crop"):
+                wx_facts["crop"] = crop
             weather_state = AgentState(
                 messages=[], user_profile=state.user_profile,
-                short_term_facts=state.short_term_facts,
+                short_term_facts=wx_facts,
                 intent_type="weather_query",
                 user_question=f"{crop} 当前是否适合喷药",
             )

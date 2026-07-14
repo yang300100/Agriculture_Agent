@@ -2,6 +2,7 @@
 
 import os
 import json
+import shutil
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -29,15 +30,35 @@ class ChatHistoryStore:
                 json.dump({"sessions": []}, f, ensure_ascii=False, indent=2)
 
     def _load(self) -> Dict:
+        if not os.path.exists(self.store_file):
+            return {"sessions": []}
         try:
             with open(self.store_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
+                data = json.load(f)
+            if not isinstance(data, dict) or "sessions" not in data:
+                raise ValueError("chat_history.json 格式无效")
+            return data
+        except json.JSONDecodeError:
+            # JSON 损坏：备份后返回空数据
+            if os.path.exists(self.store_file):
+                backup_path = f"{self.store_file}.corrupted.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                try:
+                    shutil.copy2(self.store_file, backup_path)
+                    logger.error("chat_history.json JSON 解析失败，已备份至 %s", backup_path)
+                except Exception:
+                    logger.error("备份损坏的 chat_history.json 失败")
             return {"sessions": []}
+        except (OSError, IOError) as e:
+            # IO 错误：暂不覆盖文件，保留原始数据
+            logger.error("chat_history.json 读取 IO 错误: %s", e)
+            raise
 
     def _save(self, data: Dict):
-        with open(self.store_file, 'w', encoding='utf-8') as f:
+        # 原子写入：防止写入中途崩溃导致文件损坏
+        tmp_file = self.store_file + ".tmp"
+        with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, self.store_file)
 
     def save_session(self, session_id: str, messages: List[Dict], title: str = ""):
         """保存一个会话"""
@@ -48,7 +69,7 @@ class ChatHistoryStore:
         if not title and messages:
             for m in messages:
                 if m.get("role") == "user":
-                    title = m["content"][:30]
+                    title = (m.get("content") or "")[:30]
                     break
 
         # 查找现有会话

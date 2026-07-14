@@ -3042,7 +3042,7 @@ from app.views.rules import render_rules_page
 - [ ] **Step 3: Commit**
 
 ```bash
-git add app/test1.py app/ui/sidebar.py
+git add app/main.py app/ui/sidebar.py
 git commit -m "feat(ui): add devices and rules page routing"
 ```
 

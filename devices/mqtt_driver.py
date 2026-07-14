@@ -12,6 +12,7 @@
 import asyncio
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -65,7 +66,9 @@ class MQTTDriver(BaseDeviceDriver):
         self._connect_event: Optional[asyncio.Event] = None
         self._devices: Dict[str, Dict] = {}  # device_id → {info, state}
         self._state_cache: Dict[str, Dict] = {}  # device_id → latest state from state_topic
+        self._topic_to_device: Dict[str, str] = {}  # topic → device_id 反向映射，O(1) 查找
         self._event_loop = None
+        self._state_lock = threading.Lock()  # 保护 _state_cache 和 _devices state 的并发访问
 
     # ── 设备注册 ──────────────────────────────
 
@@ -86,6 +89,14 @@ class MQTTDriver(BaseDeviceDriver):
             control_topic: MQTT 控制主题（发布指令到此主题）
             state_topic: MQTT 状态主题（订阅此主题获取状态，可选）
         """
+        # 校验 device_id 不能包含 MQTT 通配符
+        if "+" in device_id or "#" in device_id:
+            logger.warning("MQTT 设备 ID '%s' 包含通配符 '+' 或 '#'，已拒绝注册", device_id)
+            raise ValueError(f"设备 ID 不能包含 MQTT 通配符 '+' 或 '#': {device_id}")
+
+        state_topic = state_topic or f"devices/{device_id}/state"
+        control_topic = control_topic or f"devices/{device_id}/control"
+
         self._devices[device_id] = {
             "info": {
                 "device_id": device_id,
@@ -93,13 +104,23 @@ class MQTTDriver(BaseDeviceDriver):
                 "capabilities": capabilities,
                 "sensors": sensors or [],
                 "location": location,
-                "control_topic": control_topic or f"devices/{device_id}/control",
-                "state_topic": state_topic or f"devices/{device_id}/state",
+                "control_topic": control_topic,
+                "state_topic": state_topic,
             },
-            "state": {"power": False, "status": "idle"},
+            "state": {"power": False, "status": "powered_off"},
         }
-        self._state_cache[device_id] = {"power": False, "status": "idle"}
+        self._state_cache[device_id] = {"power": False, "status": "powered_off"}
+        # 建立 topic → device_id 反向映射，用于 O(1) 消息分发
+        self._topic_to_device[state_topic] = device_id
         logger.info("MQTT 设备已注册: %s → %s", device_id, control_topic)
+
+        # 如果已经连接，自动订阅新设备的状态主题
+        if self._connected and self._client is not None:
+            try:
+                self._client.subscribe(state_topic, qos=1)
+                logger.info("MQTT 自动订阅新设备状态: %s → %s", device_id, state_topic)
+            except Exception as e:
+                logger.warning("MQTT 自动订阅失败 %s: %s", device_id, e)
 
     # ── 生命周期 ──────────────────────────────
 
@@ -124,10 +145,13 @@ class MQTTDriver(BaseDeviceDriver):
 
             # 等待连接建立确认或超时
             try:
-                await asyncio.wait_for(self._connect_event.wait(), timeout=5.0)
+                await asyncio.wait_for(self._connect_event.wait(), timeout=2.0)
             except asyncio.TimeoutError:
-                logger.error("MQTT 连接超时 (%s:%d)", self._broker_host, self._broker_port)
+                logger.debug("MQTT 连接超时 (%s:%d)", self._broker_host, self._broker_port)
                 self._connected = False
+                # 清理后台线程，避免资源泄漏
+                self._client.loop_stop()
+                self._client.disconnect()
                 return False
 
             self._connected = True  # 仅在回调确认后设置
@@ -146,6 +170,16 @@ class MQTTDriver(BaseDeviceDriver):
         except Exception as e:
             logger.error("MQTT 连接失败: %s", e)
             self._connected = False
+            # 确保 loop_stop() 总是被调用，避免后台线程泄露
+            if self._client is not None:
+                try:
+                    self._client.loop_stop()
+                except Exception:
+                    pass
+                try:
+                    self._client.disconnect()
+                except Exception:
+                    pass
             return False
 
     async def disconnect(self) -> None:
@@ -220,16 +254,42 @@ class MQTTDriver(BaseDeviceDriver):
                 "device_id": device_id,
             }
 
-            # 发布到控制主题
+            # 发布到控制主题（在后台线程执行 wait_for_publish，避免阻塞事件循环）
             msg_info = self._client.publish(topic, json.dumps(payload, ensure_ascii=False), qos=1)
-            msg_info.wait_for_publish(timeout=5)
+            try:
+                await asyncio.to_thread(msg_info.wait_for_publish, timeout=5)
+            except asyncio.TimeoutError:
+                logger.warning("MQTT 发布超时: %s → %s", device_id, topic)
 
-            if command.command == "start":
-                dev["state"]["power"] = True
-                dev["state"]["status"] = "running"
-            elif command.command == "stop":
-                dev["state"]["power"] = False
-                dev["state"]["status"] = "idle"
+            # 乐观状态更新：最佳努力，仅反映"已下发指令"，实际状态由 state_topic 异步回传确认
+            # 注意：如果设备离线，此乐观更新可能会与实际状态不一致，state_topic 消息会覆盖它
+            with self._state_lock:
+                current = dev["state"].get("status", "powered_off")
+                if command.command in ("power_on", "boot"):
+                    if current == "powered_off":
+                        dev["state"]["power"] = True
+                        dev["state"]["status"] = "standby"
+                elif command.command in ("power_off", "shutdown"):
+                    if current in ("standby", "running"):
+                        dev["state"]["power"] = False
+                        dev["state"]["status"] = "powered_off"
+                    elif current == "error":
+                        dev["state"]["power"] = False
+                        dev["state"]["status"] = "powered_off"
+                elif command.command == "start":
+                    if current == "powered_off":
+                        dev["state"]["power"] = True
+                        dev["state"]["status"] = "running"
+                    elif current == "standby":
+                        dev["state"]["status"] = "running"
+                elif command.command == "stop":
+                    if current == "running":
+                        dev["state"]["status"] = "standby"
+                        # power 保持 True，不断电！
+                elif command.command == "reset":
+                    if current == "error":
+                        dev["state"]["power"] = True
+                        dev["state"]["status"] = "standby"
 
             return DeviceResult(
                 success=True,
@@ -275,21 +335,27 @@ class MQTTDriver(BaseDeviceDriver):
         else:
             logger.warning("MQTT 连接失败, rc=%d", rc)
             self._connected = False
+            # 连接失败也 set event，避免 connect() 里白等 5 秒超时
+            if self._connect_event:
+                self._connect_event.set()
 
     def _on_message(self, client, userdata, msg):
         """接收设备上报的状态消息"""
         try:
-            payload = json.loads(msg.payload.decode("utf-8"))
+            payload_str = msg.payload.decode("utf-8")
+            payload = json.loads(payload_str)
             topic = msg.topic
 
-            # 根据 topic 找到对应设备
-            for dev_id, dev in self._devices.items():
-                if dev["info"].get("state_topic") == topic:
+            # O(1) 反向映射：直接用 topic 找到 device_id
+            dev_id = self._topic_to_device.get(topic)
+            if dev_id:
+                with self._state_lock:
                     self._state_cache[dev_id] = payload
-                    logger.debug("MQTT 状态更新: %s ← %s", dev_id, topic)
-                    break
-        except json.JSONDecodeError:
-            logger.debug("MQTT 消息非 JSON: %s", msg.topic)
+                logger.debug("MQTT 状态更新: %s ← %s", dev_id, topic)
+            else:
+                logger.debug("MQTT 收到未注册 topic: %s", topic)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            logger.debug("MQTT 消息非 JSON 或编码错误: %s", msg.topic)
         except Exception as e:
             logger.warning("MQTT 消息处理异常: %s", e)
 

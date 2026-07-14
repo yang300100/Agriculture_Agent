@@ -45,7 +45,7 @@ class BaseAgent:
     def _get_context(self, state: AgentState) -> Dict[str, Any]:
         return {
             "region": state.short_term_facts.get("region") or state.user_profile.get("region", ""),
-            "crop": state.short_term_facts.get("crop", "") or state.user_profile.get("region", ""),
+            "crop": state.short_term_facts.get("crop", "") or state.user_profile.get("crop", ""),
             "soil": state.user_profile.get("soil_type", ""),
             "area": state.user_profile.get("farm_size", 1.0),
             "goals": state.user_profile.get("goals", []),

@@ -23,7 +23,7 @@ def finance_query_node(state: AgentState) -> AgentState:
         crop = state.short_term_facts.get("crop") or state.user_profile.get("crop", "")
 
         # 解析查询意图
-        is_record_request = any(word in user_question for word in ["记", "添加", "录入", "花了", "收入"])
+        is_record_request = any(word in user_question for word in ["记账", "记一笔", "添加", "录入", "花了", "收入"])
         is_report_request = any(word in user_question for word in ["报表", "报告", "汇总", "统计"])
         is_price_request = any(word in user_question for word in ["价格", "行情", "卖多少钱", "市场价", "值多少钱"])
 
@@ -94,7 +94,8 @@ def finance_query_node(state: AgentState) -> AgentState:
             state.messages.append(AIMessage(content=state.final_answer))
 
         except Exception as e:
-            state.final_answer = f"查询财务信息时出现错误：{str(e)}。请稍后重试。"
+            logger.error("财务查询异常: %s", e, exc_info=True)
+            state.final_answer = "查询财务信息时出现错误，请稍后重试。"
             state.messages.append(AIMessage(content=state.final_answer))
 
     return state

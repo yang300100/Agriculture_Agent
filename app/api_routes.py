@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core.device_registry_factory import setup_registry, load_custom_devices, save_custom_devices, close_registry, DEFAULT_DATA_DIR
+from core.device_registry_factory import setup_registry, load_custom_devices, save_custom_devices, close_registry, DEFAULT_DATA_DIR, RegistrySession, invalidate_registry_cache
 
 
 def _user_dir(username: str = "default") -> str:
@@ -309,8 +309,7 @@ def register_routes(app: FastAPI):
         tracker.update_task_status(tid, "进行中", progress=10)
 
         try:
-            registry, loop = setup_registry(username)
-            try:
+            with RegistrySession(username) as (registry, loop):
                 loop.run_until_complete(registry.discover_all())
                 cmd = DeviceCommand(
                     command=task.device_command,
@@ -319,7 +318,7 @@ def register_routes(app: FastAPI):
                 executor = DeviceExecutor(registry, username=username)
                 result = executor.execute_sync(
                     task.device_id, cmd,
-                    trigger="task", rule_id=None,
+                    trigger="task", rule_id=None, loop=loop,
                 )
 
                 if result["success"]:
@@ -340,8 +339,6 @@ def register_routes(app: FastAPI):
                         "success": False,
                         "error": f"设备执行失败: {err_text}",
                     }
-            finally:
-                close_registry(loop)
         except Exception as e:
             logger.exception("任务执行失败")
             tracker.update_task_status(tid, "待办", progress=0)
@@ -779,14 +776,23 @@ def register_routes(app: FastAPI):
     def list_devices(username: str = "default"):
         """获取所有设备列表及状态 — 支持多驱动路由"""
         try:
-            registry, loop = setup_registry(username)
-            try:
-                devices = loop.run_until_complete(registry.discover_all())
+            # 加载设备→地块映射
+            configs = load_custom_devices(username)
+            device_to_plot = {d["device_id"]: d.get("plot_id", "") for d in configs}
 
+            # 加载地块信息
+            from core.plot_manager import PlotManager
+            pm = PlotManager(username)
+            plot_map = {p["plot_id"]: p for p in pm.list_plots()}
+
+            with RegistrySession(username) as (registry, loop):
+                devices = loop.run_until_complete(registry.discover_all())
                 result = []
                 for d in devices:
                     state = loop.run_until_complete(registry.read_state(d.device_id))
                     state_clean = {k: v for k, v in state.items() if not k.startswith("_") and isinstance(v, (str, int, float, bool, list, dict, type(None)))}
+                    pid = device_to_plot.get(d.device_id, "")
+                    plot_info = plot_map.get(pid, {})
                     result.append({
                         "device_id": d.device_id,
                         "name": d.name,
@@ -795,11 +801,12 @@ def register_routes(app: FastAPI):
                         "sensors": d.sensors,
                         "status": d.status.value if hasattr(d.status, 'value') else str(d.status),
                         "location": d.location,
+                        "plot_id": pid,
+                        "plot_name": plot_info.get("name", ""),
+                        "plot_crop": plot_info.get("crop", ""),
                         "state": state_clean,
                     })
                 return result
-            finally:
-                close_registry(loop)
         except Exception as e:
             logger.exception("获取设备列表失败")
             return []
@@ -827,8 +834,9 @@ def register_routes(app: FastAPI):
                 "capabilities": device_data.get("capabilities", ["irrigate"]),
                 "sensors": device_data.get("sensors", []),
                 "location": device_data.get("location", ""),
-                "driver": device_data.get("driver", "simulator"),
-                "initial_state": device_data.get("initial_state", {"power": False, "status": "idle"}),
+                "plot_id": device_data.get("plot_id", ""),
+                "driver": device_data.get("driver", "mqtt"),
+                "initial_state": device_data.get("initial_state", {"power": False, "status": "powered_off"}),
             }
             # 保存驱动连接参数
             conn = device_data.get("connection")
@@ -836,6 +844,7 @@ def register_routes(app: FastAPI):
                 new_device["connection"] = conn
             custom_devices.append(new_device)
             save_custom_devices(username, custom_devices)
+            invalidate_registry_cache(username)
             logger.info("用户 %s 添加了新设备: %s (%s)", username, device_id, name)
             return {"success": True, "device_id": device_id}
         except Exception as e:
@@ -850,6 +859,7 @@ def register_routes(app: FastAPI):
             custom_devices = [d for d in custom_devices if d["device_id"] != device_id]
             if len(custom_devices) < before:
                 save_custom_devices(username, custom_devices)
+                invalidate_registry_cache(username)
                 return {"success": True}
             return {"success": False, "error": "设备不存在或为内置设备，无法删除"}
         except Exception as e:
@@ -871,13 +881,12 @@ def register_routes(app: FastAPI):
             if isinstance(params, str):
                 params = json.loads(params) if params else {}
 
-            registry, loop = setup_registry(username)
-            try:
+            with RegistrySession(username) as (registry, loop):
                 loop.run_until_complete(registry.discover_all())
 
                 executor = DeviceExecutor(registry, username=username)
                 cmd = DeviceCommand(command=command, params=params)
-                result = executor.execute_sync(device_id, cmd, trigger="api")
+                result = executor.execute_sync(device_id, cmd, trigger="api", loop=loop)
 
                 msg = result.get("result")
                 msg_text = msg.message if msg and hasattr(msg, 'message') else str(msg or "")
@@ -887,8 +896,6 @@ def register_routes(app: FastAPI):
                     "message": msg_text,
                     "attempts": result["attempts"],
                 }
-            finally:
-                close_registry(loop)
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -896,13 +903,10 @@ def register_routes(app: FastAPI):
     def get_device_state(device_id: str, username: str = "default"):
         """获取设备实时状态"""
         try:
-            registry, loop = setup_registry(username)
-            try:
+            with RegistrySession(username) as (registry, loop):
                 loop.run_until_complete(registry.discover_all())
                 state = loop.run_until_complete(registry.read_state(device_id))
                 return {k: v for k, v in state.items() if not k.startswith("_")}
-            finally:
-                close_registry(loop)
         except Exception as e:
             return {"error": str(e)}
 
@@ -914,8 +918,7 @@ def register_routes(app: FastAPI):
         try:
             from devices.base import DeviceCommand
 
-            registry, loop = setup_registry(username)
-            try:
+            with RegistrySession(username) as (registry, loop):
                 loop.run_until_complete(registry.discover_all())
 
                 # 检查设备是否支持拍照
@@ -934,20 +937,24 @@ def register_routes(app: FastAPI):
                 if not result.success:
                     return {"success": False, "error": result.message}
 
-                image_bytes = result.raw_response.get("image_bytes")
-                if not image_bytes:
-                    return {"success": False, "error": "未获取到图片数据"}
+                # 兼容两种返回格式：CameraDriver 返回 image_bytes，HTTP 设备返回 image_base64
+                raw = result.raw_response or {}
+                image_b64 = raw.get("image_base64", "")
+                if not image_b64:
+                    image_bytes = raw.get("image_bytes")
+                    if image_bytes:
+                        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+                    else:
+                        return {"success": False, "error": "未获取到图片数据"}
 
                 return {
                     "success": True,
                     "device_id": device_id,
-                    "image_base64": base64.b64encode(image_bytes).decode("utf-8"),
+                    "image_base64": image_b64,
                     "mime_type": "image/jpeg",
                     "timestamp": datetime.now().isoformat(),
-                    "metadata": result.raw_response.get("metadata", {}),
+                    "metadata": raw.get("metadata", {}),
                 }
-            finally:
-                close_registry(loop)
         except Exception as e:
             logger.exception("摄像头拍照失败")
             return {"success": False, "error": str(e)}
@@ -1109,3 +1116,16 @@ def register_routes(app: FastAPI):
                 close_registry(loop)
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    # ── 巡检日志 ──────────────────────────────────────
+
+    @app.get("/api/inspection/log")
+    def get_inspection_log(username: str = "default", job_name: str = None, limit: int = 50):
+        """获取定时巡检日志"""
+        try:
+            from app.scheduler_jobs import InspectionLogger
+            insp = InspectionLogger.for_user(username)
+            logs = insp.get_recent(job_name=job_name, limit=limit)
+            return {"username": username, "total": len(logs), "logs": logs}
+        except Exception as e:
+            return {"error": str(e)}

@@ -26,6 +26,56 @@ WEATHER_API_KEY = os.getenv("WEATHER_API_KEY", "")
 WEATHER_API_PROVIDER = os.getenv("WEATHER_API_PROVIDER", "openweathermap")
 QWEATHER_API_HOST = os.getenv("QWEATHER_API_HOST", "https://devapi.qweather.com")
 
+# ── 本机定位（IP Geolocation）──
+# 通过公网 IP 获取本机大致坐标，解决国内 OpenStreetMap 不可达的问题。
+# 结果缓存在模块级变量，整个进程生命周期只请求一次。
+
+_local_coords_cache: Optional[tuple] = None
+
+
+def get_local_coords() -> tuple:
+    """获取本机公网 IP 对应的经纬度坐标。
+
+    优先级: .env 配置 > IP 定位 > 北京默认值
+
+    使用 ip-api.com（免费、无需 key、国内可用），
+    结果缓存在模块级变量避免重复请求。
+    """
+    global _local_coords_cache
+    if _local_coords_cache is not None:
+        return _local_coords_cache
+
+    # 1. .env 手动配置优先
+    env_lat = os.getenv("DEFAULT_LAT", "")
+    env_lon = os.getenv("DEFAULT_LON", "")
+    if env_lat and env_lon:
+        try:
+            coords = (float(env_lon), float(env_lat))
+            _local_coords_cache = coords
+            logger.info("本机定位: 从 .env 读取坐标 (%s, %s)", env_lat, env_lon)
+            return coords
+        except ValueError:
+            pass
+
+    # 2. IP 定位（国内可用，无需 key）
+    try:
+        resp = requests.get("http://ip-api.com/json/?fields=lat,lon,status,message", timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("status") == "success":
+                coords = (data["lon"], data["lat"])
+                _local_coords_cache = coords
+                logger.info("本机定位: IP=%s, 坐标=(%.2f, %.2f)",
+                           data.get("query", "?"), data["lat"], data["lon"])
+                return coords
+    except Exception:
+        pass
+
+    # 3. 最终回退北京
+    _local_coords_cache = (116.40, 39.90)
+    logger.info("本机定位: 无法获取，回退到北京坐标 (116.40, 39.90)")
+    return _local_coords_cache
+
 
 class WeatherAlertLevel(Enum):
     """天气预警等级"""
@@ -45,7 +95,7 @@ class WeatherInfo:
     temperature_low: float
     humidity: int  # 湿度百分比
     weather_desc: str  # 天气描述
-    wind_speed: float  # 风速 km/h
+    wind_speed: float  # 风速 m/s（与 spray_advisor 单位一致）
     wind_direction: str  # 风向
     precipitation: float  # 降水量 mm
     uv_index: int  # 紫外线指数
@@ -114,8 +164,6 @@ class WeatherService:
                  max_consecutive_failures: int = 5):
         self.api_key = api_key or WEATHER_API_KEY
         self.provider = provider or WEATHER_API_PROVIDER
-        self.cache = {}  # 简单缓存
-        self.cache_time = 1800  # 缓存30分钟
         self._consecutive_failures = 0  # 连续失败计数
         self._max_consecutive_failures = max_consecutive_failures  # 连续失败上限
         self._aborted = False  # 是否已触发熔断
@@ -124,17 +172,25 @@ class WeatherService:
         """生成缓存键"""
         return f"{location}_{date}"
 
-    def _get_cached(self, key: str) -> Optional[Dict]:
-        """获取缓存数据"""
-        if key in self.cache:
-            data, timestamp = self.cache[key]
-            if datetime.now().timestamp() - timestamp < self.cache_time:
+    # 模块级天气缓存（跨实例共享，避免频繁调用API）
+    _global_cache: Dict[str, tuple] = {}
+    _GRID_TTL = 900       # 格点天气缓存15分钟
+    _FORECAST_TTL = 1800  # 预报缓存30分钟
+    _CURRENT_TTL = 600    # 当前天气缓存10分钟
+
+    def _get_cached(self, key: str, ttl: int = None) -> Optional[Dict]:
+        """获取缓存（模块级，跨实例共享）"""
+        cache = WeatherService._global_cache
+        if key in cache:
+            data, timestamp = cache[key]
+            max_age = ttl if ttl is not None else WeatherService._CURRENT_TTL
+            if datetime.now().timestamp() - timestamp < max_age:
                 return data
         return None
 
     def _set_cache(self, key: str, data: Dict):
-        """设置缓存"""
-        self.cache[key] = (data, datetime.now().timestamp())
+        """写入模块级缓存"""
+        WeatherService._global_cache[key] = (data, datetime.now().timestamp())
 
     def get_current_weather(self, location: str) -> Optional[WeatherInfo]:
         """
@@ -167,6 +223,51 @@ class WeatherService:
             print(f"获取天气失败: {e}")
             return None
 
+    def get_current_by_coords(self, lat: float, lon: float,
+                              location_name: str = "") -> Optional:
+        """按坐标获取当前天气 — 跳过 geocode，直接调格点API。
+
+        用于地块精确坐标查询，避免 location 字符串 geocode 延迟。
+        """
+        try:
+            grid = self.get_grid_weather(lon, lat)
+            if grid:
+                return {
+                    "name": location_name or f"({lat:.2f},{lon:.2f})",
+                    "temperature": grid.get("temp"),
+                    "temperature_high": grid.get("temp"),
+                    "temperature_low": grid.get("temp"),
+                    "humidity": grid.get("humidity"),
+                    "weather_desc": grid.get("text", ""),
+                    "wind_speed": grid.get("windSpeed"),
+                    "precipitation": grid.get("precip", 0),
+                }
+        except Exception:
+            pass
+        return None
+
+    def get_forecast_by_coords(self, lat: float, lon: float,
+                               location_name: str = "", days: int = 3) -> List:
+        """按坐标获取天气预报 — 跳过 geocode。"""
+        try:
+            if self.provider == "qweather":
+                data = self._fetch_qweather_7d(lon, lat)
+            else:
+                data = self._fetch_openweather_forecast(lon, lat)
+            if not data:
+                return []
+            forecast_list = []
+            for item in data[:days]:
+                forecast_list.append({
+                    "date": item.get("fxDate", item.get("date", "")),
+                    "weather_desc": item.get("textDay", item.get("weather_desc", "")),
+                    "temperature_high": item.get("tempMax", item.get("temperature_high", 0)),
+                    "temperature_low": item.get("tempMin", item.get("temperature_low", 0)),
+                })
+            return forecast_list
+        except Exception:
+            return []
+
     def get_grid_weather(self, lon: float, lat: float) -> Optional[Dict]:
         """
         获取指定坐标的格点实时天气（和风天气）
@@ -184,7 +285,7 @@ class WeatherService:
         if self._aborted:
             return None
 
-        cache_key = f"grid_{lon:.2f}_{lat:.2f}"
+        cache_key = f"grid_{lon:.1f}_{lat:.1f}"
         cached = self._get_cached(cache_key)
         if cached:
             return cached
@@ -255,9 +356,12 @@ class WeatherService:
         }
 
     def _geocode(self, location: str) -> tuple:
-        """将地名转换为坐标，国内城市/省份/区域有内置映射，失败回退北京"""
+        """将地名转换为坐标。
+
+        优先级: 内置城市/省份映射 > 本机 IP 定位 > 北京默认值。
+        已移除 OpenStreetMap Nominatim（国内不可达，徒增延迟）。
+        """
         city_coords = {
-            # 城市
             "北京": (116.40, 39.90), "上海": (121.47, 31.23), "广州": (113.26, 23.13),
             "深圳": (114.06, 22.54), "成都": (104.07, 30.67), "武汉": (114.30, 30.60),
             "杭州": (120.15, 30.28), "南京": (118.78, 32.06), "西安": (108.94, 34.26),
@@ -269,7 +373,6 @@ class WeatherService:
             "合肥": (117.28, 31.86), "南昌": (115.86, 28.68), "贵阳": (106.71, 26.57),
             "兰州": (103.83, 36.06), "西宁": (101.78, 36.62), "银川": (106.27, 38.47),
             "乌鲁木齐": (87.62, 43.82), "拉萨": (91.13, 29.65),
-            # 省份
             "河北": (114.50, 38.04), "山西": (112.55, 37.87), "内蒙古": (111.75, 40.84),
             "辽宁": (123.43, 41.80), "吉林": (125.32, 43.90), "黑龙江": (126.53, 45.80),
             "江苏": (118.78, 32.06), "浙江": (120.15, 30.28), "安徽": (117.28, 31.86),
@@ -280,7 +383,6 @@ class WeatherService:
             "西藏": (91.13, 29.65), "陕西": (108.94, 34.26), "甘肃": (103.83, 36.06),
             "青海": (101.78, 36.62), "宁夏": (106.27, 38.47), "新疆": (87.62, 43.82),
             "台湾": (121.50, 25.05), "香港": (114.17, 22.30), "澳门": (113.55, 22.19),
-            # 农业区域
             "华北": (116.40, 39.90), "东北": (125.32, 43.90), "华东": (118.78, 32.06),
             "华中": (114.30, 30.60), "华南": (113.26, 23.13), "西南": (104.07, 30.67),
             "西北": (103.83, 36.06), "黄淮海": (116.98, 36.67), "长江流域": (114.30, 30.60),
@@ -288,16 +390,11 @@ class WeatherService:
         for name, coords in city_coords.items():
             if name in location:
                 return coords
-        # Nominatim 仅作兜底，不阻塞
-        try:
-            from geopy.geocoders import Nominatim
-            geolocator = Nominatim(user_agent="agriculture_agent")
-            loc = geolocator.geocode(location, timeout=3)
-            if loc:
-                return (loc.longitude, loc.latitude)
-        except Exception:
-            pass
-        return (116.40, 39.90)
+
+        # 未匹配到已知地名 → 使用本机 IP 定位
+        coords = get_local_coords()
+        logger.info("地点 '%s' 无内置映射，使用本机定位 (%.2f, %.2f)", location, coords[1], coords[0])
+        return coords
 
     def _fetch_qweather_current(self, location: str) -> Dict:
         """通过和风天气获取当前天气（先地理编码转坐标，再调格点API）"""
@@ -317,6 +414,8 @@ class WeatherService:
                 "weather": [{"description": grid_data.get("text", ""), "main": grid_data.get("text", "")}],
                 "wind": {"speed": grid_data.get("windSpeed", 0) / 3.6, "deg": 0},
                 "sys": {"sunrise": "", "sunset": ""},
+                "rain": {"1h": grid_data.get("precip", 0)},
+                "precip": grid_data.get("precip", 0),
             }
         raise Exception("和风天气格点数据获取失败")
 
@@ -352,7 +451,7 @@ class WeatherService:
 
     def _fetch_openweather_by_coords(self, lon: float, lat: float) -> Dict:
         """通过坐标从 OpenWeatherMap 获取天气（备用）"""
-        url = "http://api.openweathermap.org/data/2.5/weather"
+        url = "https://api.openweathermap.org/data/2.5/weather"
         params = {
             "lat": lat,
             "lon": lon,
@@ -555,7 +654,7 @@ class WeatherService:
 
     def _fetch_openweather_current(self, location: str) -> Dict:
         """从OpenWeatherMap获取当前天气"""
-        url = f"http://api.openweathermap.org/data/2.5/weather"
+        url = f"https://api.openweathermap.org/data/2.5/weather"
         params = {
             "q": location,
             "appid": self.api_key,
@@ -568,7 +667,7 @@ class WeatherService:
 
     def _fetch_openweather_forecast(self, location: str, days: int) -> List[Dict]:
         """从OpenWeatherMap获取天气预报"""
-        url = f"http://api.openweathermap.org/data/2.5/forecast"
+        url = f"https://api.openweathermap.org/data/2.5/forecast"
         params = {
             "q": location,
             "appid": self.api_key,
@@ -657,11 +756,33 @@ class WeatherService:
         return result
 
     def _parse_weather_data(self, data: Dict) -> WeatherInfo:
-        """解析天气数据"""
+        """解析天气数据
+
+        降水量提取策略（优先级从高到低）：
+        1. OpenWeatherMap: data["rain"]["1h"] 或 ["3h"] (mm)
+        2. 和风天气格点: data["precip"] (mm)
+        3. 预报数据: data.get("rain", {}).get("3h", 0)
+        4. 无降水数据时: 0（不再用概率估算，概率≠降水量）
+        """
         main = data.get("main", {})
         weather = data.get("weather", [{}])[0]
         wind = data.get("wind", {})
         sys = data.get("sys", {})
+
+        # ── 降水量：优先从 API 实际数据获取 ──
+        precip = 0.0
+        rain_data = data.get("rain", {})
+        if isinstance(rain_data, dict):
+            precip = rain_data.get("1h", rain_data.get("3h", 0))
+        # 和风天气格点数据中直接有 precip 字段（单位 mm）
+        if precip == 0:
+            precip = float(data.get("precip", 0))
+        # 部分 mock 或老数据可能用 pop 字段 -> 不转换，概率不可作为降水量
+        if precip == 0:
+            pop = data.get("pop", 0)
+            if isinstance(pop, (int, float)) and pop > 0:
+                # 有降水概率但无实际降水量记录，标记为微量
+                precip = 0.0
 
         return WeatherInfo(
             location=data.get("name", "未知"),
@@ -671,9 +792,9 @@ class WeatherService:
             temperature_low=main.get("temp_min", main.get("temp", 0)),
             humidity=main.get("humidity", 0),
             weather_desc=weather.get("description", "未知"),
-            wind_speed=wind.get("speed", 0) * 3.6,  # m/s to km/h
+            wind_speed=wind.get("speed", 0),  # 保持 m/s（OpenWeatherMap 原始单位）
             wind_direction=self._get_wind_direction(wind.get("deg", 0)),
-            precipitation=data.get("pop", 0) * 50,  # 概率转降水量估算
+            precipitation=precip,
             uv_index=data.get("uvi", 0),
             visibility=data.get("visibility", 10000) / 1000,
             pressure=main.get("pressure", 1013),

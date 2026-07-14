@@ -1,5 +1,6 @@
 """政策补贴查询节点"""
 import logging
+from langchain_core.messages import AIMessage
 from ..state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -15,12 +16,22 @@ def policy_query_node(state: AgentState) -> AgentState:
     subsidies = _collect_subsidies(query, crop, region)
     answer = _format_policy_answer(query, crop, region, subsidies)
     state.final_answer = answer
+    state.messages.append(AIMessage(content=answer))
     return state
 
 
 def _collect_subsidies(query: str, crop: str, region: str) -> list:
     """从政策索引和作物知识中搜索补贴信息"""
     results = []
+    seen_contents = set()  # 去重用：基于内容相似度
+
+    def _is_duplicate(content: str) -> bool:
+        """检查内容是否与已有结果高度相似"""
+        normalized = content.strip()[:200]  # 比较前200字
+        if normalized in seen_contents:
+            return True
+        seen_contents.add(normalized)
+        return False
 
     # 1. 搜索 FAISS 政策索引
     try:
@@ -30,10 +41,12 @@ def _collect_subsidies(query: str, crop: str, region: str) -> list:
             search_query = f"{crop} 补贴 政策 {region}" if crop else f"农业补贴 政策 {region}"
             faiss_results = faiss.search(search_query, k=3)
             for r in faiss_results:
-                results.append({
-                    "content": r.get("content", "")[:500],
-                    "source": "政策文档",
-                })
+                content = r.get("content", "")[:500]
+                if not _is_duplicate(content):
+                    results.append({
+                        "content": content,
+                        "source": "政策文档",
+                    })
     except Exception as e:
         logger.warning("FAISS 政策检索失败: %s", e)
 
@@ -44,10 +57,12 @@ def _collect_subsidies(query: str, crop: str, region: str) -> list:
         rag_results = rag.search(f"{crop} 补贴 价格 政策", k=2)
         for r in rag_results:
             if any(kw in r.get("content", "") for kw in ["补贴", "价格", "政策"]):
-                results.append({
-                    "content": r.get("content", "")[:500],
-                    "source": r.get("metadata", {}).get("source", "作物知识库"),
-                })
+                content = r.get("content", "")[:500]
+                if not _is_duplicate(content):
+                    results.append({
+                        "content": content,
+                        "source": r.get("metadata", {}).get("source", "作物知识库"),
+                    })
     except Exception as e:
         logger.warning("简单检索失败: %s", e)
 

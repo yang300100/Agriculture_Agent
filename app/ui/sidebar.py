@@ -1,6 +1,6 @@
 """
 Common sidebar content — shared across all pages.
-Extracted from test1.py sidebar (lines 2079-2525).
+Extracted from main.py sidebar (lines 2079-2525).
 Excludes: 我的信息, 我的地块, 财务管理 (moved to top-nav pages).
 """
 
@@ -130,6 +130,13 @@ def render_common_sidebar():
             st.markdown("---")
             # ---- Usage Guide ----
             _render_usage_guide()
+
+            # ---- Docs Button ----
+            st.markdown("")
+            if st.button("📚 文档中心", use_container_width=True, key="sidebar_docs_btn",
+                         help="使用手册 · API接口 · 技术手册 · 硬件示例"):
+                st.session_state.current_page = "docs"
+                st.rerun()
 
 
 def _render_progress_bar(percent: float, status: str = "进行中") -> None:
@@ -425,9 +432,8 @@ def _render_task_manager():
                     if st.button("保存任务", key="sidebar_save_task"):
                         if task_crop and task_title:
                             try:
-                                tracker2 = PlantingTracker()
                                 end_date = (datetime.now() + timedelta(days=TASK_DEFAULT_DAYS)).strftime("%Y-%m-%d")
-                                tracker2.create_task({
+                                api("/api/tasks", "post", json_data={
                                     "crop": task_crop,
                                     "task_type": task_type,
                                     "title": task_title,
@@ -498,7 +504,8 @@ def _render_weather_panel():
         # session_state 缓存：30分钟内不重复请求
         cache_key = f"_weather_cache_{location}"
         cached = st.session_state.get(cache_key)
-        if cached and (datetime.now() - cached["ts"]).total_seconds() < WEATHER_CACHE_TTL:
+        weather_cache_ttl = 1800  # 30分钟
+        if cached and (datetime.now() - cached["ts"]).total_seconds() < weather_cache_ttl:
             current = cached.get("current")
             alerts = cached.get("alerts")
             forecast = cached.get("forecast")

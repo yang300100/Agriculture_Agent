@@ -36,8 +36,14 @@ def generate_long_memory_summary(messages: List[BaseMessage], llm: ChatOpenAI) -
         conversation_history=conv_history,
         current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     )
-    response = llm.invoke([HumanMessage(content=summary_input)])
-    return response.content.strip()
+    try:
+        response = llm.invoke([HumanMessage(content=summary_input)])
+        return (response.content or "").strip()
+    except Exception as e:
+        # LLM 调用失败时返回空摘要，不阻断主流程
+        import logging
+        logging.getLogger(__name__).warning("长记忆摘要生成失败: %s", e)
+        return ""
 
 
 def extract_facts_from_conversation(state: AgentState) -> Dict[str, Any]:

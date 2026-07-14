@@ -11,16 +11,53 @@ from ..state import AgentState
 
 logger = logging.getLogger(__name__)
 
-# ── 设备动作类型 → 默认设备ID 映射（供 extract_tasks 等模块复用）──
-ACTION_TO_DEFAULT_DEVICE = {
-    "irrigate": "virtual_irrigation_01",
-    "fertigate": "virtual_fertigator_01",
-    "ventilate": "virtual_ventilation_01",
-    "light": "virtual_light_01",
-    "heat": "virtual_heater_01",
-    "cool": "virtual_heater_01",   # 降温复用加热器（反转控制逻辑）
-    "shade": "virtual_light_01",   # 遮阳复用补光灯（反转控制逻辑）
+# ── 设备动作类型 → 设备能力映射 ──
+ACTION_TO_CAPABILITY = {
+    "irrigate": "irrigate",
+    "fertigate": "fertigate",
+    "ventilate": "ventilate",
+    "light": "light",
+    "heat": "heat",
+    "cool": "heat",     # 降温：找加热器设备（反向控制）
+    "shade": "light",   # 遮阳：找补光灯设备（反向控制）
+    "read_sensor": "read_sensor",
 }
+
+
+def _discover_device_for_capability(capability: str, username: str = "default") -> Optional[str]:
+    """动态发现具备指定能力的设备ID（从用户注册的设备列表中查找）。
+
+    每次调用都会重新加载 registry 以获取最新设备列表。
+    返回第一个匹配的设备ID，无匹配时返回 None。
+    """
+    try:
+        from core.device_registry_factory import setup_registry, close_registry
+
+        registry, loop = setup_registry(username=username)
+        try:
+            loop.run_until_complete(registry.discover_all())
+            # 枚举所有驱动下的所有设备
+            for driver_name in registry._drivers:
+                driver = registry._drivers[driver_name]
+                devices = loop.run_until_complete(driver.discover())
+                for d in devices:
+                    # 检查设备能力是否匹配（DeviceCapability 枚举值比较）
+                    for cap in d.capabilities:
+                        if hasattr(cap, 'value') and cap.value == capability:
+                            return d.device_id
+                        elif str(cap) == capability:
+                            return d.device_id
+        finally:
+            close_registry(loop, registry)
+    except Exception:
+        pass
+    return None
+
+
+def _discover_sensor_device(username: str = "default") -> Optional[str]:
+    """动态发现传感器设备ID（用于读取温湿度等环境数据）"""
+    return _discover_device_for_capability("read_sensor", username) or \
+        _discover_device_for_capability("irrigate", username)
 
 
 class DeviceAgent(BaseAgent):
@@ -42,6 +79,7 @@ class DeviceAgent(BaseAgent):
 
     def invoke(self, state: AgentState) -> AgentState:
         question = state.user_question or ""
+        self._state_username = getattr(state, 'username', 'default')
 
         try:
             parsed = self._parse_device_intent(question, state)
@@ -49,7 +87,7 @@ class DeviceAgent(BaseAgent):
                 return self._reply(state, "抱歉哥哥，我没理解你想操作哪个设备呢～能再说详细一点吗？比如「帮小麦浇30分钟水」")
 
             from core.device_rule_engine import RuleEngine
-            username = getattr(state, 'username', 'default')
+            username = self._state_username
             engine = RuleEngine(username=username)
             matched_rules = self._match_rules(parsed, state, engine)
             state.matched_rules = [r["id"] for r in matched_rules]
@@ -61,7 +99,8 @@ class DeviceAgent(BaseAgent):
 
         except Exception as e:
             logger.exception("DeviceAgent 处理失败")
-            return self._reply(state, f"设备控制出错了：{e}")
+            # 不暴露原始异常信息给用户
+            return self._reply(state, "设备控制处理出错了，请稍后再试～")
 
     def _parse_device_intent(self, question: str, state: AgentState) -> Optional[Dict]:
         """用 LLM 从用户自然语言中提取设备操作参数"""
@@ -106,7 +145,8 @@ class DeviceAgent(BaseAgent):
             return self._keyword_parse(question)
 
     def _keyword_parse(self, question: str) -> Optional[Dict]:
-        """关键词回退解析 — 先提取时长，再匹配操作类型"""
+        """关键词回退解析 — 先提取时长，再匹配操作类型。
+        未识别任何关键词时返回 None（不默认触发灌溉！）。"""
         dur_match = re.search(r'(\d+)\s*(分钟|分|小时|秒)', question)
         duration = int(dur_match.group(1)) if dur_match else 30
         # 小时/秒 转换
@@ -115,52 +155,67 @@ class DeviceAgent(BaseAgent):
         elif dur_match and dur_match.group(2) == "秒":
             duration = max(1, duration // 60)
 
-        if any(kw in question for kw in ["浇水", "灌溉"]):
+        # 按优先级匹配操作类型
+        if any(kw in question for kw in ["浇水", "灌溉", "浇灌"]):
             return {"action": "irrigate", "params": {"duration": duration}}
-        if any(kw in question for kw in ["施肥"]):
-            return {"action": "fertigate", "params": {"amount_kg": 5}}
-        if any(kw in question for kw in ["通风", "开窗"]):
+        if any(kw in question for kw in ["施肥", "追肥"]):
+            return {"action": "fertigate", "params": {"amount_kg": 5, "duration": duration}}
+        if any(kw in question for kw in ["通风", "换气", "开窗"]):
             return {"action": "ventilate", "params": {"duration": duration}}
         if any(kw in question for kw in ["补光", "开灯"]):
-            return {"action": "light", "params": {"brightness_percent": 80}}
-        if any(kw in question for kw in ["加热"]):
-            return {"action": "heat", "params": {"target_temp": 22}}
-        if any(kw in question for kw in ["设备状态"]):
+            return {"action": "light", "params": {"brightness_percent": 80, "duration": duration}}
+        if any(kw in question for kw in ["遮阳", "遮光"]):
+            return {"action": "shade", "params": {}}
+        if any(kw in question for kw in ["加热", "加温", "升温"]):
+            return {"action": "heat", "params": {"target_temp": 22, "duration": duration}}
+        if any(kw in question for kw in ["降温", "冷却"]):
+            return {"action": "cool", "params": {"target_temp": 20, "duration": duration}}
+        if any(kw in question for kw in ["设备状态", "查看设备", "设备列表"]):
             return {"action": "status", "params": {}}
-        return {"action": "irrigate", "params": {"duration": duration}}
+        if any(kw in question for kw in ["关闭", "停止", "关灯", "关机"]):
+            return {"action": "stop", "params": {}}
+        # 未识别任何操作类型 → 返回 None，不默认触发灌溉
+        return None
 
     def _match_rules(self, parsed: Dict, state: AgentState, engine) -> list:
         """查找与当前操作匹配的规则"""
         try:
-            sensor_context = self._get_sensor_context(parsed.get("action", ""))
+            username = getattr(state, 'username', 'default')
+            sensor_context = self._get_sensor_context(parsed.get("action", ""), username)
             context = {"sensor_data": sensor_context, "weather": {}, "crop": parsed.get("crop", "")}
             return engine.find_matching_rules(context)
         except Exception as e:
             logger.warning("规则匹配失败: %s", e)
             return []
 
-    def _get_sensor_context(self, action: str) -> Dict:
-        """获取当前传感器数据"""
-        loop = None
+    def _get_sensor_context(self, action: str, username: str = "default") -> Dict:
+        """获取当前传感器数据 — 动态发现传感器设备并读取数值。
+
+        使用共享的 registry 而非自己创建 SimulatorDriver，
+        避免事件循环冲突和数据不一致。
+        """
         try:
-            from devices.simulator_driver import SimulatorDriver
-            import asyncio
-            sim = SimulatorDriver(simulated_latency_ms=0)
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(sim.connect())
-            state = loop.run_until_complete(sim.read_state("virtual_soil_sensor_01"))
-            return state
+            from core.device_registry_factory import setup_registry, close_registry
+
+            # 动态发现传感器设备
+            sensor_id = _discover_sensor_device(username)
+            if not sensor_id:
+                # 无传感器设备注册，返回默认兜底值
+                return {"soil_moisture": 45, "temperature": 22, "humidity": 65}
+
+            registry, loop = setup_registry(username=username)
+            try:
+                loop.run_until_complete(registry.discover_all())
+                state = loop.run_until_complete(registry.read_state(sensor_id))
+                return state
+            finally:
+                close_registry(loop, registry)
         except Exception:
             return {"soil_moisture": 45, "temperature": 22, "humidity": 65}
-        finally:
-            if loop is not None:
-                from core.device_registry_factory import close_registry
-                close_registry(loop)
 
     def _execute_with_rule(self, rule: Dict, parsed: Dict, state: AgentState, engine) -> AgentState:
         """有匹配规则时的执行逻辑"""
-        from core.device_rule_engine import apply_autonomy
+        from core.device_rule_engine import RuleDecision, apply_autonomy
         from ..config import get_autonomy_level
 
         autonomy = get_autonomy_level()
@@ -172,7 +227,7 @@ class DeviceAgent(BaseAgent):
         # 应用自主权级别
         decision = apply_autonomy(decision, autonomy)
 
-        if decision == "auto_execute":
+        if decision == RuleDecision.AUTO_EXECUTE:
             extra = f"✅ 规则「{rule.get('name', '')}」校验通过"
             if autonomy == "high":
                 extra += "（高自主模式：自动执行）"
@@ -199,6 +254,45 @@ class DeviceAgent(BaseAgent):
         autonomy = get_autonomy_level()
         action_type = parsed.get("action", "")
         params = parsed.get("params", {})
+
+        # cool → 关闭加热器（反向控制）— 也需要走规则校验
+        if action_type == "cool":
+            device_id = self._find_device_for_action("heat")
+            if not device_id:
+                return self._reply(state, f"😅 没找到加热器设备来执行降温呢～")
+            params["action"] = "cool"
+            temp_rule = {"id": "temp_direct_cool", "action": {"device_id": device_id, "command": "stop", "params": params}, "constraints": {"max_duration_per_use": 60}}
+            decision, reason, final_params = engine.evaluate_action(temp_rule, params, {"device_id": device_id})
+            decision = apply_autonomy(decision, autonomy)
+            if decision == RuleDecision.REJECTED:
+                self._write_decision_log(state, device_id, "stop", final_params, "rejected", reason, None)
+                return self._reply(state, f"❌ {reason}")
+            elif decision == RuleDecision.NEED_CONFIRM:
+                self._write_decision_log(state, device_id, "stop", final_params, "need_confirm", reason, None)
+                state.pending_action = {"device_id": device_id, "command": "stop", "params": final_params, "reason": reason}
+                return self._reply(state, f"⚠️ {reason}\n\n请在「设备仪表盘」中确认此操作。")
+            return self._do_execute(device_id, "stop", final_params, state, engine,
+                                   extra="（降温模式：关闭加热器）")
+
+        # shade → 关闭补光灯（反向控制）— 也需要走规则校验
+        if action_type == "shade":
+            device_id = self._find_device_for_action("light")
+            if not device_id:
+                return self._reply(state, f"😅 没找到补光灯设备来执行遮阳呢～")
+            params["action"] = "shade"
+            temp_rule = {"id": "temp_direct_shade", "action": {"device_id": device_id, "command": "stop", "params": params}, "constraints": {"max_duration_per_use": 60}}
+            decision, reason, final_params = engine.evaluate_action(temp_rule, params, {"device_id": device_id})
+            decision = apply_autonomy(decision, autonomy)
+            if decision == RuleDecision.REJECTED:
+                self._write_decision_log(state, device_id, "stop", final_params, "rejected", reason, None)
+                return self._reply(state, f"❌ {reason}")
+            elif decision == RuleDecision.NEED_CONFIRM:
+                self._write_decision_log(state, device_id, "stop", final_params, "need_confirm", reason, None)
+                state.pending_action = {"device_id": device_id, "command": "stop", "params": final_params, "reason": reason}
+                return self._reply(state, f"⚠️ {reason}\n\n请在「设备仪表盘」中确认此操作。")
+            return self._do_execute(device_id, "stop", final_params, state, engine,
+                                   extra="（遮阳模式：关闭补光灯）")
+
         device_id = self._find_device_for_action(action_type)
         if not device_id:
             return self._reply(state, f"😅 没找到{action_type}类型的设备呢～请先在「设备仪表盘」中添加设备吧！")
@@ -279,7 +373,7 @@ class DeviceAgent(BaseAgent):
 
                 engine.record_execution(device_id, params)
 
-                state.device_command = {"device_id": device_id, "command": command, "params": params}
+                state.device_command = {"device_id": device_id, "command": command, "params": params, "action": params.get("action", command)}
                 res_obj = result.get("result")
                 res_msg = res_obj.message if res_obj and hasattr(res_obj, 'message') else str(res_obj or "")
                 state.device_result = {"success": result["success"], "message": res_msg}
@@ -297,10 +391,9 @@ class DeviceAgent(BaseAgent):
                             "irrigate": "浇水", "fertigate": "施肥", "ventilate": "通风",
                             "light": "补光", "heat": "加热", "cool": "降温", "shade": "遮阳",
                         }
-                        task_type = action_labels.get(
-                            state.device_command.get("action", "") if state.device_command else "",
-                            "设备操作"
-                        )
+                        # 从 device_command 推断操作类型
+                        action_type = state.device_command.get("action", command) if state.device_command else command
+                        task_type = action_labels.get(action_type, "设备操作")
                         tracker = PlantingTracker(os.path.join("data", username))
                         tracker.create_task({
                             "crop": crop or "未指定作物",
@@ -313,6 +406,7 @@ class DeviceAgent(BaseAgent):
                             "device_id": device_id,
                             "device_command": command,
                             "device_params": params,
+                            "rule_id": rule_id,
                         })
                         logger.info("DeviceAgent 已同步创建任务记录: %s", task_type)
                     except Exception as e:
@@ -322,10 +416,19 @@ class DeviceAgent(BaseAgent):
 
                 return self._reply(state, msg)
             finally:
-                close_registry(loop)
+                close_registry(loop, registry)
         except Exception as e:
             logger.exception("设备执行异常")
             return self._reply(state, f"❌ 设备执行出错：{e}")
 
     def _find_device_for_action(self, action: str) -> Optional[str]:
-        return ACTION_TO_DEFAULT_DEVICE.get(action)
+        """动态发现匹配操作类型的设备ID。
+
+        从用户注册的设备中查找具备对应能力的设备，
+        不再依赖硬编码的虚拟设备ID。
+        """
+        capability = ACTION_TO_CAPABILITY.get(action)
+        if not capability:
+            return None
+        username = getattr(self, '_state_username', 'default')
+        return _discover_device_for_capability(capability, username)

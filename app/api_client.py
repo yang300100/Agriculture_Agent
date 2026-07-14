@@ -30,15 +30,15 @@ def api(path, method="get", json_data=None, cache_ttl=None):
 
     try:
         if method == "get":
-            r = requests.get(url, timeout=15)
+            r = requests.get(url, timeout=30)
         elif method == "delete":
-            r = requests.delete(url, timeout=15)
+            r = requests.delete(url, timeout=30)
         else:
             # 创建副本，避免修改调用方的原始 dict
             data = dict(json_data) if json_data else {}
             data["username"] = username
-            # 聊天请求超时设为 180s（Agent 流水线包含多次 LLM 调用，可能 >60s）
-            r = requests.post(url, json=data, timeout=180 if "chat" in path else 15)
+            # 聊天请求超时设为 600s（Agent 流水线包含多次 LLM 调用，可能很长）
+            r = requests.post(url, json=data, timeout=600 if "chat" in path else 30)
         if r.status_code == 200:
             result = r.json()
         else:

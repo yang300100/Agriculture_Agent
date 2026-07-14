@@ -1,11 +1,92 @@
-"""APScheduler 定时任务 — 提醒检查 / 天气预警 / 病害风险评估"""
+"""APScheduler 定时任务 — 提醒检查 / 天气预警 / 病害风险评估 / 设备巡检"""
 
 import logging
 import os
+import json
+import threading
 from datetime import datetime
-from typing import List
+from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════
+# 巡检日志 — 每次定时任务执行时写入结构化记录
+# ═══════════════════════════════════════════════════
+
+class InspectionLogger:
+    """巡检日志管理器 — 记录每次定时任务的执行结果到磁盘"""
+
+    _instances: Dict[str, "InspectionLogger"] = {}
+    _lock = threading.Lock()
+
+    def __init__(self, username: str):
+        self.username = username
+        self.log_path = os.path.join("data", username, "inspection_log.json")
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+
+    @classmethod
+    def for_user(cls, username: str) -> "InspectionLogger":
+        with cls._lock:
+            if username not in cls._instances:
+                cls._instances[username] = cls(username)
+            return cls._instances[username]
+
+    def log(self, job_name: str, status: str, detail: str = "",
+            device_id: str = "", action: str = "", duration_ms: int = 0):
+        """写入一条巡检记录"""
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "job": job_name,
+            "status": status,       # started | success | failed | skipped
+            "detail": detail,
+            "device_id": device_id,
+            "action": action,
+            "duration_ms": duration_ms,
+        }
+        try:
+            logs = []
+            if os.path.exists(self.log_path):
+                with open(self.log_path, "r", encoding="utf-8") as f:
+                    logs = json.load(f)
+            logs.append(entry)
+            # 只保留最近500条
+            if len(logs) > 500:
+                logs = logs[-500:]
+            with open(self.log_path, "w", encoding="utf-8") as f:
+                json.dump(logs, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning("巡检日志写入失败: %s", e)
+
+    def get_recent(self, job_name: str = None, limit: int = 20) -> list:
+        """读取最近的巡检记录"""
+        try:
+            if os.path.exists(self.log_path):
+                with open(self.log_path, "r", encoding="utf-8") as f:
+                    logs = json.load(f)
+                if job_name:
+                    logs = [l for l in logs if l.get("job") == job_name]
+                return logs[-limit:]
+        except Exception:
+            pass
+        return []
+
+
+# ── 统一的巡检日志输出 ──
+
+def _log_inspection(username: str, job_name: str, status: str, detail: str = "",
+                    device_id: str = "", action: str = "", duration_ms: int = 0):
+    """同时输出到控制台和磁盘"""
+    icon = {"started": "▶", "success": "✓", "failed": "✗", "skipped": "○"}.get(status, "?")
+    ts = datetime.now().strftime("%H:%M:%S")
+    line = f"[{ts}] [{icon}] [{job_name}] {detail}"
+    if device_id:
+        line += f" | 设备={device_id}"
+    if action:
+        line += f" | 动作={action}"
+    if duration_ms:
+        line += f" | 耗时={duration_ms}ms"
+    logger.info(line)
+    InspectionLogger.for_user(username).log(job_name, status, detail, device_id, action, duration_ms)
 
 
 def check_reminders_job():
@@ -138,6 +219,9 @@ def check_disease_job():
 
 def check_device_rules_job():
     """每 5 分钟检查自动规则并触发设备操作"""
+    import time as _time
+    job_start = _time.time()
+    total_triggered = 0
     try:
         import os
         import asyncio as _asyncio
@@ -146,35 +230,38 @@ def check_device_rules_job():
         from devices.simulator_driver import SimulatorDriver
         from devices.base import DeviceCommand
         from core.device_executor import DeviceExecutor
+        from core.device_registry_factory import setup_registry, close_registry
 
-        # 获取当前传感器数据
-        sim = SimulatorDriver(simulated_latency_ms=50)
-        loop = _asyncio.new_event_loop()
-        _asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(sim.connect())
-            sensor_data = loop.run_until_complete(sim.read_state("virtual_soil_sensor_01"))
+        # 遍历所有有规则的用户
+        data_dir = os.path.join("data")
+        usernames = ["default"]
+        if os.path.exists(data_dir):
+            for d in os.listdir(data_dir):
+                user_path = os.path.join(data_dir, d)
+                if os.path.isdir(user_path) and os.path.exists(os.path.join(user_path, "device_rules.json")):
+                    usernames.append(d)
 
-            # 遍历所有有规则的用户
-            data_dir = os.path.join("data")
-            usernames = ["default"]
-            if os.path.exists(data_dir):
-                for d in os.listdir(data_dir):
-                    user_path = os.path.join(data_dir, d)
-                    if os.path.isdir(user_path) and os.path.exists(os.path.join(user_path, "device_rules.json")):
-                        usernames.append(d)
+        for username in set(usernames):
+            engine = RuleEngine(username=username)
 
-            for username in set(usernames):
-                engine = RuleEngine(username=username)
+            # 使用 setup_registry 加载用户设备并读取传感器数据
+            registry, loop = setup_registry(username)
+            try:
+                loop.run_until_complete(registry.discover_all())
+
+                # 动态发现传感器设备读取环境数据
+                from app.agent.agents.device_agent import _discover_sensor_device
+                sensor_id = _discover_sensor_device(username)
+                sensor_data = {"soil_moisture": 45, "temperature": 22, "humidity": 65}
+                if sensor_id:
+                    sensor_data = loop.run_until_complete(registry.read_state(sensor_id))
+
                 context = {"sensor_data": sensor_data, "weather": {}}
                 matched = engine.find_matching_rules(context)
 
                 if not matched:
                     continue
 
-                registry = DeviceDriverRegistry()
-                registry.register("simulator", sim)
-                loop.run_until_complete(registry.discover_all())
                 executor = DeviceExecutor(registry, username=username)
 
                 for rule in matched:
@@ -194,15 +281,23 @@ def check_device_rules_job():
 
                         if result["success"]:
                             engine.record_execution(action.get("device_id"), final_params)
-                            logger.info("自动规则触发: %s → %s", rule.get("name", "未命名"), action.get("device_id"))
-        finally:
-            loop.close()
-            try:
-                _asyncio.set_event_loop(None)
-            except Exception:
-                pass
+                            total_triggered += 1
+                            _log_inspection(username, "设备规则", "success",
+                                            f"规则触发: {rule.get('name', '未命名')}",
+                                            device_id=action.get("device_id", ""),
+                                            action=action.get("command", "start"))
+            finally:
+                close_registry(loop, registry)
+
+        elapsed = int((_time.time() - job_start) * 1000)
+        if total_triggered > 0:
+            _log_inspection("system", "设备规则", "success",
+                            f"触发 {total_triggered} 条规则", duration_ms=elapsed)
+
     except Exception as e:
-        logger.warning("设备规则轮询失败: %s", e)
+        elapsed = int((_time.time() - job_start) * 1000)
+        _log_inspection("system", "设备规则", "failed",
+                        f"轮询异常: {e}", duration_ms=elapsed)
 
 
 def check_task_execution_job():
@@ -319,6 +414,8 @@ def check_camera_capture_job():
     3. 调用 CropMonitorAgent 分析照片
     4. 如有推荐操作，通过 RuleEngine + DeviceExecutor 执行
     """
+    import time as _time
+    job_start = _time.time()
     try:
         import os
         import json
@@ -337,6 +434,9 @@ def check_camera_capture_job():
                 ):
                     usernames.append(d)
 
+        total_cameras = 0
+        total_captures = 0
+
         for username in set(usernames):
             registry, loop = setup_registry(username)
             try:
@@ -346,17 +446,22 @@ def check_camera_capture_job():
                     if "capture" in [c.value for c in d.capabilities]
                     and d.status.value in ("online", "offline")
                 ]
-                # 记录故障摄像头（有 capture 能力但状态异常）
                 error_cameras = [
                     d for d in devices
                     if "capture" in [c.value for c in d.capabilities]
                     and d.status.value == "error"
                 ]
                 for ec in error_cameras:
-                    logger.warning("摄像头故障，跳过巡检: %s/%s", username, ec.device_id)
+                    _log_inspection(username, "摄像头巡检", "failed",
+                                    f"摄像头故障: {ec.device_id}", device_id=ec.device_id)
 
                 if not cameras:
                     continue
+
+                total_cameras += len(cameras)
+                _log_inspection(username, "摄像头巡检", "started",
+                                f"发现 {len(cameras)} 个摄像头，开始巡检",
+                                device_id=cameras[0].device_id if cameras else "")
 
                 for cam in cameras:
                     try:
@@ -366,13 +471,19 @@ def check_camera_capture_job():
                             registry.execute(cam.device_id, cmd)
                         )
                         if not result.success:
-                            logger.warning(
-                                "摄像头拍照失败: %s → %s", cam.device_id, result.message
-                            )
+                            _log_inspection(username, "摄像头巡检", "failed",
+                                            f"拍照失败: {result.message}", device_id=cam.device_id)
                             continue
 
-                        image_bytes = result.raw_response.get("image_bytes")
+                        # 兼容 CameraDriver(image_bytes) 和 HTTP 设备(image_base64)
+                        raw = result.raw_response or {}
+                        image_bytes = raw.get("image_bytes")
                         if not image_bytes:
+                            image_b64 = raw.get("image_base64", "")
+                            if image_b64:
+                                image_bytes = base64.b64decode(image_b64)
+                        if not image_bytes:
+                            logger.warning("摄像头未返回图片数据: %s", cam.device_id)
                             continue
 
                         # 2. 保存照片到磁盘
@@ -382,7 +493,9 @@ def check_camera_capture_job():
                         photo_path = os.path.join(photo_dir, f"capture_{ts}.jpg")
                         with open(photo_path, "wb") as f:
                             f.write(image_bytes)
-                        logger.info("照片已保存: %s", photo_path)
+                        total_captures += 1
+                        _log_inspection(username, "摄像头巡检", "success",
+                                        f"拍照成功 ({len(image_bytes)} bytes)", device_id=cam.device_id)
 
                         # 3. base64 编码 → Vision 分析
                         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -414,21 +527,36 @@ def check_camera_capture_job():
                         # 5. 如有推荐操作 → 自动执行
                         if analysis_result.get("success"):
                             analysis = analysis_result.get("analysis", {})
+                            issues = analysis.get("issues", [])
                             actions = analysis.get("recommended_actions", [])
+                            health = analysis.get("health_status", "unknown")
+                            _log_inspection(username, "摄像头巡检", "success",
+                                            f"分析完成: 健康={health}, 问题={len(issues)}个, 建议操作={len(actions)}个",
+                                            device_id=cam.device_id)
                             if actions:
                                 _process_camera_actions(
                                     actions, username, registry, loop, cam.device_id
                                 )
+                        else:
+                            _log_inspection(username, "摄像头巡检", "failed",
+                                            f"分析失败: {analysis_result.get('error', '未知')}",
+                                            device_id=cam.device_id)
 
                     except Exception as e:
-                        logger.warning(
-                            "摄像头巡检异常 [%s/%s]: %s", username, cam.device_id, e
-                        )
+                        _log_inspection(username, "摄像头巡检", "failed",
+                                        f"异常: {e}", device_id=cam.device_id)
             finally:
                 close_registry(loop)
 
+        elapsed = int((_time.time() - job_start) * 1000)
+        _log_inspection("system", "摄像头巡检", "success",
+                        f"巡检完成: {total_captures}/{total_cameras} 台摄像头拍照成功",
+                        duration_ms=elapsed)
+
     except Exception as e:
-        logger.warning("摄像头定时巡检失败: %s", e)
+        elapsed = int((_time.time() - job_start) * 1000)
+        _log_inspection("system", "摄像头巡检", "failed",
+                        f"巡检异常: {e}", duration_ms=elapsed)
 
 
 def _process_camera_actions(actions: list, username: str, registry, loop, camera_id: str):
@@ -551,6 +679,9 @@ def check_autonomous_cycle_job():
 
     替代原有的 check_camera_capture_job，实现完整的感知→决策→执行闭环。
     """
+    import time as _time
+    job_start = _time.time()
+    total_cycles = 0
     try:
         from core.autonomous_farm_manager import AutonomousFarmManager
         from app.agent.config import (
@@ -560,26 +691,40 @@ def check_autonomous_cycle_job():
         usernames = _get_active_usernames()
         configured_regions = [r.strip() for r in AUTO_DECISION_REGIONS.split(",") if r.strip()]
 
+        _log_inspection("system", "自主决策", "started",
+                        f"开始巡检: {len(usernames)} 用户, {len(configured_regions)} 区域")
+
         for username in usernames:
             manager = AutonomousFarmManager()
 
-            # 发现该用户的区域
+            # 发现该用户的巡检区域 — 优先使用地块(独立坐标+天气)
             try:
-                from core.device_registry_factory import setup_registry, close_registry
-                registry, loop = setup_registry(username)
-                try:
-                    devices = loop.run_until_complete(registry.discover_all())
-                    all_regions = set()
-                    for d in devices:
-                        loc = getattr(d, 'location', '') or '默认区域'
-                        all_regions.add(loc)
+                from core.plot_manager import PlotManager
+                pm = PlotManager(username)
+                plots = pm.list_plots()
+                if configured_regions:
+                    plots = [p for p in plots if p["plot_id"] in configured_regions]
 
-                    if configured_regions:
-                        regions = sorted(all_regions & set(configured_regions))
-                    else:
-                        regions = sorted(all_regions)
-                finally:
-                    close_registry(loop)
+                if plots:
+                    regions = [p["plot_id"] for p in plots]
+                    _log_inspection(username, "自主决策", "started",
+                                    f"按地块巡检: {len(plots)} 个地块")
+                else:
+                    # 无地块 → 回退：按设备 location 分组
+                    from core.device_registry_factory import setup_registry, close_registry
+                    registry, loop = setup_registry(username)
+                    try:
+                        devices = loop.run_until_complete(registry.discover_all())
+                        all_regions = set()
+                        for d in devices:
+                            loc = getattr(d, 'location', '') or '默认区域'
+                            all_regions.add(loc)
+                        if configured_regions:
+                            regions = sorted(all_regions & set(configured_regions))
+                        else:
+                            regions = sorted(all_regions)
+                    finally:
+                        close_registry(loop)
             except Exception as e:
                 logger.warning("区域发现失败 [%s]: %s", username, e)
                 continue
@@ -598,10 +743,18 @@ def check_autonomous_cycle_job():
                 try:
                     logger.info("自主决策巡检: %s/%s", username, region)
                     report = manager.run_cycle(username, region)
-                    logger.info("巡检完成: %s/%s — %s", username, region,
-                               report.summary.replace('\n', ' | ')[:200])
+                    total_cycles += 1
+                    _log_inspection(username, "自主决策", "success",
+                                    f"区域={region}, 摘要={report.summary.replace(chr(10), ' | ')[:120]}")
                 except Exception as e:
-                    logger.exception("巡检异常 [%s/%s]: %s", username, region, e)
+                    _log_inspection(username, "自主决策", "failed",
+                                    f"区域={region}, 异常={e}")
+
+        elapsed = int((_time.time() - job_start) * 1000)
+        _log_inspection("system", "自主决策", "success",
+                        f"巡检完成: {total_cycles} 个周期", duration_ms=elapsed)
 
     except Exception as e:
-        logger.exception("自主决策调度失败: %s", e)
+        elapsed = int((_time.time() - job_start) * 1000)
+        _log_inspection("system", "自主决策", "failed",
+                        f"调度异常: {e}", duration_ms=elapsed)

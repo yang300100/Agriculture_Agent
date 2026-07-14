@@ -1,8 +1,10 @@
 """农田自主决策编排器 — 感知→分析→决策→执行 闭环
 
 将摄像头巡检、传感器采集、天气服务、LLM 决策、设备控制整合为
-完整的自主决策流程。按设备 location 分组形成"决策区域"，
-每区域独立运行 run_cycle()。
+完整的自主决策流程。
+
+按设备绑定的地块(plot_id)分组形成"决策区域"，
+每区域使用地块的精确坐标获取天气，避免 location 字符串 geocode。
 """
 
 import os, json, logging, asyncio, base64, re, copy
@@ -83,13 +85,9 @@ _NIGHT_START = 22
 _NIGHT_END = 6
 
 
-# ── 硬限制（代码级，不可通过规则突破）────────────────
+# ── 硬限制（代码级，不可通过规则突破）— 从 device_rule_engine 导入权威定义 ──
 
-_HARD_LIMITS = {
-    "irrigate": {"max_duration_per_use_minutes": 120},
-    "fertigate": {"max_amount_per_use_kg": 50},
-    "ventilate": {"max_duration_per_use_minutes": 120},
-}
+from core.device_rule_engine import HARD_LIMITS as _GLOBAL_HARD_LIMITS
 
 
 # ── 主类 ─────────────────────────────────────────────
@@ -104,18 +102,34 @@ class AutonomousFarmManager:
     """
 
     def __init__(self):
-        self.hard_limits = copy.deepcopy(_HARD_LIMITS)
+        self.hard_limits = copy.deepcopy(_GLOBAL_HARD_LIMITS)
         self._last_run: Dict[str, datetime] = {}
 
     # ── 区域发现 ──────────────────────────────────
 
-    @staticmethod
-    def _group_by_region(devices: List) -> Dict[str, List]:
-        """按设备 location 分组"""
+    def _group_by_region(self, devices: List, username: str = "default") -> Dict[str, List]:
+        """按设备绑定的地块(plot_id)分组。
+
+        从 custom_devices.json 读取每台设备的 plot_id，
+        未绑定地块的设备按 location 分组。
+        """
+        # 加载设备→地块映射
+        from core.device_registry_factory import load_custom_devices
+        device_configs = load_custom_devices(username)
+        device_to_plot = {}
+        for dc in device_configs:
+            pid = dc.get("plot_id", "")
+            if pid:
+                device_to_plot[dc["device_id"]] = pid
+
         regions: Dict[str, List] = {}
         for d in devices:
-            loc = getattr(d, 'location', '') or '默认区域'
-            regions.setdefault(loc, []).append(d)
+            did = d.device_id
+            # 优先使用 plot_id 配置
+            plot_id = device_to_plot.get(did, "")
+            if not plot_id:
+                plot_id = getattr(d, 'location', '') or '默认区域'
+            regions.setdefault(plot_id, []).append(d)
         return regions
 
     # ── 夜间约束 ──────────────────────────────────
@@ -139,8 +153,13 @@ class AutonomousFarmManager:
 
     # ── 数据收集 ──────────────────────────────────
 
-    def collect_farm_state(self, username: str, region: str) -> FarmState:
-        """① 收集：并行采集一个区域的全部状态数据"""
+    def collect_farm_state(self, username: str, region: str,
+                           plot_lat: float = None, plot_lon: float = None) -> FarmState:
+        """① 收集：并行采集一个区域的全部状态数据。
+
+        Args:
+            plot_lat, plot_lon: 地块精确坐标，优先用于天气查询
+        """
         from core.device_registry_factory import setup_registry, close_registry
 
         state = FarmState(
@@ -166,10 +185,11 @@ class AutonomousFarmManager:
             state.sensor_readings = self._collect_sensors(
                 registry, loop, region_devices)
         finally:
-            close_registry(loop)
+            close_registry(loop, registry)
 
-        # ── 天气数据（同步）──
-        state.current_weather, state.weather_forecast = self._collect_weather(region)
+        # ── 天气数据（使用地块精确坐标）──
+        state.current_weather, state.weather_forecast = self._collect_weather(
+            region, lat=plot_lat, lon=plot_lon)
         state.weather_persistence = self._collect_persistence()
 
         # ── 作物与病害数据（同步）──
@@ -246,13 +266,21 @@ class AutonomousFarmManager:
                 readings[d.device_id] = None
         return readings
 
-    def _collect_weather(self, region: str) -> Tuple[Optional[Dict], List[Dict]]:
-        """获取当前天气 + 3天预报"""
+    def _collect_weather(self, region: str, lat: float = None, lon: float = None) -> Tuple[Optional[Dict], List[Dict]]:
+        """获取当前天气 + 3天预报。
+
+        优先使用地块精确坐标，回退到 region 字符串 geocode。
+        """
         try:
             from core.weather_service import WeatherService
             ws = WeatherService()
-            current = ws.get_current_weather(region)
-            forecast = ws.get_forecast(region, 3)
+            if lat is not None and lon is not None:
+                # 使用地块精确坐标，直接调格点API，跳过 geocode
+                current = ws.get_current_by_coords(lat, lon, region)
+                forecast = ws.get_forecast_by_coords(lat, lon, region, 3)
+            else:
+                current = ws.get_current_weather(region)
+                forecast = ws.get_forecast(region, 3)
 
             cur_dict = None
             if current:
@@ -321,9 +349,10 @@ class AutonomousFarmManager:
         return crops, risks
 
     def _collect_recent_actions(self, username: str) -> List[Dict]:
-        """获取近期设备操作日志"""
+        """获取近期设备操作日志（与 DeviceExecutor 共用 device_log.json）"""
         try:
-            log_path = os.path.join("data", username, "device_action_log.json")
+            from core.device_executor import DEFAULT_DATA_DIR
+            log_path = os.path.join(DEFAULT_DATA_DIR, username, "device_log.json")
             if os.path.exists(log_path):
                 with open(log_path, encoding="utf-8") as f:
                     logs = json.load(f)
@@ -578,9 +607,10 @@ class AutonomousFarmManager:
 
                 action["device_id"] = device_id
 
-            # 参数硬上限裁剪
+            # 参数硬上限裁剪（使用 HARD_LIMITS 权威定义）
+            caps = self.hard_limits.get(action_type, {})
             if action_type == "irrigate":
-                limit = _HARD_LIMITS["irrigate"]["max_duration_per_use_minutes"]
+                limit = caps.get("max_duration_per_use_minutes", 120)
                 params = action.get("params", {})
                 if params.get("duration", 0) > limit:
                     params["duration"] = limit
@@ -588,12 +618,20 @@ class AutonomousFarmManager:
                     logger.info("灌溉时长裁剪至 %d 分钟", limit)
 
             if action_type == "fertigate":
-                limit = _HARD_LIMITS["fertigate"]["max_amount_per_use_kg"]
+                limit = caps.get("max_amount_per_use_kg", 50)
                 params = action.get("params", {})
                 if params.get("amount_kg", 0) > limit:
                     params["amount_kg"] = limit
                     action["params"] = params
                     logger.info("施肥量裁剪至 %d kg", limit)
+
+            if action_type == "ventilate":
+                limit = caps.get("max_duration_per_use_minutes", 120)
+                params = action.get("params", {})
+                if params.get("duration", 0) > limit:
+                    params["duration"] = limit
+                    action["params"] = params
+                    logger.info("通风时长裁剪至 %d 分钟", limit)
 
             valid_actions.append(action)
 
@@ -719,7 +757,7 @@ class AutonomousFarmManager:
                     ))
 
         finally:
-            close_registry(loop)
+            close_registry(loop, registry)
 
         return results
 
@@ -755,6 +793,12 @@ class AutonomousFarmManager:
                 decision = apply_autonomy(decision, autonomy)
 
                 if decision == RuleDecision.AUTO_EXECUTE:
+                    # 夜间约束检查（与 execute_plan 保持一致）
+                    night_check = self._check_night_constraint(
+                        command, "silent")
+                    if night_check == RuleDecision.REJECTED:
+                        logger.info("规则引擎兜底: 跳过夜间操作 %s/%s", device_id, command)
+                        continue
                     actions.append({
                         "action": command,
                         "device_id": device_id,
@@ -763,11 +807,13 @@ class AutonomousFarmManager:
                         "reason": f"规则引擎兜底: {rule.get('name', rule['id'])} — {reason}",
                     })
 
-            return DecisionPlan(
-                region=state.region,
-                overall_assessment=f"LLM 决策不可用，使用规则引擎兜底。匹配到 {len(matched)} 条规则，可执行 {len(actions)} 项操作。",
-                actions=actions,
-            )
+            if actions:
+                return DecisionPlan(
+                    region=state.region,
+                    overall_assessment=f"LLM 决策不可用，使用规则引擎兜底。匹配到 {len(matched)} 条规则，可执行 {len(actions)} 项操作。",
+                    actions=actions,
+                )
+            return None
 
         except Exception as e:
             logger.exception("规则引擎兜底失败")
@@ -786,8 +832,16 @@ class AutonomousFarmManager:
         )
 
         try:
-            # ① 收集状态
-            state = self.collect_farm_state(username, region)
+            # ① 解析地块坐标
+            from core.plot_manager import PlotManager
+            pm = PlotManager(username)
+            plot = pm.get_plot(region)
+            plot_lat = plot["lat"] if plot else None
+            plot_lon = plot["lon"] if plot else None
+
+            # ② 收集状态（传入地块坐标）
+            state = self.collect_farm_state(username, region,
+                                            plot_lat=plot_lat, plot_lon=plot_lon)
             report.farm_state = state
 
             # ② 构建提示 + ③ LLM 决策
@@ -804,8 +858,13 @@ class AutonomousFarmManager:
                     # LLM 不可用 → fallback
                     logger.info("LLM 决策失败，使用规则引擎兜底")
                     plan = self._fallback_rule_engine(state, username)
-                    report.decision_plan = plan
-                    report.fallback_used = True
+                    if plan is not None:
+                        report.decision_plan = plan
+                        report.fallback_used = True
+                    else:
+                        report.summary = f"区域「{region}」LLM 和规则引擎均不可用，无法做出决策"
+                        report.duration_ms = int((datetime.now() - start).total_seconds() * 1000)
+                        return report
             else:
                 report.summary = f"区域「{region}」无可用数据（无摄像头、无传感器），跳过决策"
                 report.duration_ms = int((datetime.now() - start).total_seconds() * 1000)
@@ -836,8 +895,11 @@ class AutonomousFarmManager:
                 caps.add("irrigate")
             if "temperature" in key:
                 caps.add("ventilate")
-        # 默认可用
-        caps.update({"irrigate", "fertigate", "ventilate", "light", "heat", "cool"})
+            if "light" in key or "lux" in key:
+                caps.add("light")
+        # 如果传感器数据为空，默认开放基础能力
+        if not caps:
+            caps.update({"irrigate", "fertigate", "ventilate", "light", "heat", "cool"})
         return caps
 
     def _summarize(self, report: CycleReport) -> str:

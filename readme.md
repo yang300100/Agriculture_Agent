@@ -507,5 +507,5 @@ python knowledge/build_agriculture_rag.py search "小麦什么时候播种"
 python -m pytest tests/ -v
 
 # 调试模式
-DEBUG_MODE=true streamlit run app/test1.py
+DEBUG_MODE=true streamlit run app/main.py
 ```

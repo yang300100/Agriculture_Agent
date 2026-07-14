@@ -474,13 +474,11 @@ def get_location_from_address(address: str) -> Optional[Tuple[float, float]]:
     for name, coords in builtin.items():
         if name in address:
             return coords
-    try:
-        from geopy.geocoders import Nominatim
-        loc = Nominatim(user_agent="agri_agent").geocode(address, timeout=3)
-        if loc:
-            return loc.latitude, loc.longitude
-    except Exception:
-        pass
+    # 使用本机 IP 定位替代 OpenStreetMap（国内不可达）
+    from core.weather_service import get_local_coords
+    lon, lat = get_local_coords()
+    logger.info("地点 '%s' 无内置映射，使用本机定位 (%.2f, %.2f)", address, lat, lon)
+    return lat, lon
     return None
 
 

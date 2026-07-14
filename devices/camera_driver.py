@@ -123,7 +123,11 @@ class CameraDriver(BaseDeviceDriver):
             },
         }
         self._streaming[device_id] = False
-        logger.info("摄像头设备已注册: %s (%s → %s)", device_id, camera_type, source)
+        # 掩码密码后再记录日志
+        masked_source = source
+        if password:
+            masked_source = source.replace(password, "***")
+        logger.info("摄像头设备已注册: %s (%s → %s)", device_id, camera_type, masked_source)
 
     # ── 生命周期 ──────────────────────────────
 
@@ -136,8 +140,8 @@ class CameraDriver(BaseDeviceDriver):
         if self._connected:
             return True
 
-        success_count = 0
-        for dev_id, dev in self._devices.items():
+        async def _verify_one(dev_id: str, dev: dict) -> bool:
+            """验证单个摄像头的协程"""
             info = dev["info"]
             try:
                 cap = await asyncio.to_thread(
@@ -152,9 +156,10 @@ class CameraDriver(BaseDeviceDriver):
                         dev["state"]["resolution"] = f"{w}x{h}"
                         dev["state"]["fps"] = int(cap.get(cv2.CAP_PROP_FPS) or 0)
                         dev["state"]["status"] = "idle"
-                        success_count += 1
                         logger.info("摄像头 %s 验证成功: %s %sx%s",
                                      dev_id, info["camera_type"], w, h)
+                        cap.release()
+                        return True
                     else:
                         dev["state"]["status"] = "error"
                         dev["state"]["error_reason"] = "无法读取画面"
@@ -168,6 +173,18 @@ class CameraDriver(BaseDeviceDriver):
                 dev["state"]["status"] = "error"
                 dev["state"]["error_reason"] = str(e)[:200]
                 logger.warning("摄像头 %s 验证异常: %s", dev_id, e)
+            return False
+
+        # 并行验证所有摄像头
+        results = await asyncio.gather(*[
+            _verify_one(dev_id, dev) for dev_id, dev in self._devices.items()
+        ])
+        success_count = sum(1 for r in results if r)
+
+        if success_count == 0:
+            self._connected = False
+            logger.warning("CameraDriver: 验证完成，无可用摄像头 (%d/%d)", success_count, len(self._devices))
+            return False
 
         self._connected = True
         logger.info("CameraDriver: 验证完成 (%d/%d 可用)", success_count, len(self._devices))
@@ -260,6 +277,8 @@ class CameraDriver(BaseDeviceDriver):
                 info.get("username", ""), info.get("password", "")
             )
             if cap is None or not cap.isOpened():
+                if cap is not None:
+                    cap.release()
                 return DeviceResult(
                     success=False, device_id=device_id,
                     executed_command="capture",
@@ -278,12 +297,12 @@ class CameraDriver(BaseDeviceDriver):
                 )
 
             # 编码为 JPEG
-            _, jpeg_bytes = await asyncio.to_thread(
+            retval, jpeg_bytes = await asyncio.to_thread(
                 cv2.imencode, ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85]
             )
             cap.release()
 
-            if jpeg_bytes is None:
+            if not retval or jpeg_bytes is None:
                 return DeviceResult(
                     success=False, device_id=device_id,
                     executed_command="capture",
@@ -303,6 +322,10 @@ class CameraDriver(BaseDeviceDriver):
 
             logger.info("摄像头 %s 抓拍成功: %sx%s, %d bytes",
                          device_id, w, h, len(image_bytes))
+
+            # 持久化图片到磁盘
+            saved_path = self._save_image(device_id, image_bytes)
+            logger.info("摄像头 %s 图片已保存: %s", device_id, saved_path)
 
             return DeviceResult(
                 success=True,
@@ -343,6 +366,13 @@ class CameraDriver(BaseDeviceDriver):
 
     async def _handle_stop_stream(self, device_id: str) -> DeviceResult:
         """停止推流"""
+        if device_id not in self._devices:
+            return DeviceResult(
+                success=False, device_id=device_id,
+                executed_command="stop_stream",
+                message=f"设备 '{device_id}' 未注册",
+                error_code="DEVICE_NOT_FOUND",
+            )
         self._streaming[device_id] = False
         return DeviceResult(
             success=True, device_id=device_id,

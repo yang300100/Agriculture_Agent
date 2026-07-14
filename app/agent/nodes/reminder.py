@@ -21,6 +21,8 @@ def reminder_management_node(state: AgentState) -> AgentState:
 
         # 从问题中提取关键信息
         crop = state.short_term_facts.get("crop", "")
+        if not crop:
+            crop = state.user_profile.get("crop", "")
         reminder_type = "其他"
 
         # 识别提醒类型
@@ -48,12 +50,16 @@ def reminder_management_node(state: AgentState) -> AgentState:
 
         # 识别时间
         time_of_day = "09:00"
-        time_match = re.search(r'(\d{1,2})[:点](\d{0,2})', user_question)
+        time_match = re.search(r'(\d{1,2})[:点](\d{0,2}|半)?', user_question)
         if time_match:
             hour = int(time_match.group(1))
-            minute = time_match.group(2) or "00"
-            if len(minute) < 2:
-                minute += "0"
+            minute_raw = time_match.group(2) or "00"
+            if minute_raw == "半":
+                minute = "30"
+            else:
+                minute = minute_raw
+                if len(minute) < 2:
+                    minute = "0" + minute  # left-pad: "5" → "05"
             time_of_day = f"{hour:02d}:{minute}"
 
         try:

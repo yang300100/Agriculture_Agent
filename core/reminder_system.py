@@ -8,6 +8,7 @@
 """
 
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -16,6 +17,8 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 
 import dotenv
+
+logger = logging.getLogger(__name__)
 
 # 加载环境变量
 dotenv.load_dotenv()
@@ -201,7 +204,7 @@ class ReminderSystem:
                 f"{start_date} {time_of_day}",
                 "%Y-%m-%d %H:%M"
             )
-        except:
+        except (ValueError, TypeError):
             base_datetime = datetime.now()
 
         now = datetime.now()
@@ -219,34 +222,35 @@ class ReminderSystem:
                 )
                 return next_trigger.strftime("%Y-%m-%d %H:%M")
             elif frequency == "每周":
-                # 下周的同一时间
-                next_date = now + timedelta(weeks=1)
+                if specific_days:
+                    # 有指定具体星期几，找下一个匹配的日期（今天匹配则今天触发）
+                    current_weekday = now.weekday() + 1  # 1=周一, 7=周日
+                    future_days = [d for d in specific_days if d >= current_weekday]
+                    if future_days:
+                        days_ahead = future_days[0] - current_weekday
+                    else:
+                        # 本周已无匹配，取下周第一个
+                        days_ahead = 7 - current_weekday + specific_days[0]
+                    next_date = now + timedelta(days=days_ahead)
+                else:
+                    # 没有指定具体星期几，下周同一时间
+                    next_date = now + timedelta(weeks=1)
                 next_trigger = next_date.replace(
                     hour=base_datetime.hour,
                     minute=base_datetime.minute
                 )
                 return next_trigger.strftime("%Y-%m-%d %H:%M")
-            elif frequency == "自定义" and interval_days > 0:
+            elif frequency == "自定义":
+                if interval_days <= 0:
+                    # interval_days 必须大于 0，否则无法计算周期，回退到当天
+                    logger.warning("自定义频率 interval_days=%d 无效，必须 > 0，回退到单次触发", interval_days)
+                    return base_datetime.strftime("%Y-%m-%d %H:%M")
                 # 计算从start_date到现在经过了多少个周期
                 days_diff = (now - base_datetime).days
                 periods_passed = days_diff // interval_days
                 next_period = periods_passed + 1
                 next_date = base_datetime + timedelta(days=next_period * interval_days)
                 return next_date.strftime("%Y-%m-%d %H:%M")
-            elif frequency == "每周" and specific_days:
-                # 找到下一个指定的星期几
-                current_weekday = now.weekday() + 1  # 1-7
-                future_days = [d for d in specific_days if d > current_weekday]
-                if future_days:
-                    days_ahead = future_days[0] - current_weekday
-                else:
-                    days_ahead = 7 - current_weekday + specific_days[0]
-                next_date = now + timedelta(days=days_ahead)
-                next_trigger = next_date.replace(
-                    hour=base_datetime.hour,
-                    minute=base_datetime.minute
-                )
-                return next_trigger.strftime("%Y-%m-%d %H:%M")
 
         return base_datetime.strftime("%Y-%m-%d %H:%M")
 
@@ -295,12 +299,13 @@ class ReminderSystem:
                 if reminder.get("frequency") == "单次":
                     reminder["status"] = "completed"
                 else:
-                    # 计算下次触发时间
+                    # 计算下次触发时间（使用提醒自身的实际频率）
+                    freq = reminder.get("frequency", "单次")
                     reminder["next_trigger"] = self._calculate_next_trigger(
                         reminder.get("start_date", ""),
                         reminder.get("time_of_day", "09:00"),
-                        reminder.get("frequency", "每天"),
-                        reminder.get("interval_days", 1),
+                        freq,
+                        reminder.get("interval_days", 0),
                         reminder.get("specific_days", [])
                     )
 
@@ -316,12 +321,13 @@ class ReminderSystem:
                 reminder["skipped_count"] = reminder.get("skipped_count", 0) + 1
                 reminder["last_triggered"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                # 计算下次触发时间
+                # 计算下次触发时间（使用提醒自身的实际频率）
+                freq = reminder.get("frequency", "单次")
                 reminder["next_trigger"] = self._calculate_next_trigger(
                     reminder.get("start_date", ""),
                     reminder.get("time_of_day", "09:00"),
-                    reminder.get("frequency", "每天"),
-                    reminder.get("interval_days", 1),
+                    freq,
+                    reminder.get("interval_days", 0),
                     reminder.get("specific_days", [])
                 )
                 break
@@ -450,8 +456,9 @@ class ReminderSystem:
                 time_info=reminder.get("next_trigger", ""),
             )
             if result["success"]:
-                reminder["last_sms_sent"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                self.storage.save_reminders(reminders)
+                self.storage.update_reminder(reminder_id, {
+                    "last_sms_sent": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
             return result
         except Exception as e:
             return {"success": False, "error": str(e)}

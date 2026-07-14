@@ -1,6 +1,7 @@
 """种植进度跟踪节点 — 读取用户真实进度和任务"""
 
 import logging
+from datetime import datetime
 from langchain_core.messages import AIMessage
 from ..state import AgentState
 
@@ -62,10 +63,14 @@ def _format_progress_answer(progresses, tasks, crop: str) -> str:
     # 任务
     if tasks:
         lines.append("\n**待办农事任务：**\n")
+        today = datetime.now().strftime("%Y-%m-%d")
         active_tasks = [t for t in tasks if t.status in ("待办", "进行中")]
-        overdue_tasks = [t for t in tasks if t.status == "已逾期"]
+        # 基于 end_date 动态判断逾期（而非依赖 "已逾期" 状态，因为它可能从未被设置）
+        overdue_tasks = [t for t in active_tasks
+                        if t.end_date and t.end_date < today and t.status not in ("已完成",)]
+        active_tasks = [t for t in active_tasks if t not in overdue_tasks]
         for t in overdue_tasks[:3]:
-            lines.append(f"- ⚠️ **{t.title}**（{t.crop}）— 已逾期")
+            lines.append(f"- ⚠️ **{t.title}**（{t.crop}）— 已逾期 (截止: {t.end_date})")
         for t in active_tasks[:5]:
             priority = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(t.priority, "")
             lines.append(f"- {priority} **{t.title}**（{t.crop}）— {t.status}")

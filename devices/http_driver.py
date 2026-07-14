@@ -40,8 +40,9 @@ class HTTPDriver(BaseDeviceDriver):
 
     driver_name = "http"
 
-    def __init__(self, request_timeout: int = 10):
+    def __init__(self, request_timeout: int = 10, verify_ssl: bool = True):
         self._timeout = request_timeout
+        self._verify_ssl = verify_ssl
         self._connected = False
         self._devices: Dict[str, Dict] = {}
 
@@ -74,7 +75,7 @@ class HTTPDriver(BaseDeviceDriver):
                 "base_url": base_url.rstrip("/") if base_url else "",
                 "api_key": api_key,
             },
-            "state": {"power": False, "status": "idle"},
+            "state": {"power": False, "status": "powered_off"},
         }
         logger.info("HTTP 设备已注册: %s → %s", device_id, base_url)
 
@@ -91,18 +92,32 @@ class HTTPDriver(BaseDeviceDriver):
             try:
                 headers = self._make_headers(dev["info"])
                 resp = await self._async_request("GET", f"{base_url}/state",
-                                                 headers=headers, timeout=self._timeout)
+                                                 headers=headers, timeout=self._timeout,
+                                                 params={"device_id": dev_id})
                 if resp.status_code == 200:
                     online_count += 1
-                    dev["state"] = resp.json()
+                    resp_data = resp.json()
+                    if isinstance(resp_data, dict):
+                        # 如果是多设备服务器的 summary 格式({devices:...})，忽略
+                        if "devices" not in resp_data:
+                            dev["state"].update(resp_data)
+                    else:
+                        logger.debug("HTTP 设备 %s 返回非字典类型 state: %s", dev_id, type(resp_data).__name__)
                 else:
-                    logger.warning("HTTP 设备 %s 返回 %d", dev_id, resp.status_code)
+                    logger.debug("HTTP 设备 %s 返回 %d", dev_id, resp.status_code)
             except requests.ConnectionError:
-                logger.warning("HTTP 设备 %s 不可达: %s", dev_id, base_url)
+                logger.debug("HTTP 设备 %s 不可达: %s", dev_id, base_url)
             except Exception as e:
-                logger.warning("HTTP 设备 %s 连接异常: %s", dev_id, e)
+                logger.debug("HTTP 设备 %s 连接异常: %s", dev_id, e)
 
         logger.info("HTTPDriver: 已连接 (%d/%d 设备在线)", online_count, len(self._devices))
+
+        # 如果所有设备都不可达，标记为未连接
+        if online_count == 0 and len(self._devices) > 0:
+            self._connected = False
+            logger.debug("HTTPDriver: 所有设备不可达，连接失败")
+            return False
+
         return True
 
     async def disconnect(self) -> None:
@@ -175,15 +190,33 @@ class HTTPDriver(BaseDeviceDriver):
 
             if resp.status_code == 200:
                 resp_data = resp.json() if resp.text else {}
-                if command.command == "start":
-                    dev["state"]["power"] = True
-                    dev["state"]["status"] = "running"
+                current = dev["state"].get("status", "powered_off")
+
+                if command.command in ("power_on", "boot"):
+                    if current == "powered_off":
+                        dev["state"]["power"] = True
+                        dev["state"]["status"] = "standby"
+                elif command.command in ("power_off", "shutdown"):
+                    if current in ("standby", "running", "error"):
+                        dev["state"]["power"] = False
+                        dev["state"]["status"] = "powered_off"
+                elif command.command == "start":
+                    if current == "powered_off":
+                        dev["state"]["power"] = True
+                        dev["state"]["status"] = "running"
+                    elif current == "standby":
+                        dev["state"]["status"] = "running"
                 elif command.command == "stop":
-                    dev["state"]["power"] = False
-                    dev["state"]["status"] = "idle"
+                    if current == "running":
+                        dev["state"]["status"] = "standby"
+                        # power 保持 True，不断电！
+                elif command.command == "reset":
+                    if current == "error":
+                        dev["state"]["power"] = True
+                        dev["state"]["status"] = "standby"
 
                 return DeviceResult(
-                    success=resp_data.get("success", True),
+                    success=resp_data.get("success", False),
                     device_id=device_id,
                     executed_command=command.command,
                     actual_params=command.params,
@@ -208,6 +241,8 @@ class HTTPDriver(BaseDeviceDriver):
                 error_code="CONNECTION_REFUSED",
             )
         except requests.Timeout:
+            # 超时时也要标记设备状态为 error
+            dev["state"]["status"] = "error"
             return DeviceResult(
                 success=False, device_id=device_id,
                 executed_command=command.command,
@@ -234,25 +269,32 @@ class HTTPDriver(BaseDeviceDriver):
         dev = self._devices[device_id]
         base_url = dev["info"].get("base_url")
         if not base_url:
-            return {**dev["state"], "_read_at": datetime.now().isoformat()}
+            return {**dev["state"], "_driver": "http", "_read_at": datetime.now().isoformat()}
 
         try:
             headers = self._make_headers(dev["info"])
             resp = await self._async_request("GET", f"{base_url}/state",
-                                            headers=headers, timeout=self._timeout)
+                                            headers=headers, timeout=self._timeout,
+                                            params={"device_id": device_id})
             if resp.status_code == 200:
                 state = resp.json()
-                # 合并远程状态
+                # 合并远程状态：本地兜底 + 远程覆盖
                 dev["state"].update(state)
-                state["_read_at"] = datetime.now().isoformat()
-                state["_driver"] = "http"
-                return state
+                return {**dev["state"], "_driver": "http", "_read_at": datetime.now().isoformat()}
             else:
-                return {**dev["state"], "_error": f"HTTP {resp.status_code}",
-                        "_read_at": datetime.now().isoformat()}
+                return {
+                    **dev["state"],
+                    "_driver": "http",
+                    "_read_at": datetime.now().isoformat(),
+                    "_error": f"HTTP {resp.status_code}",
+                }
         except Exception as e:
-            return {**dev["state"], "_error": str(e),
-                    "_read_at": datetime.now().isoformat()}
+            return {
+                **dev["state"],
+                "_driver": "http",
+                "_read_at": datetime.now().isoformat(),
+                "_error": str(e),
+            }
 
     # ── 内部方法 ──────────────────────────────
 
@@ -262,6 +304,9 @@ class HTTPDriver(BaseDeviceDriver):
         req_func = getattr(requests, method_upper.lower(), None)
         if req_func is None:
             raise ValueError(f"不支持的 HTTP 方法: {method}")
+        # HTTPS 时自动启用 SSL 证书验证
+        if url.startswith("https://") and "verify" not in kwargs:
+            kwargs["verify"] = self._verify_ssl
         return await asyncio.to_thread(functools.partial(req_func, url, **kwargs))
 
     def _make_headers(self, info: Dict) -> Dict:

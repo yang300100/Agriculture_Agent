@@ -19,14 +19,20 @@ def classify_intent(state: AgentState) -> AgentState:
     意图分类节点：使用LLM进行智能意图推理
     保留关键词匹配作为快速路径，复杂意图使用LLM推理
     """
+    state.progress_message = "正在分析您的意图..."
     user_question = state.user_question or ""
 
-    # 如果 parse_input 已通过语音指令预设了意图，跳过分类
+    # 如果 parse_input 已通过语音指令预设了意图，跳过 LLM 分类
+    # 所有非 unclear 预设意图都信任 parse_input 的判断，避免被 LLM 覆盖
     if state.intent_type and state.intent_type not in ("unclear",):
-        if state.intent_type in ("finance_query", "weather_query", "reminder_setup", "progress_tracking"):
+        state.need_clarification = False
+        # 不需要 RAG 的意图：自行处理数据检索
+        no_rag_intents = {"finance_query", "weather_query", "reminder_setup",
+                          "progress_tracking", "field_management", "device_control",
+                          "crop_monitoring", "image_analysis"}
+        if state.intent_type in no_rag_intents:
             state.need_rag = False
-            state.need_clarification = False
-            return state
+        return state
 
     # 图片分析意图判断（优先）
     if state.has_image:
@@ -117,11 +123,7 @@ def _llm_classify_intent(user_question: str, state: AgentState) -> Dict[str, Any
        - "帮我浇水"、"开启灌溉"、"启动施肥"、"打开通风" → device_control
        - 关键信号词：出现"添加/创建/设置/新建 + 任务/提醒" → reminder_setup，不是 device_control！
        - 即使用户提到了浇水/施肥等词，只要前面有"添加任务"、"创建提醒"等词，意图就是 reminder_setup
-    5. 【重要】reminder_setup 不需要澄清：如果用户明确表达了创建任务/提醒的意图（如"添加浇水任务"），即使没有指定作物，也不需要澄清（need_clarification=false）。系统会自动使用"未指定作物"创建任务。只有在完全无法判断用户想做什么时才设 need_clarification=true。
-       - "添加...任务"、"创建...任务"、"设置...提醒"、"帮我建一个..." → reminder_setup
-       - "帮我浇水"、"开启灌溉"、"启动施肥"、"打开通风" → device_control
-       - 关键信号词：出现"添加/创建/设置/新建 + 任务/提醒" → reminder_setup，不是 device_control！
-       - 即使用户提到了浇水/施肥等词，只要前面有"添加任务"、"创建提醒"等词，意图就是 reminder_setup
+       - reminder_setup 不需要澄清：如果用户明确表达了创建任务/提醒的意图（如"添加浇水任务"），即使没有指定作物，也不需要澄清（need_clarification=false）。系统会自动使用"未指定作物"创建任务。只有在完全无法判断用户想做什么时才设 need_clarification=true。
 
 用户输入："{user_question}"
 
@@ -160,10 +162,10 @@ def _llm_classify_intent(user_question: str, state: AgentState) -> Dict[str, Any
         content = response.content
 
         # 解析JSON结果
-        # 提取JSON部分
-        json_match = re.search(r'\{.*?\}', content, re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group())
+        # 使用平衡括号匹配提取 JSON 对象（避免非贪婪正则截断嵌套 JSON）
+        json_str = _extract_balanced_json(content)
+        if json_str:
+            result = json.loads(json_str)
             return {
                 "intent_type": result.get("intent_type", "unclear"),
                 "need_rag": result.get("need_rag", True),
@@ -171,7 +173,7 @@ def _llm_classify_intent(user_question: str, state: AgentState) -> Dict[str, Any
                 "reasoning": result.get("reasoning", "")
             }
     except Exception as e:
-        logger.debug(f"LLM意图分类失败: {e}")
+        logger.error(f"LLM意图分类失败: {e}", exc_info=True)
 
     # 降级到关键词匹配
     return _fallback_intent_classification(user_question)
@@ -221,5 +223,38 @@ def _fallback_intent_classification(user_question: str) -> Dict[str, Any]:
     elif any(keyword in user_question for keyword in CROP_MONITOR_KEYWORDS):
         return {"intent_type": "crop_monitoring", "need_rag": False, "need_clarification": False, "reasoning": "关键词匹配"}
 
+    # 设备控制意图（降级关键词 — 作为 LLM 分类失败后的最后兜底）
+    elif any(keyword in user_question for keyword in DEVICE_KEYWORDS):
+        return {"intent_type": "device_control", "need_rag": False, "need_clarification": False, "reasoning": "关键词匹配(降级)"}
+
     # 默认：意图不明
     return {"intent_type": "unclear", "need_rag": False, "need_clarification": True, "reasoning": "无法识别意图"}
+
+
+def _extract_balanced_json(text: str) -> str | None:
+    """使用括号平衡从文本中提取完整 JSON 对象，避免非贪婪正则截断嵌套 JSON"""
+    start = text.find('{')
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+    return None

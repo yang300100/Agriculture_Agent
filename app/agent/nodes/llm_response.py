@@ -1,6 +1,7 @@
 """LLM 回答节点：统一 LLM 回复、专家回答、追问引导"""
 
 import logging
+import contextvars
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -8,6 +9,35 @@ from langchain_openai import ChatOpenAI
 from ..state import AgentState
 from ..config import *
 from ..utils import extract_facts_from_conversation, aggregate_sentences
+
+# ── 流式响应：通过 ContextVar 传递 token 回调 ──
+# SSE 端点设置此变量，LLM 调用时通过它发送 token
+_stream_token_callback: contextvars.ContextVar = contextvars.ContextVar(
+    'llm_stream_callback', default=None
+)
+
+
+def _stream_invoke(llm, messages, state: AgentState = None):
+    """智能调用 LLM：检测到流式回调时使用 streaming，否则用普通 invoke"""
+    callback = _stream_token_callback.get(None)
+    if callback is None:
+        return llm.invoke(messages)
+
+    # 流式模式：逐 token 推送
+    full_content = []
+    try:
+        for chunk in llm.stream(messages):
+            if chunk.content:
+                full_content.append(chunk.content)
+                try:
+                    callback({"type": "token", "token": chunk.content})
+                except Exception:
+                    pass
+        from langchain_core.messages import AIMessage
+        return AIMessage(content="".join(full_content))
+    except Exception:
+        # 流式失败 → 回退到普通模式
+        return llm.invoke(messages)
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +47,7 @@ def llm_response_node(state: AgentState) -> AgentState:
     统一 LLM 回答节点 - 所有回复都通过 LLM 生成
     并自动提取和记忆关键信息
     """
+    state.progress_message = "正在生成回答..."
     intent = state.intent_type
     user_question = state.user_question or ""
     long_memory = state.long_term_profile.get("summary", "")
@@ -117,9 +148,10 @@ def llm_response_node(state: AgentState) -> AgentState:
     # 添加历史对话（最近6轮，不包括系统消息）
     history_messages = [msg for msg in state.messages if isinstance(msg, (HumanMessage, AIMessage))]
 
-    # 找到当前问题的位置
+    # 找到当前问题的位置（从后往前找，避免重复问题取到旧匹配）
     current_msg_index = -1
-    for i, msg in enumerate(history_messages):
+    for i in range(len(history_messages) - 1, -1, -1):
+        msg = history_messages[i]
         if isinstance(msg, HumanMessage) and msg.content == user_question:
             current_msg_index = i
             break
@@ -147,10 +179,10 @@ def llm_response_node(state: AgentState) -> AgentState:
     )
 
     try:
-        response = llm.invoke(messages)
+        response = _stream_invoke(llm, messages, state)
         state.final_answer = response.content
     except Exception as e:
-        logger.debug(f"LLM 调用失败: {e}")
+        logger.error(f"LLM 调用失败: {e}", exc_info=True)
         state.final_answer = "抱歉，我暂时无法回答，请稍后再试。"
 
     state.messages.append(AIMessage(content=state.final_answer))
@@ -166,6 +198,9 @@ def clarification_node(state: AgentState) -> AgentState:
     """
     使用 LLM 生成动态追问引导
     """
+    if not state.need_clarification:
+        return state
+
     user_question = state.user_question or ""
     intent = state.intent_type
     long_memory = state.long_term_profile.get("summary", "")
@@ -214,16 +249,16 @@ def clarification_node(state: AgentState) -> AgentState:
     # 调用 LLM
     llm = ChatOpenAI(
         model=LLM_MODEL,
-        temperature=0.7,
+        temperature=LLM_TEMPERATURE,
         api_key=OPENAI_API_KEY,
         base_url=OPENAI_BASE_URL
     )
 
     try:
-        response = llm.invoke([HumanMessage(content=clarify_prompt)])
+        response = _stream_invoke(llm, [HumanMessage(content=clarify_prompt)])
         clarify_msg = response.content.strip()
     except Exception as e:
-        logger.debug(f"LLM 追问生成失败: {e}")
+        logger.error(f"LLM 追问生成失败: {e}", exc_info=True)
         # 降级到简单追问
         clarify_msg = "为了更好地帮助您，能否告诉我更多信息？比如您所在的地区和想种植的作物？"
 
@@ -283,10 +318,11 @@ def llm_expert_answer(state: AgentState) -> AgentState:
     # 构建消息列表
     messages = [SystemMessage(content=system_prompt)]
 
-    # 添加历史对话（最近6轮）
+    # 添加历史对话（最近6轮，从后往前找最后一次匹配）
     user_question = state.user_question or ""
     current_msg_index = -1
-    for i, msg in enumerate(state.messages):
+    for i in range(len(state.messages) - 1, -1, -1):
+        msg = state.messages[i]
         if isinstance(msg, HumanMessage) and msg.content == user_question:
             current_msg_index = i
             break
@@ -305,8 +341,12 @@ def llm_expert_answer(state: AgentState) -> AgentState:
     if not (isinstance(messages[-1], HumanMessage) and messages[-1].content == user_question):
         messages.append(HumanMessage(content=user_question))
 
-    response = llm.invoke(messages)
+    try:
+        response = _stream_invoke(llm, messages, state)
+        state.final_answer = response.content
+    except Exception as e:
+        logger.error(f"专家回答 LLM 调用失败: {e}", exc_info=True)
+        state.final_answer = "抱歉，暂时无法提供专家建议，请稍后再试。"
 
-    state.final_answer = response.content
-    state.messages.append(AIMessage(content=response.content))
+    state.messages.append(AIMessage(content=state.final_answer))
     return state

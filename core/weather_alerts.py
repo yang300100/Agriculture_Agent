@@ -36,7 +36,7 @@ def check_weather_alert_for_region(region: str, crop: str = "") -> Optional[Dict
                 "region": region,
             }
     except Exception as e:
-        logger.debug(f"天气预警检查失败: {e}")
+        logger.warning("天气预警检查失败: %s", e)
     return None
 
 

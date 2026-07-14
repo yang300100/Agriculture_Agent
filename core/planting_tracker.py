@@ -154,9 +154,20 @@ class PlantingTracker:
             return []
 
     def _save_tasks(self, tasks: List[Dict[str, Any]]):
-        """保存任务列表"""
-        with open(self.tasks_file, 'w', encoding='utf-8') as f:
-            json.dump(tasks, f, ensure_ascii=False, indent=2)
+        """保存任务列表（原子写入）"""
+        tmp_path = self.tasks_file + ".tmp"
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(tasks, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.tasks_file)
+        except Exception:
+            # 原子替换失败，记录错误，保留原文件不动（避免直接写入导致文件损坏）
+            logger.error("保存任务文件失败（原子替换不可用），数据未写入 %s", self.tasks_file)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
 
     def get_tasks(self, crop: Optional[str] = None, status: Optional[str] = None) -> List[PlantingTask]:
         """获取任务列表，支持筛选"""
@@ -174,10 +185,11 @@ class PlantingTracker:
 
         return tasks
 
-    def update_task_status(self, task_id: str, status: str, progress: Optional[int] = None):
-        """更新任务状态"""
+    def update_task_status(self, task_id: str, status: str, progress: Optional[int] = None) -> bool:
+        """更新任务状态，返回 True 表示找到并更新，False 表示未找到"""
         tasks = self._load_tasks()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        found = False
 
         for task in tasks:
             if task["id"] == task_id:
@@ -187,9 +199,11 @@ class PlantingTracker:
                     task["progress_percent"] = progress
                 if status == "已完成":
                     task["completed_date"] = datetime.now().strftime("%Y-%m-%d")
+                found = True
                 break
 
         self._save_tasks(tasks)
+        return found
 
     def delete_task(self, task_id: str) -> bool:
         """删除任务"""
@@ -256,9 +270,20 @@ class PlantingTracker:
             return []
 
     def _save_progresses(self, progresses: List[Dict[str, Any]]):
-        """保存进度列表"""
-        with open(self.progress_file, 'w', encoding='utf-8') as f:
-            json.dump(progresses, f, ensure_ascii=False, indent=2)
+        """保存进度列表（原子写入）"""
+        tmp_path = self.progress_file + ".tmp"
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(progresses, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.progress_file)
+        except Exception:
+            # 原子替换失败，记录错误，保留原文件不动（避免直接写入导致文件损坏）
+            logger.error("保存进度文件失败（原子替换不可用），数据未写入 %s", self.progress_file)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
 
     def get_progress(self, crop: Optional[str] = None) -> List[PlantingProgress]:
         """获取进度列表"""
@@ -505,6 +530,51 @@ class PlantingTracker:
         ]
         return self._calculate_with_crop_stages(days_elapsed, default_stages)
 
+    def _calc_progress_display(self, progress) -> Optional[Dict[str, Any]]:
+        """计算进度展示数据（纯计算，不持久化）"""
+        crop = getattr(progress, "crop", "")
+        start_date_str = getattr(progress, "start_date", "")
+        if not start_date_str:
+            return None
+        try:
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+            current_date = datetime.now()
+            days_elapsed = (current_date - start_date).days
+            if days_elapsed < 0:
+                return None
+            from .planting_planner import CropDatabase
+            crop_db = CropDatabase()
+            crop_info = crop_db.get_crop(crop)
+            if crop_info and crop_info.growth_stages:
+                return self._calculate_with_crop_stages(days_elapsed, crop_info.growth_stages)
+            else:
+                return self._calculate_with_default_stages(days_elapsed)
+        except Exception:
+            return None
+
+    def _merge_display_data(self, progress, calc_result: Dict[str, Any]):
+        """将计算出的进度数据合并到 progress 对象上（内存操作，不持久化）"""
+        from dataclasses import replace
+        current_stage = getattr(progress, "stage_number", 0)
+        calc_stage = calc_result["stage_number"]
+        if calc_stage > current_stage:
+            updates = {
+                "stage_number": calc_stage,
+                "stage": calc_result["stage_name"],
+                "total_stages": calc_result["total_stages"],
+                "status": calc_result["status"],
+                "progress_percent": calc_result["progress_percent"],
+            }
+        elif calc_stage == current_stage:
+            updates = {
+                "stage": calc_result["stage_name"],
+                "progress_percent": calc_result["progress_percent"],
+                "total_stages": calc_result["total_stages"],
+            }
+        else:
+            return progress  # 用户手动推进过了，保持不动
+        return replace(progress, **updates)
+
     # ========== 卡片数据生成 ==========
 
     def get_task_cards(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -562,12 +632,14 @@ class PlantingTracker:
         return cards
 
     def get_progress_cards(self, limit: int = 5) -> List[Dict[str, Any]]:
-        """获取进度卡片数据（供前端展示），自动计算已知作物的进度"""
+        """获取进度卡片数据（供前端展示），自动计算已知作物的进度（不持久化）"""
         progresses = self.get_progress()
         now = datetime.now()
 
         cards = []
         for progress in progresses[:limit]:
+            refreshed = progress  # 默认不自动计算，直接使用原值
+
             # 跳过刚被手动操作过的进度（10 秒内），避免自动计算覆盖手动操作
             updated_at = getattr(progress, "updated_at", None)
             skip_auto = False
@@ -581,14 +653,12 @@ class PlantingTracker:
 
             if progress.status != "已完成" and not skip_auto:
                 try:
-                    self.auto_calculate_progress(progress.id)
+                    # 只计算进度展示值，不调用 auto_calculate_progress（它会持久化）
+                    calc_result = self._calc_progress_display(progress)
+                    if calc_result is not None:
+                        refreshed = self._merge_display_data(progress, calc_result)
                 except Exception:
                     pass
-
-            # 重新加载以获取自动计算后的最新值
-            refreshed = self._load_progress_by_id(progress.id)
-            if refreshed is None:
-                refreshed = progress
 
             status_color = {
                 "进行中": "blue",

@@ -1,6 +1,8 @@
 """LangGraph 工作流构建 — 多 Agent 调度"""
 
+import logging
 from langgraph.graph import StateGraph, END
+from langchain_core.messages import AIMessage
 from .state import AgentState
 from .nodes.parse_input import parse_user_input
 from .nodes.classify_intent import classify_intent
@@ -15,6 +17,8 @@ from knowledge.faiss_agriculture_rag import FAISSAgricultureRAG
 # 多 Agent 调度中心
 from .agents.orchestrator import AgentOrchestrator
 
+logger = logging.getLogger(__name__)
+
 # 全局单例
 _orchestrator: AgentOrchestrator = None
 
@@ -28,9 +32,16 @@ def _get_orchestrator() -> AgentOrchestrator:
 
 def _agent_dispatch_node(state: AgentState) -> AgentState:
     """Agent 调度节点：由 orchestrator 根据意图执行对应 Agent 逻辑"""
-    orch = _get_orchestrator()
-    # dispatch 内部会调用 agent.invoke(state)，直接修改 state
-    orch.dispatch(state)
+    state.progress_message = "正在调度智能体处理..."
+    try:
+        orch = _get_orchestrator()
+        orch.dispatch(state)
+    except Exception as e:
+        logger.exception("Agent 调度失败")
+        state.final_answer = (
+            f"抱歉，处理您的请求时遇到了问题。请稍后重试或换个方式描述您的需求～"
+        )
+        state.messages.append(AIMessage(content=state.final_answer))
     return state
 
 
@@ -76,10 +87,11 @@ def build_agricultural_policy_agent(rag_system: SimpleAgricultureRAG,
         if not answered and not state.retrieved_docs:
             return "rag_retrieval"
 
-        # 需要提取任务的意图
+        # 需要提取任务的意图（与 extract_tasks.actionable_intents 保持同步）
         task_intents = ("crop_selection", "planting_schedule", "planting_method",
                         "disease_prevention", "harvest_planning", "image_analysis",
-                        "device_control", "crop_monitoring")
+                        "device_control", "crop_monitoring", "reminder_setup",
+                        "field_management")
         if answered and intent in task_intents:
             return "extract_tasks"
 

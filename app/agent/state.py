@@ -20,7 +20,6 @@ class AgentState(BaseModel):
     long_term_profile: Dict[str, Any] = Field(default_factory=lambda: {
         "summary": "",
         "conversation_round": 0,
-        "user_profile": {}
     })
     need_rag: bool = False
     retrieved_docs: List[Dict[str, Any]] = Field(default_factory=list)
@@ -61,3 +60,6 @@ class AgentState(BaseModel):
     device_result: Optional[Dict[str, Any]] = None        # 执行结果
     pending_action: Optional[Dict[str, Any]] = None       # 待用户确认的操作
     matched_rules: List[str] = Field(default_factory=list)  # 命中的规则ID列表
+
+    # 进度反馈
+    progress_message: Optional[str] = None  # 当前处理步骤描述（如"正在分析意图..."）

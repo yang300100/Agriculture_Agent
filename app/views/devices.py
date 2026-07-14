@@ -1,6 +1,7 @@
 """设备仪表盘 — 设备状态监控 + 快捷操作 + 待确认管理"""
 
 import json
+import base64
 import streamlit as st
 from datetime import datetime
 from app.api_client import api, invalidate_cache
@@ -74,9 +75,11 @@ STATUS_LABELS = {
 
 # 运行状态
 RUN_STATE_LABELS = {
-    "running":  "运行中",
-    "idle":     "空闲",
-    "error":    "故障",
+    "powered_off":  "关机",
+    "standby":      "待机",
+    "running":      "工作中",
+    "idle":         "空闲",
+    "error":        "故障",
 }
 
 # 指令
@@ -163,7 +166,23 @@ def render_devices_page():
                 new_id = st.text_input("设备ID *", placeholder="如: my_pump_01", key="new_dev_id")
                 new_name = st.text_input("设备名称 *", placeholder="如: 我的水泵#1", key="new_dev_name")
             with c2:
-                new_location = st.text_input("位置", placeholder="如: 大棚B区", key="new_dev_loc")
+                # 从地块列表中选择所属地块
+                from core.plot_manager import PlotManager
+                pm = PlotManager(st.session_state.get("username", "default"))
+                plots = pm.list_plots()
+                if plots:
+                    plot_options = {f"{p['name']} ({p.get('crop', '未指定')})": p for p in plots}
+                    selected_label = st.selectbox(
+                        "所属地块 *", list(plot_options.keys()),
+                        key="new_dev_plot"
+                    )
+                    selected_plot = plot_options[selected_label] if selected_label else None
+                    new_location = selected_plot["name"] if selected_plot else ""
+                    new_plot_id = selected_plot["plot_id"] if selected_plot else ""
+                else:
+                    st.warning("暂无地块，请先创建地块")
+                    new_location = ""
+                    new_plot_id = ""
                 cap_options = ["irrigate", "fertigate", "ventilate", "heat", "cool", "shade", "light", "read_sensor", "capture"]
                 new_caps = st.multiselect(
                     "设备能力", cap_options,
@@ -184,13 +203,13 @@ def render_devices_page():
             st.markdown("**🔌 驱动与连接配置**")
             driver_choice = st.selectbox(
                 "驱动类型",
-                ["simulator", "mqtt", "http", "modbus", "camera"],
+                ["mqtt", "http", "modbus", "camera", "simulator"],
                 format_func=lambda x: {
-                    "simulator": "🖥️ 虚拟模拟器 (开发测试)",
-                    "mqtt": "📡 MQTT (通用 IoT 消息协议)",
+                    "mqtt": "📡 MQTT (通用 IoT 消息协议) [推荐]",
                     "http": "🌐 HTTP REST (智能插座/API 设备)",
                     "modbus": "🔧 Modbus RTU/TCP (工业传感器/PLC)",
                     "camera": "📷 摄像头 (USB/RTSP/ESP32-CAM)",
+                    "simulator": "🖥️ 虚拟模拟器 (仅开发测试)",
                 }.get(x, x),
                 key="new_dev_driver",
             )
@@ -292,8 +311,9 @@ def render_devices_page():
                             "capabilities": new_caps,
                             "sensors": sensors_list,
                             "location": new_location,
+                            "plot_id": new_plot_id,
                             "driver": driver_choice,
-                            "initial_state": {"power": False, "status": "idle"},
+                            "initial_state": {"power": False, "status": "powered_off"},
                         }
 
                         if driver_choice == "mqtt":
@@ -354,19 +374,25 @@ def render_devices_page():
             status_text = _label(status_val, STATUS_LABELS)
 
             # 设备运行状态
-            device_state_status = state.get("status", "unknown")
-            run_icon_map = {"running": "🟢", "idle": "⏸️", "error": "🔴"}
+            device_state_status = state.get("status", "powered_off")
+            run_icon_map = {"running": "🟢", "standby": "🟡", "idle": "🟡", "error": "🔴", "powered_off": "⚫"}
             run_icon = run_icon_map.get(device_state_status, "⚪")
             run_text = _label(device_state_status, RUN_STATE_LABELS, fallback=device_state_status)
 
             driver_name = _label(dev.get('driver', 'unknown'), DRIVER_LABELS)
 
-            with st.expander(f"{status_icon} **{dev['name']}** — {dev.get('location', '未分配位置')} | {status_text} | {run_icon} {run_text}"):
+            plot_name = dev.get('plot_name', '')
+            plot_crop = dev.get('plot_crop', '')
+            plot_badge = f" | 🌍 {plot_name}" if plot_name else ""
+            with st.expander(f"{status_icon} **{dev['name']}** — {dev.get('location', '未分配位置')}{plot_badge} | {status_text} | {run_icon} {run_text}"):
                 col_a, col_b = st.columns([2, 1])
 
                 with col_a:
                     st.write(f"**设备ID:** {dev['device_id']}")
                     st.write(f"**驱动:** {driver_name}")
+                    if plot_name:
+                        crop_str = f" ({plot_crop})" if plot_crop else ""
+                        st.write(f"**地块:** 🌍 {plot_name}{crop_str}")
                     # 能力标签 — 用中文展示
                     cap_labels = [_label(c, CAP_LABELS) for c in dev.get('capabilities', [])]
                     st.write(f"**能力:** {', '.join(cap_labels)}")
@@ -429,11 +455,10 @@ def render_devices_page():
                         if st.button("📷 拍照", key=f"capture_{dev['device_id']}"):
                             result = api(f"/api/devices/{dev['device_id']}/snapshot")
                             if result and result.get("success"):
-                                # 显示拍摄的 base64 图片
                                 img_data = result.get("image_base64", "")
                                 if img_data:
                                     st.image(
-                                        img_data,
+                                        base64.b64decode(img_data),
                                         caption=f"{dev['name']} — 实时快照",
                                         use_container_width=True,
                                     )
@@ -446,41 +471,79 @@ def render_devices_page():
                                 st.error(f"拍照失败: {result.get('error', '未知错误') if result else '无响应'}")
                         st.divider()
 
-                    if "irrigate" in caps:
-                        duration = st.number_input("时长(分)", 1, 120, 30, key=f"dur_{dev['device_id']}")
-                        if st.button("💧 浇水", key=f"irrigate_{dev['device_id']}"):
-                            result = api(f"/api/devices/{dev['device_id']}/command", method="post",
-                                        json_data={"command": "start", "params": json.dumps({"duration": duration})})
-                            if result and result.get("success"):
-                                st.success(f"✅ {result.get('message', '已执行')}")
-                                invalidate_cache("/api/devices", "/api/actions/log")
-                                st.rerun()
-                            else:
-                                st.error(f"❌ {result.get('message', '执行失败') if result else '无响应'}")
-
-                    if "fertigate" in caps:
-                        amount = st.number_input("用量(kg)", 1, 50, 5, key=f"amt_{dev['device_id']}")
-                        if st.button("🌱 施肥", key=f"fertigate_{dev['device_id']}"):
-                            result = api(f"/api/devices/{dev['device_id']}/command", method="post",
-                                        json_data={"command": "start", "params": json.dumps({"amount_kg": amount})})
-                            if result and result.get("success"):
-                                st.success("✅ 已执行")
-                                st.rerun()
-
-                    if any(c in caps for c in ["ventilate", "light", "heat"]):
-                        if st.button("▶️ 启动", key=f"start_{dev['device_id']}"):
-                            result = api(f"/api/devices/{dev['device_id']}/command", method="post",
-                                        json_data={"command": "start", "params": json.dumps({})})
-                            if result and result.get("success"):
-                                st.success("✅ 已启动")
-                                st.rerun()
-
-                    if st.button("⏹️ 停止", key=f"stop_{dev['device_id']}"):
-                        result = api(f"/api/devices/{dev['device_id']}/command", method="post",
-                                    json_data={"command": "stop", "params": json.dumps({})})
-                        if result and result.get("success"):
-                            st.success("✅ 已停止")
+                    # ── 设备电源控制 ──
+                    if device_state_status == "powered_off" or status_val == "offline":
+                        # 关机或离线：重连/刷新（无法直接通电，需重建连接）
+                        if st.button("🔄 重连并刷新", key=f"reconnect_{dev['device_id']}"):
+                            invalidate_cache("/api/devices", "/api/actions/log")
+                            from core.device_registry_factory import invalidate_registry_cache
+                            invalidate_registry_cache(st.session_state.get("username", "default"))
                             st.rerun()
+
+                    elif device_state_status == "standby":
+                        # 待机：可关机 + 可启动工作
+                        col_pwr, _ = st.columns([1, 3])
+                        with col_pwr:
+                            if st.button("⏻ 关机", key=f"power_off_{dev['device_id']}"):
+                                result = api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                            json_data={"command": "power_off", "params": json.dumps({})})
+                                if result and result.get("success"):
+                                    st.success(f"已关机")
+                                    invalidate_cache("/api/devices", "/api/actions/log")
+                                    st.rerun()
+
+                        if "irrigate" in caps:
+                            duration = st.number_input("时长(分)", 1, 120, 30, key=f"dur_{dev['device_id']}")
+                            if st.button("💧 浇水", key=f"irrigate_{dev['device_id']}"):
+                                result = api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                            json_data={"command": "start", "params": json.dumps({"duration": duration})})
+                                if result and result.get("success"):
+                                    st.success(f"{result.get('message', '已执行')}")
+                                    invalidate_cache("/api/devices", "/api/actions/log")
+                                    st.rerun()
+
+                        if "fertigate" in caps:
+                            amount = st.number_input("用量(kg)", 1, 50, 5, key=f"amt_{dev['device_id']}")
+                            if st.button("🌱 施肥", key=f"fertigate_{dev['device_id']}"):
+                                result = api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                            json_data={"command": "start", "params": json.dumps({"amount_kg": amount})})
+                                if result and result.get("success"):
+                                    st.success("已执行")
+                                    st.rerun()
+
+                        if any(c in caps for c in ["ventilate", "light", "heat", "cool"]):
+                            if st.button("▶️ 启动", key=f"start_{dev['device_id']}"):
+                                result = api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                            json_data={"command": "start", "params": json.dumps({})})
+                                if result and result.get("success"):
+                                    st.success("已启动")
+                                    st.rerun()
+
+                    elif device_state_status == "running":
+                        # 工作中：可关机 + 可停止
+                        col_pwr, col_stop = st.columns([1, 1])
+                        with col_pwr:
+                            if st.button("⏻ 关机", key=f"power_off_{dev['device_id']}"):
+                                result = api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                            json_data={"command": "power_off", "params": json.dumps({})})
+                                if result and result.get("success"):
+                                    invalidate_cache("/api/devices", "/api/actions/log")
+                                    st.rerun()
+                        with col_stop:
+                            if st.button("⏹️ 停止", key=f"stop_{dev['device_id']}"):
+                                result = api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                            json_data={"command": "stop", "params": json.dumps({})})
+                                if result and result.get("success"):
+                                    invalidate_cache("/api/devices")
+                                    st.rerun()
+
+                    elif device_state_status == "error":
+                        if st.button("🔄 复位", key=f"reset_{dev['device_id']}"):
+                            result = api(f"/api/devices/{dev['device_id']}/command", method="post",
+                                        json_data={"command": "reset", "params": json.dumps({})})
+                            if result and result.get("success"):
+                                invalidate_cache("/api/devices")
+                                st.rerun()
 
     st.divider()
 

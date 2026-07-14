@@ -1,11 +1,21 @@
-"""虚拟设备模拟器 — 无需真实硬件即可跑通全链路测试"""
+"""虚拟设备模拟器 — 无需真实硬件即可跑通全链路测试
+
+设备生命周期状态机:
+  powered_off(关机) ──[power_on]──▶ standby(待机) ──[start]──▶ running(工作中)
+      ▲                                  ▲                       │
+      │                                  │ [stop]                │
+      │                                  ◀───────────────────────┘
+      │
+      └──────────[power_off]─────────────┘
+"""
 
 import asyncio
 import copy
 import logging
+import math
 import random
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 from .base import (
     BaseDeviceDriver, DeviceCapability, DeviceStatus,
@@ -14,63 +24,12 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
-# 内置虚拟设备模板
-_VIRTUAL_DEVICE_TEMPLATES = [
-    {
-        "device_id": "virtual_irrigation_01",
-        "name": "虚拟灌溉阀#1",
-        "capabilities": [DeviceCapability.IRRIGATE],
-        "sensors": ["flow_rate", "total_water_liters"],
-        "location": "大棚A区",
-        "initial_state": {"power": False, "flow_rate": 0, "total_water_liters": 0,
-                          "last_duration": 0, "status": "idle"},
-    },
-    {
-        "device_id": "virtual_soil_sensor_01",
-        "name": "虚拟土壤传感器#1",
-        "capabilities": [DeviceCapability.READ_SENSOR],
-        "sensors": ["temperature", "humidity", "soil_moisture", "ph"],
-        "location": "大棚A区",
-        "initial_state": {"temperature": 22.5, "humidity": 65.0, "soil_moisture": 45.0, "ph": 6.8},
-    },
-    {
-        "device_id": "virtual_ventilation_01",
-        "name": "虚拟通风风机#1",
-        "capabilities": [DeviceCapability.VENTILATE],
-        "sensors": ["rpm", "power"],
-        "location": "大棚A区",
-        "initial_state": {"power": False, "rpm": 0, "status": "idle"},
-    },
-    {
-        "device_id": "virtual_light_01",
-        "name": "虚拟补光灯#1",
-        "capabilities": [DeviceCapability.LIGHT],
-        "sensors": ["power", "brightness_percent"],
-        "location": "大棚A区",
-        "initial_state": {"power": False, "brightness_percent": 0, "status": "idle"},
-    },
-    {
-        "device_id": "virtual_fertigator_01",
-        "name": "虚拟施肥一体机#1",
-        "capabilities": [DeviceCapability.FERTIGATE],
-        "sensors": ["flow_rate", "total_fertilizer_kg"],
-        "location": "大棚A区",
-        "initial_state": {"power": False, "flow_rate": 0, "total_fertilizer_kg": 0,
-                          "last_amount_kg": 0, "status": "idle"},
-    },
-    {
-        "device_id": "virtual_heater_01",
-        "name": "虚拟加热器#1",
-        "capabilities": [DeviceCapability.HEAT],
-        "sensors": ["power", "target_temp", "current_temp"],
-        "location": "大棚A区",
-        "initial_state": {"power": False, "target_temp": 20.0, "current_temp": 18.0, "status": "idle"},
-    },
-]
-
 
 class SimulatorDriver(BaseDeviceDriver):
-    """虚拟设备驱动 — 在内存中模拟设备行为"""
+    """虚拟设备驱动 — 在内存中模拟设备行为。
+
+    真实场景模式下，SimulatorDriver 初始为空，设备需通过 add_virtual_device() 显式添加。
+    """
 
     driver_name = "simulator"
 
@@ -83,24 +42,11 @@ class SimulatorDriver(BaseDeviceDriver):
         self._devices: Dict[str, Dict] = {}
         self._history: List[Dict] = []
 
-        # 初始化内置虚拟设备
-        for template in _VIRTUAL_DEVICE_TEMPLATES:
-            self._devices[template["device_id"]] = {
-                "info": {
-                    "device_id": template["device_id"],
-                    "name": template["name"],
-                    "capabilities": template["capabilities"],
-                    "sensors": template["sensors"],
-                    "location": template.get("location", ""),
-                },
-                "state": copy.deepcopy(template["initial_state"]),
-            }
-
     # ── 生命周期 ──────────────────────────────
 
     async def connect(self) -> bool:
         self._connected = True
-        logger.info("SimulatorDriver: 已连接（%d 个虚拟设备）", len(self._devices))
+        logger.debug("SimulatorDriver: 已连接（%d 个虚拟设备）", len(self._devices))
         return True
 
     async def disconnect(self) -> None:
@@ -141,6 +87,16 @@ class SimulatorDriver(BaseDeviceDriver):
     async def execute(self, device_id: str, command: DeviceCommand) -> DeviceResult:
         await self._simulate_latency()
 
+        # 连接状态检查
+        if not self._connected:
+            return DeviceResult(
+                success=False,
+                device_id=device_id,
+                executed_command=command.command,
+                message="驱动未连接，无法执行指令",
+                error_code="NOT_CONNECTED",
+            )
+
         # 故障模拟
         if random.random() < self._failure_rate:
             return DeviceResult(
@@ -162,10 +118,54 @@ class SimulatorDriver(BaseDeviceDriver):
 
         dev = self._devices[device_id]
 
-        if command.command == "start":
-            dev["state"]["power"] = True
-            dev["state"]["status"] = "running"
-            msg = f"[模拟] {dev['info']['name']} 已启动"
+        current = dev["state"].get("status", "powered_off")
+        name = dev["info"]["name"]
+
+        # ── 通电启动 ──
+        if command.command in ("power_on", "boot"):
+            if current == "powered_off":
+                dev["state"]["power"] = True
+                dev["state"]["status"] = "standby"
+                msg = f"[模拟] {name} 通电启动，进入待机"
+            elif current == "standby":
+                msg = f"[模拟] {name} 已在待机状态"
+            elif current == "running":
+                msg = f"[模拟] {name} 正在工作中，无需重复通电"
+            elif current == "error":
+                return DeviceResult(success=False, device_id=device_id,
+                                   executed_command=command.command,
+                                   message=f"[模拟] {name} 处于故障状态，请先复位(reset)",
+                                   error_code="DEVICE_ERROR")
+
+        # ── 关机断电 ──
+        elif command.command in ("power_off", "shutdown"):
+            if current in ("standby", "running"):
+                dev["state"]["power"] = False
+                dev["state"]["status"] = "powered_off"
+                msg = f"[模拟] {name} 关机断电"
+            elif current == "powered_off":
+                msg = f"[模拟] {name} 已在关机状态"
+            elif current == "error":
+                dev["state"]["power"] = False
+                dev["state"]["status"] = "powered_off"
+                msg = f"[模拟] {name} 故障状态下强制关机"
+
+        # ── 开始工作 ──
+        elif command.command == "start":
+            if current == "powered_off":
+                dev["state"]["power"] = True
+                dev["state"]["status"] = "running"
+                msg = f"[模拟] {name} 通电并启动"
+            elif current == "standby":
+                dev["state"]["status"] = "running"
+                msg = f"[模拟] {name} 已开始工作"
+            elif current == "running":
+                msg = f"[模拟] {name} 已在工作中，更新参数"
+            elif current == "error":
+                return DeviceResult(success=False, device_id=device_id,
+                                   executed_command=command.command,
+                                   message=f"[模拟] {name} 处于故障状态，请先复位(reset)",
+                                   error_code="DEVICE_ERROR")
 
             if "duration" in command.params:
                 dev["state"]["last_duration"] = command.params["duration"]
@@ -178,22 +178,47 @@ class SimulatorDriver(BaseDeviceDriver):
             if "amount_kg" in command.params:
                 dev["state"]["last_amount_kg"] = command.params["amount_kg"]
 
+        # ── 停止工作（回到待机，保持通电）──
         elif command.command == "stop":
-            dev["state"]["power"] = False
-            dev["state"]["status"] = "idle"
-            if "flow_rate" in dev["state"]:
-                dev["state"]["flow_rate"] = 0
-            if "rpm" in dev["state"]:
-                dev["state"]["rpm"] = 0
-            msg = f"[模拟] {dev['info']['name']} 已停止"
+            if current == "running":
+                dev["state"]["status"] = "standby"
+                # 关键：power 保持 True，不断电！
+                if "flow_rate" in dev["state"]:
+                    dev["state"]["flow_rate"] = 0
+                if "rpm" in dev["state"]:
+                    dev["state"]["rpm"] = 0
+                msg = f"[模拟] {name} 已停止工作（保持通电待机）"
+            elif current == "standby":
+                msg = f"[模拟] {name} 当前未在工作（待机中）"
+            elif current == "powered_off":
+                msg = f"[模拟] {name} 处于关机状态"
+            else:
+                msg = f"[模拟] {name} 已停止"
+
+        # ── 故障复位 ──
+        elif command.command == "reset":
+            if current == "error":
+                dev["state"]["power"] = True
+                dev["state"]["status"] = "standby"
+                msg = f"[模拟] {name} 故障复位，恢复到待机"
+            else:
+                msg = f"[模拟] {name} 未处于故障状态"
 
         elif command.command == "set_param":
             for key, val in command.params.items():
                 if key in dev["state"]:
                     dev["state"][key] = val
-            msg = f"[模拟] {dev['info']['name']} 参数已更新: {command.params}"
+            msg = f"[模拟] {name} 参数已更新: {command.params}"
+
         else:
-            msg = f"[模拟] {dev['info']['name']} 收到未知指令: {command.command}"
+            # 未知指令直接返回失败
+            return DeviceResult(
+                success=False,
+                device_id=device_id,
+                executed_command=command.command,
+                message=f"[模拟] {name} 不支持指令: {command.command}",
+                error_code="UNSUPPORTED_COMMAND",
+            )
 
         self._history.append({
             "timestamp": datetime.now().isoformat(),
@@ -202,6 +227,8 @@ class SimulatorDriver(BaseDeviceDriver):
             "params": command.params,
             "success": True,
         })
+        # 历史记录上限防止无界增长
+        self._history = self._history[-1000:]
 
         return DeviceResult(
             success=True,
@@ -219,23 +246,43 @@ class SimulatorDriver(BaseDeviceDriver):
         if device_id not in self._devices:
             return {"error": f"设备 '{device_id}' 不存在"}
 
-        state = copy.deepcopy(self._devices[device_id]["state"])
+        internal = self._devices[device_id]["state"]
+        state = copy.deepcopy(internal)
 
         info = self._devices[device_id]["info"]
         if DeviceCapability.READ_SENSOR in info.get("capabilities", []):
             if "temperature" in state:
                 state["temperature"] = round(state["temperature"] + random.uniform(-0.5, 0.5), 1)
+                state["temperature"] = max(-50.0, min(60.0, state["temperature"]))  # 温度范围 -50~60°C
             if "humidity" in state:
                 state["humidity"] = round(state["humidity"] + random.uniform(-2, 2), 1)
+                state["humidity"] = max(0.0, min(100.0, state["humidity"]))  # 湿度范围 0~100%
             if "soil_moisture" in state:
-                irrigation = self._devices.get("virtual_irrigation_01", {})
-                if irrigation.get("state", {}).get("power"):
+                # 通用化：遍历所有设备，检查名称含 "irrigat" 且已开启的灌溉设备
+                irrigation_on = False
+                for did, dev in self._devices.items():
+                    if "irrigat" in did.lower():
+                        if dev.get("state", {}).get("power"):
+                            irrigation_on = True
+                            break
+                if irrigation_on:
                     state["soil_moisture"] = round(state["soil_moisture"] + random.uniform(0.5, 1.5), 1)
                 else:
                     state["soil_moisture"] = round(state["soil_moisture"] - random.uniform(0.1, 0.3), 1)
                 state["soil_moisture"] = max(0, min(100, state["soil_moisture"]))
+            if "ph" in state:
+                # pH 漂移模拟 + 范围夹持（正常土壤 pH 范围 3.5~9.5）
+                state["ph"] = round(state["ph"] + random.uniform(-0.1, 0.1), 1)
+                state["ph"] = max(3.5, min(9.5, state["ph"]))
 
         state["_read_at"] = datetime.now().isoformat()
+
+        # 把所有漂移后的传感器值写回内部状态，确保漂移跨调用累积
+        # 遍历 internal 中的所有 key，凡是 state 中也存在的都写回
+        for key in list(internal.keys()):
+            if key in state and key not in ("_read_at",):
+                internal[key] = state[key]
+
         return state
 
     # ── 自定义虚拟设备管理 ────────────────────
@@ -244,7 +291,9 @@ class SimulatorDriver(BaseDeviceDriver):
                            capabilities: List[DeviceCapability],
                            sensors: List[str] = None,
                            location: str = "",
-                           initial_state: Dict = None) -> None:
+                           initial_state: Optional[Dict] = None) -> None:
+        if initial_state is None:
+            initial_state = {"power": False, "status": "powered_off"}
         self._devices[device_id] = {
             "info": {
                 "device_id": device_id,
@@ -253,9 +302,9 @@ class SimulatorDriver(BaseDeviceDriver):
                 "sensors": sensors or [],
                 "location": location,
             },
-            "state": initial_state or {"power": False, "status": "idle"},
+            "state": copy.deepcopy(initial_state),
         }
-        logger.info("SimulatorDriver: 已添加虚拟设备 %s (%s)", device_id, name)
+        logger.debug("SimulatorDriver: 已添加虚拟设备 %s (%s)", device_id, name)
 
     def remove_virtual_device(self, device_id: str) -> None:
         self._devices.pop(device_id, None)

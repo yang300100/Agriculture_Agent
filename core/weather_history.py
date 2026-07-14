@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
-HISTORY_FILE = os.path.join("data", "weather_history.json")
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HISTORY_FILE = os.path.join(_PROJECT_ROOT, "data", "weather_history.json")
 
 # 持续异常阈值
 PERSISTENCE_RULES = {
@@ -43,12 +44,15 @@ def _load_history() -> List[Dict]:
 
 
 def _save_history(records: List[Dict]):
-    os.makedirs("data", exist_ok=True)
+    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
     # 只保留最近 60 天
     cutoff = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
     records = [r for r in records if r.get("date", "") >= cutoff]
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+    # 先写临时文件，再原子替换，避免写入失败时丢失全部数据
+    tmp_file = HISTORY_FILE + ".tmp"
+    with open(tmp_file, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_file, HISTORY_FILE)  # 原子替换（Windows 也支持）
 
 
 def record_today(weather: Dict):
@@ -78,8 +82,9 @@ def check_persistence(active_crops: List[str] = None) -> List[Dict]:
     for rule_name, rule in PERSISTENCE_RULES.items():
         check_fn = rule["condition"]
         threshold = rule["days"]
-        # 检查最近 N 天是否持续满足条件
-        recent = records[-threshold:]
+        # 检查最近 N 个日历天是否持续满足条件（而非最近 N 条记录）
+        cutoff_date = (datetime.now() - timedelta(days=threshold)).strftime("%Y-%m-%d")
+        recent = [r for r in records if r.get("date", "0000-00-00") >= cutoff_date]
         if len(recent) < threshold:
             continue
         if all(check_fn(r) for r in recent):

@@ -186,7 +186,7 @@ class CropMonitorAgent(BaseAgent):
             "temperature": VISION_TEMPERATURE,
         }
 
-        resp = requests.post(url, headers=headers, json=payload, timeout=90)
+        resp = requests.post(url, headers=headers, json=payload, timeout=180)
         if resp.status_code != 200:
             raise Exception(f"Vision API {resp.status_code}: {resp.text[:300]}")
 
@@ -268,6 +268,8 @@ class CropMonitorAgent(BaseAgent):
             parts.append(f"📈 **阶段**: {stage_label}")
 
         health = a.get("health_assessment", {})
+        if not isinstance(health, dict):
+            health = {}
         if health.get("overall"):
             emoji = {"excellent": "💚", "good": "💛", "fair": "🧡", "poor": "❤️"}.get(
                 health["overall"], "⚪")

@@ -76,6 +76,10 @@ class ModbusDriver(BaseDeviceDriver):
             location: 物理位置
             slave_id: Modbus 从站地址 (1-247)
         """
+        # 校验 slave_id 范围：Modbus 标准规定 1-247
+        if not (1 <= slave_id <= 247):
+            raise ValueError(f"Modbus slave_id 必须在 1-247 范围内，收到: {slave_id}")
+
         self._devices[device_id] = {
             "info": {
                 "device_id": device_id,
@@ -93,9 +97,22 @@ class ModbusDriver(BaseDeviceDriver):
 
     async def connect(self) -> bool:
         """连接 Modbus 总线"""
+        # 关闭旧客户端，避免资源泄漏
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
+        self._connected = False
+
         try:
             if self._mode == "tcp":
-                host, port_str = self._port.split(":") if ":" in self._port else (self._port, "502")
+                # 使用 rsplit 从右侧分割一次，正确处理 IPv6 地址（如 [::1]:502 或 ::1:502）
+                if ":" in self._port:
+                    host, port_str = self._port.rsplit(":", 1)
+                else:
+                    host, port_str = self._port, "502"
                 self._client = ModbusTcpClient(host=host, port=int(port_str), timeout=self._timeout)
             else:
                 self._client = ModbusSerialClient(
@@ -103,7 +120,12 @@ class ModbusDriver(BaseDeviceDriver):
                     baudrate=self._baudrate,
                     timeout=self._timeout,
                 )
-            self._connected = self._client.connect()
+            # 用 try/except 包裹 connect() 避免未定义的 _connected 状态
+            try:
+                self._connected = self._client.connect()
+            except Exception as conn_err:
+                logger.error("Modbus connect() 调用失败: %s", conn_err)
+                self._connected = False
             if self._connected:
                 logger.info("ModbusDriver: 已连接 %s (%s)", self._port, self._mode)
             else:
@@ -188,6 +210,13 @@ class ModbusDriver(BaseDeviceDriver):
                         actual_params=command.params,
                         message=f"[Modbus] 从站 {slave_id} 已启动",
                     )
+                else:
+                    return DeviceResult(
+                        success=False, device_id=device_id,
+                        executed_command="start",
+                        message=f"[Modbus] 启动失败 (从站 {slave_id}): Modbus 写入错误",
+                        error_code="MODBUS_EXCEPTION",
+                    )
 
             elif command.command == "stop":
                 # 写保持寄存器 HR[0] = 0 (停止)
@@ -200,12 +229,20 @@ class ModbusDriver(BaseDeviceDriver):
                         executed_command="stop",
                         message=f"[Modbus] 从站 {slave_id} 已停止",
                     )
+                else:
+                    return DeviceResult(
+                        success=False, device_id=device_id,
+                        executed_command="stop",
+                        message=f"[Modbus] 停止失败 (从站 {slave_id}): Modbus 写入错误",
+                        error_code="MODBUS_EXCEPTION",
+                    )
 
+            # 无法识别的命令：使用更明确的错误码和消息
             return DeviceResult(
                 success=False, device_id=device_id,
                 executed_command=command.command,
-                message=f"Modbus 操作失败: 从站 {slave_id}",
-                error_code="MODBUS_ERROR",
+                message=f"Modbus 驱动不支持命令 '{command.command}'，仅支持 start / stop",
+                error_code="UNSUPPORTED_COMMAND",
             )
 
         except Exception as e:
@@ -243,5 +280,14 @@ class ModbusDriver(BaseDeviceDriver):
                 })
         except Exception as e:
             logger.debug("Modbus 读状态失败: %s", e)
+            # 异常时也要标记 driver 和 read_at，并设置 error 状态
+            # 不返回静默的旧数据，而是明确告知调用方读取出错了
+            return {
+                **dev["state"],
+                "status": "error",
+                "_driver": "modbus",
+                "_read_at": datetime.now().isoformat(),
+                "_error": str(e),
+            }
 
         return {**dev["state"], "_driver": "modbus", "_read_at": datetime.now().isoformat()}

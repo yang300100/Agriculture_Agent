@@ -247,7 +247,7 @@ class PlantingPlanner:
         schedule = self._generate_schedule(crop_info, region_info)
 
         # 生成阶段性任务
-        tasks = self._generate_stage_tasks(crop_info, schedule.get("sowing_date"))
+        tasks = self._generate_stage_tasks(crop_info, schedule.get("sowing_time"))
 
         # 风险评估
         risks = self._assess_risks(crop, region, crop_info, region_info)
@@ -309,7 +309,30 @@ class PlantingPlanner:
         # 计算各阶段日期（简化版）
         if crop_info.growth_stages:
             stage_schedule = []
-            current_date = datetime.now()
+            # 优先使用播种时间作为起始日期，其次根据季节推断，最后回退到 now()
+            sowing_str = schedule.get("sowing_time", "")
+            try:
+                if sowing_str:
+                    # 播种时间可能是 "3月下旬-4月上旬" 这样的范围格式，取起始月
+                    import re
+                    month_match = re.search(r'(\d+)月', sowing_str)
+                    if month_match:
+                        m = int(month_match.group(1))
+                        # 取该月1日作为近似起始
+                        current_date = datetime(datetime.now().year, m, 1)
+                        # 如果该月已经过去，用明年
+                        if current_date < datetime.now():
+                            current_date = datetime(datetime.now().year + 1, m, 1)
+                    else:
+                        current_date = datetime.now()
+                else:
+                    # 根据季节确定播种类起始日期
+                    season = schedule.get("season", "")
+                    season_start_months = {"春": 3, "夏": 6, "秋": 9, "冬": 12}
+                    m = season_start_months.get(season, datetime.now().month)
+                    current_date = datetime(datetime.now().year, m, 1)
+            except (ValueError, TypeError):
+                current_date = datetime.now()
 
             for stage in crop_info.growth_stages:
                 duration = stage.get("duration_days", 30)

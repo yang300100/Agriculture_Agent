@@ -19,8 +19,9 @@ def weather_query_node(state: AgentState) -> AgentState:
         user_question = state.user_question or ""
 
         # 获取用户地区（优先使用用户档案中的地区）
-        location = (state.short_term_facts.get("region") or
-                   state.user_profile.get("region", "北京"))
+        user_region = state.short_term_facts.get("region") or state.user_profile.get("region", "")
+        location = user_region or "北京"
+        is_default_location = not user_region
 
         # 获取当前作物
         crop = state.short_term_facts.get("crop") or state.user_profile.get("crop", "")
@@ -71,10 +72,12 @@ def weather_query_node(state: AgentState) -> AgentState:
             if any(w in user_question for w in spray_keywords) and current and forecast:
                 try:
                     from core.spray_advisor import assess_spray_conditions, format_spray_report
+                    humidity_val = getattr(current, "humidity", None)
+                    wind_val = getattr(current, "wind_speed", None)
                     wdata = {
                         "temperature": current.temperature,
-                        "humidity": getattr(current, "humidity", 60),
-                        "wind_speed": getattr(current, "wind_speed", 0),
+                        "humidity": humidity_val,
+                        "wind_speed": wind_val,
                         "weather_desc": current.weather_desc,
                         "forecast": [
                             {"date": str(w.date), "weather_desc": w.weather_desc,
@@ -88,11 +91,15 @@ def weather_query_node(state: AgentState) -> AgentState:
                 except Exception as e:
                     logger.warning("施药分析失败: %s", e)
 
-            state.final_answer = "\n".join(answer_parts)
+            answer_text = "\n".join(answer_parts)
+            if is_default_location:
+                answer_text = "（未设置您的位置，默认显示北京天气）\n\n" + answer_text
+            state.final_answer = answer_text
             state.messages.append(AIMessage(content=state.final_answer))
 
         except Exception as e:
-            state.final_answer = f"获取天气信息时出现错误：{str(e)}。请检查天气服务配置。"
+            logger.error("天气查询异常: %s", e, exc_info=True)
+            state.final_answer = "获取天气信息时出现错误，请检查天气服务配置。"
             state.messages.append(AIMessage(content=state.final_answer))
 
     return state

@@ -32,12 +32,17 @@ def field_management_node(state: AgentState) -> AgentState:
                 from core.crop_rotation import CropRotationAdvisor
                 advisor = CropRotationAdvisor()
                 answer_parts = ["## 轮作建议\n"]
+                has_rotation_data = False
                 for field in fields:
                     crop = field.current_crop
                     if crop:
+                        has_rotation_data = True
                         report = advisor.format_rotation_report(crop, field.name)
                         answer_parts.append(report)
                         answer_parts.append("\n---\n")
+                if not has_rotation_data:
+                    answer_parts.append("当前没有地块种植了作物，无法生成轮作建议。\n")
+                    answer_parts.append("💡 请先在「我的地块」中设置各田块的当前作物。")
                 if answer_parts:
                     state.final_answer = "\n".join(answer_parts)
 

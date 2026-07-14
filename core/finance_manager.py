@@ -162,13 +162,17 @@ class FinanceManager:
             CostRecord对象
         """
         crop_name = cost_data.get("crop", "").strip()
-        total = cost_data.get("quantity", 0) * cost_data.get("unit_price", 0)
+        quantity = cost_data.get("quantity", 0)
+        unit_price = cost_data.get("unit_price", 0)
+        total = round(quantity * unit_price, 2)
 
         if not self._validate_crop_name(crop_name):
             raise ValueError("作物名称不能为空或无效")
         costs = self.storage.load_costs()
         cost_type = cost_data.get("cost_type", "其他")
-        if self._is_duplicate(costs, crop_name, cost_type, total):
+        plot = cost_data.get("plot", "默认地块")
+        skip_dup = cost_data.pop("_skip_duplicate_check", False)
+        if not skip_dup and self._is_duplicate(costs, crop_name, cost_type, total, plot):
             raise ValueError("请勿在短时间内重复提交相同记录")
 
         record = CostRecord(
@@ -208,13 +212,17 @@ class FinanceManager:
             }
         """
         crop_name = income_data.get("crop", "").strip()
-        total = income_data.get("quantity", 0) * income_data.get("unit_price", 0)
+        quantity = income_data.get("quantity", 0)
+        unit_price = income_data.get("unit_price", 0)
+        total = round(quantity * unit_price, 2)
 
         if not self._validate_crop_name(crop_name):
             raise ValueError("作物名称不能为空或无效")
         income = self.storage.load_income()
         income_type = income_data.get("income_type", "销售")
-        if self._is_duplicate(income, crop_name, income_type, total):
+        plot = income_data.get("plot", "默认地块")
+        skip_dup = income_data.pop("_skip_duplicate_check", False)
+        if not skip_dup and self._is_duplicate(income, crop_name, income_type, total, plot):
             raise ValueError("请勿在短时间内重复提交相同记录")
 
         notes = income_data.get("notes", "")
@@ -396,7 +404,8 @@ class FinanceManager:
                                 "quantity": float(row.get("quantity", 0)),
                                 "unit": row.get("unit", ""),
                                 "unit_price": float(row.get("unit_price", 0)),
-                                "notes": row.get("notes", "")
+                                "notes": row.get("notes", ""),
+                                "_skip_duplicate_check": True,
                             })
                         else:
                             self.add_income({
@@ -407,7 +416,8 @@ class FinanceManager:
                                 "quantity": float(row.get("quantity", 0)),
                                 "unit_price": float(row.get("unit_price", 0)),
                                 "buyer": row.get("buyer", ""),
-                                "notes": row.get("notes", "")
+                                "notes": row.get("notes", ""),
+                                "_skip_duplicate_check": True,
                             })
                         imported += 1
                     except Exception as e:
@@ -479,9 +489,17 @@ class FinanceManager:
         if plot:
             costs = [c for c in costs if c.get("plot") == plot]
         if start_date:
-            costs = [c for c in costs if c.get("date", "") >= start_date]
+            try:
+                sd = datetime.strptime(start_date, "%Y-%m-%d")
+                costs = [c for c in costs if self._parse_date(c.get("date", "")) >= sd]
+            except ValueError:
+                costs = [c for c in costs if c.get("date", "") >= start_date]
         if end_date:
-            costs = [c for c in costs if c.get("date", "") <= end_date]
+            try:
+                ed = datetime.strptime(end_date, "%Y-%m-%d")
+                costs = [c for c in costs if self._parse_date(c.get("date", "")) <= ed]
+            except ValueError:
+                costs = [c for c in costs if c.get("date", "") <= end_date]
 
         return [CostRecord(**c) for c in costs]
 
@@ -495,11 +513,27 @@ class FinanceManager:
         if plot:
             income = [i for i in income if i.get("plot") == plot]
         if start_date:
-            income = [i for i in income if i.get("date", "") >= start_date]
+            try:
+                sd = datetime.strptime(start_date, "%Y-%m-%d")
+                income = [i for i in income if self._parse_date(i.get("date", "")) >= sd]
+            except ValueError:
+                income = [i for i in income if i.get("date", "") >= start_date]
         if end_date:
-            income = [i for i in income if i.get("date", "") <= end_date]
+            try:
+                ed = datetime.strptime(end_date, "%Y-%m-%d")
+                income = [i for i in income if self._parse_date(i.get("date", "")) <= ed]
+            except ValueError:
+                income = [i for i in income if i.get("date", "") <= end_date]
 
         return [IncomeRecord(**i) for i in income]
+
+    @staticmethod
+    def _parse_date(date_str: str) -> datetime:
+        """将日期字符串解析为 datetime，失败返回极小日期"""
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            return datetime.min
 
     def delete_cost(self, record_id: str) -> bool:
         """删除成本记录"""
@@ -536,8 +570,8 @@ class FinanceManager:
         return True
 
     def _is_duplicate(self, records: List[Dict], crop: str,
-                      record_type: str, amount: float) -> bool:
-        """检查是否在3秒内有重复记录（防止快速点击）"""
+                      record_type: str, amount: float, plot: str = None) -> bool:
+        """检查是否在3秒内有重复记录（防止快速点击），包含 plot 字段去重"""
         now = datetime.now()
         for r in reversed(records):
             try:
@@ -548,23 +582,27 @@ class FinanceManager:
                 if r.get("crop") == crop and abs(r.get("total_amount", 0) - amount) < 0.01:
                     ct = r.get("cost_type", r.get("income_type", ""))
                     if ct == record_type:
+                        # 额外检查 plot 字段，避免不同地块的同额记录被误判
+                        if plot is not None and r.get("plot") != plot:
+                            continue
                         return True
             except Exception:
                 continue
         return False
 
     def _estimate_plot_size(self, costs: List[Dict]) -> float:
-        """从成本记录估算种植面积"""
-        # 简单估算：种子成本通常占总成本的3-5%，根据种子用量反推面积
+        """从成本记录估算种植面积（粗糙估算，仅供参考）"""
+        # 注意：此处基于固定播种率反推面积，仅是粗略估算。
+        # 实际播种量受品种、播期、土壤条件等因素影响，实际面积请以实际测量为准。
+        # 玉米约3-5斤/亩，小麦约15-20斤/亩，取中间值。
         seed_costs = [c for c in costs if c.get("cost_type") == "种子"]
         if seed_costs:
-            # 假设小麦种子15-20斤/亩，玉米3-5斤/亩
             total_seed = sum(c.get("quantity", 0) for c in seed_costs)
             crop = costs[0].get("crop", "") if costs else ""
             if "玉米" in crop:
-                return total_seed / 4  # 估算
+                return total_seed / 4  # 估算：玉米约4斤/亩
             else:
-                return total_seed / 17  # 默认按小麦估算
+                return total_seed / 17  # 默认按小麦约17斤/亩估算
         return 1.0  # 默认1亩
 
     def format_summary_report(self, summary: CropFinancialSummary) -> str:

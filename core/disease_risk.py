@@ -45,7 +45,8 @@ BUILTIN_THRESHOLDS = {
 def _load_crop_thresholds() -> Dict:
     """合并内置阈值与 JSON 中的 risk_conditions"""
     merged = dict(BUILTIN_THRESHOLDS)
-    crops_dir = os.path.join("agriculture_knowledge", "crops")
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    crops_dir = os.path.join(_project_root, "agriculture_knowledge", "crops")
     if not os.path.exists(crops_dir):
         return merged
     for fname in os.listdir(crops_dir):
@@ -146,7 +147,8 @@ def assess_disease_risk(crop: str, current_stage: str = "",
 
 def _get_prevention_advice(crop: str, disease: str) -> str:
     """从作物 JSON 获取防治建议"""
-    crops_dir = os.path.join("agriculture_knowledge", "crops")
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    crops_dir = os.path.join(_project_root, "agriculture_knowledge", "crops")
     if not os.path.exists(crops_dir):
         return "请咨询当地农技部门"
     for fname in os.listdir(crops_dir):

@@ -8,7 +8,11 @@ def render_wizard_page():
     st.caption("三步生成完整种植计划。")
 
     # 获取作物列表
-    crops = requests.get(f"{API_BASE}/api/encyclopedia", timeout=10).json() if True else {}
+    crops = {}
+    try:
+        crops = requests.get(f"{API_BASE}/api/encyclopedia", timeout=10).json()
+    except Exception:
+        pass
     # fallback to local file list
     if not crops:
         import json

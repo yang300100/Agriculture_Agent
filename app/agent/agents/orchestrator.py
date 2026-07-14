@@ -133,6 +133,7 @@ class AgentOrchestrator:
         if len(intents) > 1:
             logger.info("并行执行 %d 个副 Agent: %s", len(intents) - 1, intents[1:])
             import copy
+            secondary_states = []  # 收集副 Agent 的 state 用于回并 messages
             def _run_secondary(intent: str) -> Tuple[str, str]:
                 agent = self._find_agent(intent)
                 if not agent:
@@ -146,6 +147,7 @@ class AgentOrchestrator:
                     logger.info("Agent 完成(副): %s → answer_len=%d\n━━━ 回答内容(副:%s) ━━━\n%s\n━━━━━━━━━━━━",
                                 agent.name, len(ans), intent,
                                 ans[:1500] if len(ans) > 1500 else ans)
+                    secondary_states.append(s_copy)
                     return (intent, ans)
                 except Exception as e:
                     logger.warning("副 Agent %s 失败: %s", intent, e)
@@ -157,6 +159,16 @@ class AgentOrchestrator:
                     intent, answer = f.result()
                     if answer:
                         results[intent] = answer
+                # 添加超时：等待剩余未完成的任务（最多120秒）
+                concurrent.futures.wait(futures, timeout=120)
+
+            # 将副 Agent 的 messages 回并到主 state（保留 merge 后的完整对话）
+            for s in secondary_states:
+                if s.messages and state.messages:
+                    existing_ids = set(id(m) for m in state.messages)
+                    for msg in s.messages:
+                        if id(msg) not in existing_ids:
+                            state.messages.append(msg)
 
         state.final_answer = self._merge_answers(results, primary_intent)
         logger.info("回答合并完成: %d 个 Agent 参与", len(results))
@@ -175,6 +187,10 @@ class AgentOrchestrator:
             "harvest_planning": "🌾 收获规划", "image_analysis": "🔍 图片分析",
         }
 
+        primary_answer = results.get(primary, "")
+        # 检查 primary answer 是否已包含 weather 相关信息
+        has_weather = any(kw in (primary_answer or "") for kw in ["天气", "气温", "降水", "湿度", "风力", "🌤", "气象"])
+
         sections = []
         for intent, answer in results.items():
             if not answer:
@@ -182,6 +198,10 @@ class AgentOrchestrator:
             if intent == primary:
                 sections.insert(0, answer)
             else:
+                # 如果 primary 已包含天气，跳过 weather_query 副 section
+                if intent == "weather_query" and has_weather:
+                    logger.info("合并回答: primary 已包含天气信息，跳过 weather_query 副 section")
+                    continue
                 name = section_names.get(intent, intent)
                 sections.append(f"\n---\n### {name}\n{answer}")
         return "\n".join(sections)

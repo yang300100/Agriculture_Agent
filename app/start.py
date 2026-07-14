@@ -54,7 +54,7 @@ def start_web():
     print("  请在浏览器中访问: http://localhost:8501")
     print("  按 Ctrl+C 停止服务\n")
 
-    test1_path = os.path.join(PROJECT_ROOT, "app", "test1.py")
+    test1_path = os.path.join(PROJECT_ROOT, "app", "main.py")
     try:
         subprocess.run([sys.executable, "-m", "streamlit", "run", test1_path])
     except KeyboardInterrupt:
@@ -64,7 +64,7 @@ def start_web():
 def start_cli():
     """启动CLI模式"""
     print("💻 启动 CLI 命令行模式...\n")
-    test1_path = os.path.join(PROJECT_ROOT, "app", "test1.py")
+    test1_path = os.path.join(PROJECT_ROOT, "app", "main.py")
     subprocess.run([sys.executable, test1_path])
 
 

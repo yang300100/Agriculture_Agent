@@ -44,20 +44,21 @@ def assess_spray_conditions(weather_data: Dict[str, Any]) -> Dict[str, Any]:
                      "shower", "rain", "drizzle", "thunderstorm"]
     if any(w in desc for w in rain_keywords):
         risks.append(f"🌧 当前有降雨 ({desc})，药剂会被冲刷")
+        score -= 25
 
-    # 3. 温度检查
+    # 3. 温度检查 — 先检查更严重的条件
     if temp > 35:
         risks.append(f"🌡 高温 ({temp:.0f}℃)，药剂蒸发快且易产生药害")
         score -= 30
     elif temp > 30:
         risks.append(f"🌡 温度偏高 ({temp:.0f}℃)，建议清晨或傍晚施药")
         score -= 15
-    elif temp < 10:
-        risks.append(f"❄ 温度过低 ({temp:.0f}℃)，药效不佳且作物代谢慢")
-        score -= 20
     elif temp < 5:
         risks.append(f"❄ 低温 ({temp:.0f}℃)，严禁施药")
         score -= 40
+    elif temp < 10:
+        risks.append(f"❄ 温度过低 ({temp:.0f}℃)，药效不佳且作物代谢慢")
+        score -= 20
 
     # 4. 湿度检查
     if humidity > 90:
@@ -78,10 +79,12 @@ def assess_spray_conditions(weather_data: Dict[str, Any]) -> Dict[str, Any]:
                 score -= 20
                 break
 
-    # 最佳窗口推荐
-    if 15 <= temp <= 28 and 1 <= wind <= 3 and humidity < 80 and not any(
-            w in desc for w in rain_keywords):
+    # 最佳窗口推荐（确保降雨已检查）
+    has_rain = any(w in desc for w in rain_keywords)
+    if 15 <= temp <= 28 and 1 <= wind <= 3 and humidity < 80 and not has_rain:
         best_window = "✅ 当前时段非常适合喷药作业"
+    elif has_rain:
+        best_window = "🌧 当前有雨，不建议喷药，请等待雨停"
     elif temp < 15 and wind <= 3:
         best_window = "⏰ 建议等到气温回升至15℃以上再进行喷药"
     elif temp > 30:

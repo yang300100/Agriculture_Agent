@@ -76,7 +76,10 @@ def _render_rule_form(rule, devices):
         )
 
         st.markdown("**执行动作**")
-        device_ids = [d["device_id"] for d in devices] if devices else ["virtual_irrigation_01"]
+        device_ids = [d["device_id"] for d in devices] if devices else []
+        if not device_ids:
+            st.warning("暂无可用设备，请先在「设备仪表盘」中注册设备后再创建规则")
+            st.stop()
         default_dev = rule["action"]["device_id"] if rule and rule.get("action", {}).get("device_id") in device_ids else device_ids[0]
         device_id = st.selectbox("目标设备", device_ids,
                                  index=device_ids.index(default_dev) if default_dev in device_ids else 0,

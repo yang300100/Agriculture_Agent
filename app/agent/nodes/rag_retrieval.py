@@ -35,7 +35,7 @@ def _normalize_faiss_result(result: dict) -> dict:
     """将 FAISS 检索结果统一为 rag_retrieval 下游期望的格式"""
     meta = result.get("metadata", {})
     return {
-        "page_content": result["content"],
+        "page_content": result.get("content", ""),
         "source": meta.get("crop", meta.get("source", "未知来源")),
     }
 
@@ -43,7 +43,14 @@ def _normalize_faiss_result(result: dict) -> dict:
 def rag_retrieval_node(state: AgentState,
                        rag_system: SimpleAgricultureRAG,
                        faiss_rag: Optional[FAISSAgricultureRAG] = None) -> AgentState:
+    state.progress_message = "正在检索农业知识库..."
     """RAG 检索节点 - FAISS 向量检索为主，关键词匹配为 fallback"""
+
+    # need_rag 检查放在最前面，不需要检索时直接返回
+    if not state.need_rag:
+        state.retrieved_docs = []
+        return state
+
     queries = []
 
     if state.user_question:
@@ -77,9 +84,6 @@ def rag_retrieval_node(state: AgentState,
 
     all_results = []
     for query in queries[:2]:
-        if not state.need_rag:
-            continue
-
         # 第一通道：FAISS 向量检索
         if faiss_rag and faiss_rag.is_available:
             try:

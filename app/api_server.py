@@ -10,6 +10,14 @@ from apscheduler.schedulers.background import BackgroundScheduler
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+# 设备驱动层日志设为 WARNING，减少无硬件时的连接超时日志
+logging.getLogger("devices").setLevel(logging.WARNING)
+logging.getLogger("core.device_registry_factory").setLevel(logging.WARNING)
+logging.getLogger("core.device_executor").setLevel(logging.WARNING)
+# geopy 的 Nominatim 连接超时警告（已用本机IP定位替代，无实际影响）
+logging.getLogger("geopy").setLevel(logging.ERROR)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 app = FastAPI(title="智能种植助手 API", version="1.0")
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -44,4 +52,4 @@ logger.info("APScheduler 已启动: 提醒/5min 天气/30min 病害/6h 设备规
 if __name__ == "__main__":
     import uvicorn
     logger.info("FastAPI 后端启动: http://localhost:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info", timeout_keep_alive=300)

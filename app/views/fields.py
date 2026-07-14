@@ -288,6 +288,7 @@ def _render_drawing_interface(fields, map_manager):
 
     try:
         from streamlit_folium import st_folium
+        from core.map_manager import create_folium_map, extract_polygon_from_map_data
 
         m = create_folium_map(
             center_lat=default_lat,

@@ -31,7 +31,7 @@ def image_analysis_node(state: AgentState) -> AgentState:
     if not state.has_image or not state.image_data:
         return state
 
-    if not os.getenv("VISION_MODEL"):
+    if not VISION_MODEL:
         state.image_analysis_result = _fail(
             f"图片分析未启用。请在 .env 中配置 VISION_MODEL（支持多模态的模型）。"
             f"当前 LLM_MODEL={LLM_MODEL} 不支持图片。")
@@ -62,14 +62,14 @@ def _call_vision_api(state: AgentState) -> dict:
             "content": [
                 {"type": "text", "text": PROMPT},
                 {"type": "image_url", "image_url": {
-                    "url": f"data:{state.image_mime_type};base64,{state.image_data}"}},
+                    "url": f"data:{state.image_mime_type or 'image/jpeg'};base64,{state.image_data}"}},
                 {"type": "text", "text": state.user_question or "请分析这张农作物图片"},
             ],
         }],
         "max_tokens": VISION_MAX_TOKENS,
         "temperature": VISION_TEMPERATURE,
     }
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    resp = requests.post(url, headers=headers, json=payload, timeout=120)
     if resp.status_code != 200:
         raise Exception(f"API {resp.status_code}: {resp.text[:300]}")
 
@@ -103,7 +103,7 @@ def image_analysis_answer_node(state: AgentState) -> AgentState:
             parts.append("\n🔍 **检测到的问题**:")
         s = issue.get("severity", "")
         emoji = {"轻微": "⚪", "中等": "🟡", "严重": "🔴"}.get(s, "⚪")
-        parts.append(f"  {emoji} **{issue['name']}** ({issue.get('type','')}) "
+        parts.append(f"  {emoji} **{issue.get('name', '未知')}** ({issue.get('type','')}) "
                     f"| {s} | 置信度 {issue.get('confidence',0):.0%}")
 
     if a.get("recommendations"):

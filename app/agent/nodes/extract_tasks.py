@@ -10,7 +10,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
 
 from ..state import AgentState
-from ..config import LLM_MODEL, OPENAI_API_KEY, OPENAI_BASE_URL, DEBUG_MODE
+from ..config import LLM_MODEL, LLM_TEMPERATURE, OPENAI_API_KEY, OPENAI_BASE_URL, DEBUG_MODE
 
 from core.planting_tracker import PlantingTracker
 
@@ -22,6 +22,7 @@ def extract_and_create_tasks_node(state: AgentState) -> AgentState:
     从LLM回答中提取建议并自动创建农事任务
     针对所有会产生可操作建议的意图类型（与 graph.py 路由保持一致）
     """
+    state.progress_message = "正在提取待办任务..."
     # 与 graph.py route_after_agent 的 task_intents 保持同步
     actionable_intents = [
         "crop_selection",       # 作物选择 → 创建种植计划任务
@@ -33,6 +34,7 @@ def extract_and_create_tasks_node(state: AgentState) -> AgentState:
         "image_analysis",       # 图片分析 → 创建防治任务
         "device_control",       # 设备控制 → 创建设备执行任务
         "crop_monitoring",      # 作物监测 → 创建巡检任务
+        "field_management",     # 地块管理 → 创建地块相关任务
     ]
 
     logger.info("extract_tasks 开始: intent=%s, answer_len=%d",
@@ -99,6 +101,10 @@ def extract_and_create_tasks_node(state: AgentState) -> AgentState:
                 except Exception as e:
                     logger.warning("extract_tasks 创建任务失败: %s", e)
 
+            # suggestions 非空但所有任务创建都失败了 → 记录错误
+            if not created_tasks:
+                logger.error("extract_tasks: LLM 返回了 %d 条建议但全部创建失败", len(suggestions))
+
             # 如果有成功创建的任务，在回答中添加提示
             if created_tasks:
                 task_notice = "\n\n---\n📋 **已为您自动生成农事任务**:\n"
@@ -148,7 +154,11 @@ def extract_suggestions_from_answer(answer: str, crop: str = "",
     answer_trimmed = answer[:3000] if len(answer) > 3000 else answer
     crop_hint = crop if crop else "从文本中识别"
 
-    # ── 构建提取提示词 ──
+    # ── 构建提取提示词（对用户输入转义 { } 后用 .format()，避免 KeyError）──
+    _safe_question = (user_question or "(无)").replace("{", "{{").replace("}", "}}")
+    _safe_answer = answer_trimmed.replace("{", "{{").replace("}", "}}")
+    _safe_crop = crop_hint.replace("{", "{{").replace("}", "}}")
+
     extract_prompt = """请从以下农业建议文本中提取可执行的具体农事任务。
 
 【用户原始问题】: {question}
@@ -192,25 +202,29 @@ def extract_suggestions_from_answer(answer: str, crop: str = "",
 ]
 
 注意: device_action 字段仅在任务可通过设备自动执行时才需要，否则省略该字段。""".format(
-        question=user_question or "(无)",
-        crop=crop_hint,
-        answer=answer_trimmed,
+        question=_safe_question,
+        crop=_safe_crop,
+        answer=_safe_answer,
         now=datetime.now().strftime("%Y-%m-%d"),
     )
 
     try:
         llm = ChatOpenAI(
             model=LLM_MODEL,
-            temperature=0.2,
+            temperature=LLM_TEMPERATURE,
             api_key=OPENAI_API_KEY,
             base_url=OPENAI_BASE_URL,
-            request_timeout=90,  # 任务提取给 90 秒超时
+            request_timeout=60,  # 任务提取超时 60 秒，超时则跳过
         )
 
         logger.info("extract_tasks LLM 调用开始 (model=%s, answer_len=%d)", LLM_MODEL, len(answer_trimmed))
-        response = llm.invoke([HumanMessage(content=extract_prompt)])
-        content = response.content.strip()
-        logger.info("extract_tasks LLM 返回: len=%d\n%s", len(content), content[:1000])
+        try:
+            response = llm.invoke([HumanMessage(content=extract_prompt)])
+            content = response.content.strip()
+            logger.info("extract_tasks LLM 返回: len=%d\n%s", len(content), content[:1000])
+        except Exception as e:
+            logger.warning("extract_tasks LLM 调用超时或失败，跳过任务提取: %s", e)
+            return state  # 跳过任务提取，直接返回 state
 
         # ── 智能提取 JSON 数组 ──
         suggestions = _parse_json_response(content)
@@ -247,8 +261,7 @@ def _parse_json_response(content: str) -> list:
     if code_block_match:
         return json.loads(code_block_match.group(1))
 
-    # 策略2: 贪婪匹配最外层 JSON 数组（处理嵌套 {}）
-    # 找到第一个 '[' 和最后一个 ']' 之间的内容
+    # 策略2: 使用平衡括号匹配提取最外层 JSON 数组（鲁棒性更好）
     start = content.find('[')
     end = content.rfind(']')
     if start != -1 and end != -1 and end > start:
@@ -280,30 +293,62 @@ def _parse_json_response(content: str) -> list:
 
 def calculate_end_date(timeframe: str) -> str:
     """
-    根据时间描述计算具体的截止日期
+    根据时间描述计算具体的截止日期。
+    支持：立即/马上/N天内/N周内/N月内 等格式
     """
-    timeframe = timeframe.lower() if timeframe else ""
+    timeframe = timeframe.strip() if timeframe else ""
     now = datetime.now()
 
-    # 立即/马上
+    # 立即/马上/今天
     if any(word in timeframe for word in ["立即", "马上", "即刻", "今天"]):
         return now.strftime("%Y-%m-%d")
 
-    # 1-3天
-    if any(word in timeframe for word in ["1天", "2天", "3天", "三天", "两天", "24小时", "48小时", "72小时"]):
-        return (now + timedelta(days=2)).strftime("%Y-%m-%d")
+    # 显式天数提取: "7天", "14天", "3天内", "5个工作日" 等
+    day_match = re.search(r'(\d+)\s*天', timeframe)
+    if day_match:
+        days = int(day_match.group(1))
+        return (now + timedelta(days=days)).strftime("%Y-%m-%d")
 
-    # 1周内
-    if any(word in timeframe for word in ["1周", "一周", "7天", "周内", "本周"]):
+    # 小时转换: "24小时", "48小时" 等
+    hour_match = re.search(r'(\d+)\s*小时', timeframe)
+    if hour_match:
+        hours = int(hour_match.group(1))
+        days = max(1, hours // 24)
+        return (now + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    # 周提取: "1周", "2周内", "两周" 等
+    week_cn = {"一": 1, "两": 2, "三": 3, "四": 4}
+    for cn, val in week_cn.items():
+        if f"{cn}周" in timeframe:
+            return (now + timedelta(weeks=val)).strftime("%Y-%m-%d")
+    week_match = re.search(r'(\d+)\s*周', timeframe)
+    if week_match:
+        weeks = int(week_match.group(1))
+        return (now + timedelta(weeks=weeks)).strftime("%Y-%m-%d")
+
+    # 半月
+    if "半月" in timeframe:
+        return (now + timedelta(days=15)).strftime("%Y-%m-%d")
+
+    # 月提取: "1月", "一个月", "2个月内" 等
+    month_match = re.search(r'(\d+)\s*个?\s*月', timeframe)
+    if month_match:
+        months = int(month_match.group(1))
+        return (now + timedelta(days=months * 30)).strftime("%Y-%m-%d")
+
+    # 本周/本月
+    if "本周" in timeframe or "周内" in timeframe:
         return (now + timedelta(days=5)).strftime("%Y-%m-%d")
-
-    # 2周内
-    if any(word in timeframe for word in ["2周", "两周", "14天", "半月"]):
-        return (now + timedelta(days=10)).strftime("%Y-%m-%d")
-
-    # 1个月内
-    if any(word in timeframe for word in ["1月", "一个月", "30天", "本月"]):
+    if "本月" in timeframe:
         return (now + timedelta(days=20)).strftime("%Y-%m-%d")
+
+    # 中文数字天数: "三天"=3天, "两天"=2天，模糊描述默认3天
+    if "三天" in timeframe:
+        return (now + timedelta(days=3)).strftime("%Y-%m-%d")
+    if "两天" in timeframe:
+        return (now + timedelta(days=2)).strftime("%Y-%m-%d")
+    if any(word in timeframe for word in ["几天内", "近日"]):
+        return (now + timedelta(days=3)).strftime("%Y-%m-%d")
 
     # 默认3天后
     return (now + timedelta(days=3)).strftime("%Y-%m-%d")

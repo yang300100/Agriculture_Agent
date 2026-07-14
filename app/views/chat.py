@@ -198,11 +198,10 @@ def handle_message_submission(user_input):
             st.session_state.uploaded_image_base64 = None
             st.session_state.uploaded_image_mime = None
 
-        resp = api("/api/chat", "post", req)
-        if resp:
-            answer = resp.get("final_answer", "抱歉，后端服务未响应。")
-        else:
-            answer = "抱歉，后端服务连接失败。请确认 FastAPI 已启动（python app/api_server.py）。"
+        # ── 同步调用（带 spinner 提示）──
+        with st.spinner("正在处理您的问题..."):
+            resp = api("/api/chat", "post", req)
+        answer = resp.get("final_answer", "抱歉，后端服务连接失败。请确认 FastAPI 已启动。") if resp else "抱歉，后端服务未响应。"
 
         with st.chat_message("assistant"):
             st.markdown(answer)

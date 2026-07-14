@@ -198,7 +198,9 @@ def build_agriculture_knowledge_base():
     # 初始化embeddings
     # 使用 DeepSeek Embeddings API
     embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-small"  # DeepSeek 支持的模型
+        model=EMBEDDING_MODEL,
+        api_key=EMBEDDING_API_KEY or None,
+        base_url=EMBEDDING_BASE_URL or None,
     )
 
     # 收集所有文本块
