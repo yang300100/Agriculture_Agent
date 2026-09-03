@@ -4,7 +4,11 @@ Shows field overview map with temperature & precipitation weather layers,
 plus field drawing for adding new fields.
 """
 
+from types import SimpleNamespace
+
 import streamlit as st
+
+from app.api_client import api, invalidate_cache
 
 
 def _map_size():
@@ -12,10 +16,6 @@ def _map_size():
     if st.session_state.get("is_mobile", False):
         return {"width": 1100, "height": 350}
     return {"width": 1100, "height": 600}
-
-import os, streamlit as st
-from app.api_client import api
-
 
 def render_fields_page():
     """Render the full field management page."""
@@ -26,14 +26,13 @@ def render_fields_page():
         st.session_state["_field_save_lock"] = False
 
     try:
-        # 保留 MapManager 用于地图渲染（folium 本地操作）
-        from core.map_manager import MapManager, create_folium_map, extract_polygon_from_map_data
-        map_manager = MapManager(st.session_state.get("username", "default"))
-        fields = map_manager.get_all_fields()
+        # 业务数据统一从后端获取；前端只负责地图与表格展示。
+        field_rows = api("/api/fields", cache_ttl=30) or []
+        fields = [SimpleNamespace(**row) for row in field_rows]
 
         # ---- Existing Fields Overview Map ----
         if fields:
-            _render_field_overview_map(fields, map_manager)
+            _render_field_overview_map(fields)
 
         # ---- Field Cards ----
         if fields:
@@ -55,16 +54,17 @@ def render_fields_page():
                     )
                     if st.button("删除", key=f"field_del_{field.id}"):
                         api(f"/api/fields/{field.id}", "delete")
+                        invalidate_cache("/api/fields", "/api/dashboard")
                         st.rerun()
 
-            total_area = map_manager.get_total_area()
+            total_area = sum(field.area_mu for field in fields)
             st.caption(f"总计: {len(fields)}个地块, 共{total_area:.2f}亩")
         else:
             st.info("暂无地块记录，点击下方按钮添加。")
 
         # ---- Field Comparison ----
         if len(fields) >= 2:
-            _render_field_comparison(fields, map_manager)
+            _render_field_comparison(fields)
 
         # ---- Add New Field Button ----
         if not st.session_state.get("show_add_field", False):
@@ -74,13 +74,13 @@ def render_fields_page():
 
         # ---- Map Drawing Interface ----
         if st.session_state.get("show_add_field", False):
-            _render_drawing_interface(fields, map_manager)
+            _render_drawing_interface(fields)
 
     except Exception as e:
         st.error(f"加载地块失败: {e}")
 
 
-def _render_field_overview_map(fields, map_manager):
+def _render_field_overview_map(fields):
     """Render an overview map with GPS locate, field jump, and weather overlay layers."""
     st.markdown("### 地块总览与天气地图")
 
@@ -110,19 +110,15 @@ def _render_field_overview_map(fields, map_manager):
 
     # ---- Fetch weather for each field center (non-blocking) ----
     field_weather = {}
-    try:
-        from core.weather_service import WeatherService
-        weather_service = WeatherService()
-        with st.spinner("正在获取各地块实时天气..."):
-            for field in fields:
-                if field.center_lon and field.center_lat:
-                    wdata = weather_service.get_grid_weather(
-                        field.center_lon, field.center_lat
-                    )
-                    if wdata:
-                        field_weather[field.id] = wdata
-    except Exception:
-        pass  # 天气获取失败不影响地图显示
+    with st.spinner("正在获取各地块实时天气..."):
+        for field in fields:
+            if field.center_lon and field.center_lat:
+                wdata = api(
+                    f"/api/weather-by-coordinates?lon={field.center_lon}&lat={field.center_lat}",
+                    cache_ttl=1800,
+                )
+                if wdata:
+                    field_weather[field.id] = wdata
 
     # ---- Build the map ----
     try:
@@ -258,7 +254,7 @@ def _render_field_overview_map(fields, map_manager):
         st.warning(f"加载总览地图失败: {e}")
 
 
-def _render_drawing_interface(fields, map_manager):
+def _render_drawing_interface(fields):
     """Render the map drawing interface for adding a new field."""
     st.markdown("### 绘制新地块")
     st.info(
@@ -270,13 +266,12 @@ def _render_drawing_interface(fields, map_manager):
 
     default_lat, default_lon = 39.9, 116.4
     if st.session_state.get("user_region"):
-        try:
-            from core.map_manager import get_location_from_address
-            coords = get_location_from_address(st.session_state["user_region"])
-            if coords:
-                default_lat, default_lon = coords
-        except Exception:
-            pass
+        location = api(
+            f"/api/geocode?address={st.session_state['user_region']}",
+            cache_ttl=86400,
+        ) or {}
+        if location.get("lat") and location.get("lon"):
+            default_lat, default_lon = location["lat"], location["lon"]
 
     existing_shapes = []
     for field in fields:
@@ -288,7 +283,7 @@ def _render_drawing_interface(fields, map_manager):
 
     try:
         from streamlit_folium import st_folium
-        from core.map_manager import create_folium_map, extract_polygon_from_map_data
+        from core.map_manager import MapManager, create_folium_map, extract_polygon_from_map_data
 
         m = create_folium_map(
             center_lat=default_lat,
@@ -310,7 +305,7 @@ def _render_drawing_interface(fields, map_manager):
             if map_data:
                 drawn_coordinates = extract_polygon_from_map_data(map_data)
                 if drawn_coordinates:
-                    area_m2, area_mu = map_manager.calculate_area(drawn_coordinates)
+                    area_m2, area_mu = MapManager.calculate_area(drawn_coordinates)
                     st.success(
                         f"已绘制地块，预估面积: **{area_mu:.2f}亩** "
                         f"({area_m2:.0f}平方米)"
@@ -347,13 +342,20 @@ def _render_drawing_interface(fields, map_manager):
                             st.session_state["_field_save_lock"] = False
                             st.error("请输入地块名称！")
                         else:
-                            new_field = map_manager.create_field(
-                                name=field_name,
-                                coordinates=drawn_coordinates,
-                                soil_type=field_soil,
-                                current_crop=field_crop
+                            result = api("/api/fields", "post", {
+                                "name": field_name,
+                                "coordinates": drawn_coordinates,
+                                "soil_type": field_soil,
+                                "current_crop": field_crop,
+                            })
+                            if not result or not result.get("success"):
+                                raise RuntimeError("后端未能保存地块")
+                            new_field = result.get("field", {})
+                            invalidate_cache("/api/fields", "/api/dashboard")
+                            st.success(
+                                f"地块'{field_name}'保存成功！面积: "
+                                f"{new_field.get('area_mu', area_mu):.2f}亩"
                             )
-                            st.success(f"地块'{field_name}'保存成功！面积: {new_field.area_mu:.2f}亩")
                             st.session_state.show_add_field = False
                             st.rerun()
                     except Exception as e:
@@ -374,11 +376,15 @@ def _render_drawing_interface(fields, map_manager):
             st.rerun()
 
 
-def _render_field_comparison(fields, map_manager):
+def _render_field_comparison(fields):
     """多地块对比 + 种植历史"""
     st.markdown("### 地块对比分析")
 
-    data = map_manager.get_comparison_data()
+    data = [{
+        "id": f.id, "name": f.name, "area_mu": f.area_mu,
+        "soil_type": f.soil_type, "current_crop": f.current_crop,
+        "history_count": len(getattr(f, "history", []) or []),
+    } for f in fields]
 
     col_tab, hist_tab = st.tabs(["地块对比", "种植历史"])
 
@@ -410,7 +416,10 @@ def _render_field_comparison(fields, map_manager):
 
     with hist_tab:
         for field in fields:
-            history = map_manager.get_field_history(field.id)
+            history = sorted(
+                getattr(field, "history", []) or [],
+                key=lambda h: h.get("recorded_at", ""), reverse=True,
+            )
             if history:
                 st.markdown(f"**{field.name}**")
                 for h in history[:5]:
@@ -435,10 +444,17 @@ def _render_field_comparison(fields, map_manager):
                 if hist_crop and target_field:
                     target = next((f for f in fields if f.name == target_field), None)
                     if target:
-                        map_manager.add_planting_history(
-                            target.id, hist_crop, hist_season, hist_yield, hist_note
-                        )
-                        st.success(f"已添加 {target_field} 的 {hist_crop} 种植记录")
-                        st.rerun()
+                        result = api(f"/api/fields/{target.id}/history", "post", {
+                            "crop": hist_crop,
+                            "season": hist_season,
+                            "yield_amount": hist_yield,
+                            "notes": hist_note,
+                        })
+                        if result and result.get("success"):
+                            invalidate_cache("/api/fields", "/api/dashboard")
+                            st.success(f"已添加 {target_field} 的 {hist_crop} 种植记录")
+                            st.rerun()
+                        else:
+                            st.error("保存失败，请检查后端服务")
                 else:
                     st.warning("请填写作物名称")

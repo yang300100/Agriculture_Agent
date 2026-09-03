@@ -7,6 +7,8 @@ import threading
 from datetime import datetime
 from typing import List, Dict, Optional
 
+from core.storage_paths import DEFAULT_DATA_DIR
+
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════
@@ -21,7 +23,7 @@ class InspectionLogger:
 
     def __init__(self, username: str):
         self.username = username
-        self.log_path = os.path.join("data", username, "inspection_log.json")
+        self.log_path = os.path.join(DEFAULT_DATA_DIR, username, "inspection_log.json")
         os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
 
     @classmethod
@@ -100,7 +102,7 @@ def check_reminders_job():
         sched = ReminderScheduler()
         # 从 user_profile 读取手机号
         phone = ""
-        profile_path = os.path.join("data", "user_profile.json")
+        profile_path = os.path.join(DEFAULT_DATA_DIR, "user_profile.json")
         if os.path.exists(profile_path):
             with open(profile_path, encoding="utf-8") as f:
                 profile = json.load(f)
@@ -129,8 +131,8 @@ def check_weather_job():
         # 1. 天气预警
         result = check_weather_alert_for_region(region)
         if result:
-            os.makedirs("data", exist_ok=True)
-            with open(os.path.join("data", "weather_alerts_cache.json"), "w", encoding="utf-8") as f:
+            os.makedirs(DEFAULT_DATA_DIR, exist_ok=True)
+            with open(os.path.join(DEFAULT_DATA_DIR, "weather_alerts_cache.json"), "w", encoding="utf-8") as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
             if result.get("has_alert"):
                 logger.info("天气预警: %s %d条", region, result.get("count", 0))
@@ -152,8 +154,8 @@ def check_weather_job():
             active_crops = list(set(p.crop for p in active if p.status == "进行中"))
             persistence = check_persistence(active_crops)
             if persistence:
-                os.makedirs("data", exist_ok=True)
-                with open(os.path.join("data", "weather_persistence.json"), "w", encoding="utf-8") as f:
+                os.makedirs(DEFAULT_DATA_DIR, exist_ok=True)
+                with open(os.path.join(DEFAULT_DATA_DIR, "weather_persistence.json"), "w", encoding="utf-8") as f:
                     json.dump({"updated": datetime.now().isoformat(), "alerts": persistence},
                               f, ensure_ascii=False, indent=2)
 
@@ -172,7 +174,7 @@ def check_weather_job():
 def _get_profile():
     """读取用户档案中的地区+手机号"""
     import os, json
-    path = os.path.join("data", "user_profile.json")
+    path = os.path.join(DEFAULT_DATA_DIR, "user_profile.json")
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
@@ -211,8 +213,8 @@ def check_disease_job():
 
         risks = assess_all_active_crops(wdata)
         if risks:
-            os.makedirs("data", exist_ok=True)
-            with open(os.path.join("data", "disease_risks.json"), "w", encoding="utf-8") as f:
+            os.makedirs(DEFAULT_DATA_DIR, exist_ok=True)
+            with open(os.path.join(DEFAULT_DATA_DIR, "disease_risks.json"), "w", encoding="utf-8") as f:
                 json.dump({"updated": datetime.now().isoformat(), "risks": risks}, f, ensure_ascii=False)
             logger.info("病害风险: %d条", len(risks))
     except Exception as e:
@@ -226,37 +228,60 @@ def check_device_rules_job():
     total_triggered = 0
     try:
         import os
-        import asyncio as _asyncio
-        from core.device_rule_engine import RuleEngine
-        from devices.registry import DeviceDriverRegistry
-        from devices.simulator_driver import SimulatorDriver
+        from core.device_rule_engine import (
+            RuleDecision, RuleEngine, apply_autonomy,
+        )
         from devices.base import DeviceCommand
         from core.device_executor import DeviceExecutor
         from core.device_registry_factory import setup_registry, close_registry
+        from app.agent.config import get_autonomy_level
 
-        # 遍历所有有规则的用户
-        data_dir = os.path.join("data")
-        usernames = ["default"]
+        # 遍历数据库中真正拥有规则的用户，并兼容旧文件目录。
+        data_dir = DEFAULT_DATA_DIR
+        usernames = {"default"}
+        try:
+            from core.database.engine import get_session
+            from core.database.models import DeviceRule, User
+
+            session = get_session()
+            try:
+                rows = (
+                    session.query(User.username)
+                    .join(DeviceRule, DeviceRule.user_id == User.id)
+                    .distinct()
+                    .all()
+                )
+                usernames.update(row[0] for row in rows if row[0])
+            finally:
+                session.close()
+        except Exception as exc:
+            logger.warning("从数据库发现规则用户失败: %s", exc)
         if os.path.exists(data_dir):
             for d in os.listdir(data_dir):
                 user_path = os.path.join(data_dir, d)
                 if os.path.isdir(user_path) and os.path.exists(os.path.join(user_path, "device_rules.json")):
-                    usernames.append(d)
+                    usernames.add(d)
 
-        for username in set(usernames):
+        for username in usernames:
             engine = RuleEngine(username=username)
 
             # 使用 setup_registry 加载用户设备并读取传感器数据
             registry, loop = setup_registry(username)
             try:
-                loop.run_until_complete(registry.discover_all())
-
-                # 动态发现传感器设备读取环境数据
-                from app.agent.agents.device_agent import _discover_sensor_device
-                sensor_id = _discover_sensor_device(username)
-                sensor_data = {"soil_moisture": 45, "temperature": 22, "humidity": 65}
-                if sensor_id:
-                    sensor_data = loop.run_until_complete(registry.read_state(sensor_id))
+                # 读取所有真实设备状态；短字段名用于兼容现有规则，带设备ID的
+                # 字段用于解决多个分区传感器同名时的歧义。
+                devices = loop.run_until_complete(registry.discover_all())
+                sensor_data = {}
+                for device in devices:
+                    state = loop.run_until_complete(
+                        registry.read_state(device.device_id)
+                    )
+                    if not state or state.get("error"):
+                        continue
+                    for key, value in state.items():
+                        if isinstance(value, (int, float)) and not key.startswith("_"):
+                            sensor_data.setdefault(key, value)
+                            sensor_data[f"{device.device_id}.{key}"] = value
 
                 context = {"sensor_data": sensor_data, "weather": {}}
                 matched = engine.find_matching_rules(context)
@@ -265,21 +290,43 @@ def check_device_rules_job():
                     continue
 
                 executor = DeviceExecutor(registry, username=username)
+                autonomy = get_autonomy_level()
 
                 for rule in matched:
                     action = rule.get("action", {})
                     proposed = action.get("params", {})
                     decision, reason, final_params = engine.evaluate_action(
-                        rule, proposed, {"device_id": action.get("device_id", "")})
+                        rule, proposed, {
+                            "device_id": action.get("device_id", ""),
+                            "sensor_data": sensor_data,
+                        })
+                    decision = apply_autonomy(decision, autonomy)
+                    execution_mode = rule.get("execution_mode", "auto")
 
-                    if decision == "auto_execute":
-                        cmd = DeviceCommand(
-                            command=action.get("command", "start"),
-                            params=final_params,
+                    if execution_mode == "notify":
+                        _log_inspection(
+                            username, "设备规则", "skipped",
+                            f"规则提醒: {rule.get('name', '未命名')} — {reason}",
+                            device_id=action.get("device_id", ""),
+                            action=action.get("command", "start"),
                         )
+                        continue
+                    if (execution_mode == "confirm"
+                            and decision != RuleDecision.REJECTED):
+                        decision = RuleDecision.NEED_CONFIRM
+                        reason = f"规则「{rule.get('name', '未命名')}」设置为执行前确认"
+
+                    cmd = DeviceCommand(
+                        command=action.get("command", "start"),
+                        params=final_params,
+                    )
+                    if decision == RuleDecision.AUTO_EXECUTE:
                         result = executor.execute_sync(
                             action.get("device_id"), cmd,
-                            trigger="rule", rule_id=rule["id"], decision=decision)
+                            trigger="rule", rule_id=rule["id"], decision=decision,
+                            loop=loop, capability=action.get("capability"),
+                            policy_context={"sensor_data": sensor_data},
+                        )
 
                         if result["success"]:
                             engine.record_execution(action.get("device_id"), final_params)
@@ -288,6 +335,15 @@ def check_device_rules_job():
                                             f"规则触发: {rule.get('name', '未命名')}",
                                             device_id=action.get("device_id", ""),
                                             action=action.get("command", "start"))
+                    else:
+                        executor.record_decision(
+                            action.get("device_id", ""), cmd,
+                            decision=decision, reason=reason,
+                            trigger="rule", rule_id=rule.get("id"),
+                            add_pending=decision == RuleDecision.NEED_CONFIRM,
+                            capability=action.get("capability"),
+                            policy_context={"sensor_data": sensor_data},
+                        )
             finally:
                 close_registry(loop, registry)
 
@@ -313,7 +369,7 @@ def check_task_execution_job():
         from core.device_executor import DeviceExecutor
         from core.device_registry_factory import setup_registry, close_registry
 
-        data_dir = os.path.join("data")
+        data_dir = DEFAULT_DATA_DIR
         usernames = ["default"]
         if os.path.exists(data_dir):
             for d in os.listdir(data_dir):
@@ -322,7 +378,7 @@ def check_task_execution_job():
                     usernames.append(d)
 
         for username in set(usernames):
-            sd = os.path.join("data", username)
+            sd = os.path.join(DEFAULT_DATA_DIR, username)
             tracker = PlantingTracker(sd)
             pending_tasks = tracker.get_pending_device_tasks()
 
@@ -407,6 +463,21 @@ def _get_int_env(key: str, default: int) -> int:
 CHECK_CAMERA_INTERVAL_MINUTES = _get_int_env("CAMERA_CHECK_INTERVAL", 30)
 
 
+def _persist_capture_if_needed(raw, image_bytes, username, device_id, timestamp):
+    """复用驱动已经保存的照片，只有远程驱动未落盘时才补写。"""
+    saved_path = raw.get("saved_path")
+    if saved_path and os.path.isfile(saved_path):
+        return os.path.dirname(saved_path), saved_path
+
+    photo_dir = os.path.join(
+        DEFAULT_DATA_DIR, username, "photos", device_id)
+    os.makedirs(photo_dir, exist_ok=True)
+    photo_path = os.path.join(photo_dir, f"capture_{timestamp}.jpg")
+    with open(photo_path, "wb") as file:
+        file.write(image_bytes)
+    return photo_dir, photo_path
+
+
 def check_camera_capture_job():
     """每 N 分钟自动拍照 + Vision 分析 + 自主执行
 
@@ -423,7 +494,7 @@ def check_camera_capture_job():
         import json
         import base64
         from datetime import datetime
-        from core.device_registry_factory import setup_registry, close_registry, DEFAULT_DATA_DIR
+        from core.device_registry_factory import setup_registry, close_registry
         from devices.base import DeviceCommand
 
         data_dir = DEFAULT_DATA_DIR
@@ -488,13 +559,10 @@ def check_camera_capture_job():
                             logger.warning("摄像头未返回图片数据: %s", cam.device_id)
                             continue
 
-                        # 2. 保存照片到磁盘
-                        photo_dir = os.path.join(DEFAULT_DATA_DIR, username, "photos", cam.device_id)
-                        os.makedirs(photo_dir, exist_ok=True)
+                        # 2. 驱动已保存时直接复用；远程驱动未保存时才在此落盘。
                         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        photo_path = os.path.join(photo_dir, f"capture_{ts}.jpg")
-                        with open(photo_path, "wb") as f:
-                            f.write(image_bytes)
+                        photo_dir, photo_path = _persist_capture_if_needed(
+                            raw, image_bytes, username, cam.device_id, ts)
                         total_captures += 1
                         _log_inspection(username, "摄像头巡检", "success",
                                         f"拍照成功 ({len(image_bytes)} bytes)", device_id=cam.device_id)
@@ -662,18 +730,72 @@ def _process_camera_actions(actions: list, username: str, registry, loop, camera
 
 # ── 自主决策巡检（替代原 check_camera_capture_job）──
 
+_autonomous_last_runs: Dict[str, datetime] = {}
+_autonomous_run_lock = threading.Lock()
+
+
+def _claim_autonomous_cycle(username: str, region: str,
+                            min_interval_minutes: int,
+                            now: datetime = None) -> bool:
+    """原子领取巡检周期，并通过数据库租约阻止跨进程重复执行。"""
+    current = now or datetime.now()
+    key = f"{username}:{region}"
+    with _autonomous_run_lock:
+        last_run = _autonomous_last_runs.get(key)
+        if last_run:
+            elapsed = (current - last_run).total_seconds()
+            if elapsed < max(0, min_interval_minutes) * 60:
+                return False
+        try:
+            from core.autonomous_cycle_lease import claim_cycle_lease
+            if not claim_cycle_lease(
+                username, region, min_interval_minutes, current
+            ):
+                return False
+        except Exception:
+            logger.exception("巡检数据库租约领取失败，按安全原则拒绝执行")
+            return False
+        # 数据库租约成功后再写进程缓存，减少同进程数据库访问。
+        _autonomous_last_runs[key] = current
+        return True
+
+
 def _get_active_usernames() -> List[str]:
-    """发现所有活跃用户"""
-    usernames = ["default"]
-    data_dir = os.path.join("data")
+    """从数据库发现拥有设备或地块的活跃用户，并兼容旧文件数据。"""
+    usernames = {"default"}
+
+    # 当前业务数据以 SQLite 为准，不能再只依赖旧 JSON 文件判断活跃用户
+    try:
+        from sqlalchemy import or_
+        from core.database.engine import get_session
+        from core.database.models import User, DeviceConfig, Field
+
+        session = get_session()
+        try:
+            rows = (
+                session.query(User.username)
+                .outerjoin(DeviceConfig, DeviceConfig.user_id == User.id)
+                .outerjoin(Field, Field.user_id == User.id)
+                .filter(or_(DeviceConfig.id.isnot(None), Field.id.isnot(None)))
+                .distinct()
+                .all()
+            )
+            usernames.update(row[0] for row in rows if row[0])
+        finally:
+            session.close()
+    except Exception as e:
+        logger.warning("从数据库发现活跃用户失败，回退旧文件扫描: %s", e)
+
+    # 兼容尚未迁移的旧数据目录
+    data_dir = DEFAULT_DATA_DIR
     if os.path.exists(data_dir):
         for d in os.listdir(data_dir):
             user_path = os.path.join(data_dir, d)
             if os.path.isdir(user_path):
                 if os.path.exists(os.path.join(user_path, "custom_devices.json")) or \
                    os.path.exists(os.path.join(user_path, "planting_progress.json")):
-                    usernames.append(d)
-    return list(set(usernames))
+                    usernames.add(d)
+    return sorted(usernames)
 
 
 def check_autonomous_cycle_job():
@@ -705,7 +827,11 @@ def check_autonomous_cycle_job():
                 pm = PlotManager(username)
                 plots = pm.list_plots()
                 if configured_regions:
-                    plots = [p for p in plots if p["plot_id"] in configured_regions]
+                    configured = set(configured_regions)
+                    plots = [
+                        p for p in plots
+                        if p["plot_id"] in configured or p.get("name") in configured
+                    ]
 
                 if plots:
                     regions = [p["plot_id"] for p in plots]
@@ -737,8 +863,8 @@ def check_autonomous_cycle_job():
 
             for region in regions:
                 # 检查最小间隔
-                last = manager._last_run.get(region)
-                if last and (datetime.now() - last).total_seconds() < AUTO_DECISION_MIN_INTERVAL * 60:
+                if not _claim_autonomous_cycle(
+                        username, region, AUTO_DECISION_MIN_INTERVAL):
                     logger.debug("区域 %s 距上次巡检不足%d分钟，跳过", region, AUTO_DECISION_MIN_INTERVAL)
                     continue
 

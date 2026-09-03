@@ -1,29 +1,14 @@
 """种植方案向导 — 数据走 API"""
 
-import os, requests, json, streamlit as st
-from app.api_client import api, API_BASE
+import streamlit as st
+from app.api_client import api
 
 def render_wizard_page():
     st.markdown("## 🪄 种植方案向导")
     st.caption("三步生成完整种植计划。")
 
     # 获取作物列表
-    crops = {}
-    try:
-        crops = requests.get(f"{API_BASE}/api/encyclopedia", timeout=10).json()
-    except Exception:
-        pass
-    # fallback to local file list
-    if not crops:
-        import json
-        crops_dir = os.path.join("agriculture_knowledge", "crops")
-        crops = {}
-        if os.path.exists(crops_dir):
-            for f in sorted(os.listdir(crops_dir)):
-                if f.endswith(".json"):
-                    with open(os.path.join(crops_dir, f), encoding="utf-8") as fh:
-                        d = json.load(fh)
-                        crops[d["crop_name"]] = d
+    crops = api("/api/encyclopedia", cache_ttl=300) or {}
 
     names = list(crops.keys())
     if not names:

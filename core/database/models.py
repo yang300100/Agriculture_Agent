@@ -1,5 +1,15 @@
 """SQLAlchemy ORM 模型定义 — 13张表"""
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Text, ForeignKey
+from sqlalchemy import (
+    Column,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 
@@ -154,6 +164,7 @@ class DeviceConfig(Base):
     connection = Column(Text)     # JSON
     location = Column(String(200))
     plot_id = Column(Integer)
+    zone_id = Column(String(100))
     initial_state = Column(Text)  # JSON
     created_at = Column(DateTime, default=datetime.now)
 
@@ -169,6 +180,66 @@ class DeviceRule(Base):
     constraints = Column(Text)                    # JSON
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class DeviceSafetyPolicy(Base):
+    """用户可配置的设备安全策略。
+
+    设备物理绝对上限仍由代码维护；本表保存用户在物理上限以内设置的
+    地块、设备或能力级运行边界。
+    """
+    __tablename__ = "device_safety_policies"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name = Column(String(200), nullable=False)
+    enabled = Column(Integer, default=1)
+    scope_type = Column(String(20), default="capability")
+    capability = Column(String(50))
+    device_id = Column(String(100))
+    plot_id = Column(Integer)
+    zone_id = Column(String(100))
+    limits = Column(Text, nullable=False)  # JSON
+    violation_action = Column(String(20), default="reject")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class FieldZone(Base):
+    """地块内可独立观测或控制的作业分区。"""
+    __tablename__ = "field_zones"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    field_id = Column(Integer, ForeignKey("fields.id", ondelete="CASCADE"), nullable=False)
+    zone_id = Column(String(100), nullable=False)
+    name = Column(String(200), nullable=False)
+    zone_type = Column(String(30), default="operation")
+    coordinates = Column(Text, default="[]")
+    notes = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "field_id",
+            "zone_id",
+            name="uq_field_zone_user_field_zone",
+        ),
+    )
+
+
+class AutonomousCycleLease(Base):
+    """跨进程巡检租约，同一用户和区域只有一条记录。"""
+    __tablename__ = "autonomous_cycle_leases"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(50), nullable=False)
+    region = Column(String(200), nullable=False)
+    claimed_at = Column(DateTime, nullable=False)
+    lease_until = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("username", "region", name="uq_cycle_lease_user_region"),
+    )
 
 
 class DeviceActionLog(Base):

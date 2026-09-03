@@ -17,9 +17,11 @@ from enum import Enum
 
 import dotenv
 
+from core.storage_paths import DEFAULT_DATA_DIR
+
 # 加载环境变量
 dotenv.load_dotenv()
-DEFAULT_STORAGE_DIR = os.getenv("DATA_STORAGE_DIR", "data")
+DEFAULT_STORAGE_DIR = DEFAULT_DATA_DIR
 
 
 class TaskStatus(Enum):
@@ -349,50 +351,50 @@ class PlantingTracker:
                 "is_completed": 是否全部完成
             }
         """
-        progresses = self._load_progresses()
+        from core.database.repository.planting import PlantingPlanRepository
 
-        for progress in progresses:
-            if progress["id"] == progress_id:
-                current_stage = progress.get("stage_number", 0)
-                total_stages = progress.get("total_stages", 1)
-                crop = progress.get("crop", "")
+        repo = PlantingPlanRepository()
+        row = repo.get_by_id(int(progress_id)) if str(progress_id).isdigit() else None
+        if not row or row.user_id != self._uid:
+            return {"success": False, "message": "未找到进度记录"}
 
-                if current_stage < total_stages:
-                    # 推进到下一阶段
-                    next_stage = current_stage + 1
-                    progress["stage_number"] = next_stage
-                    progress["progress_percent"] = 0
-                    progress["status"] = "进行中"
-                    progress["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_stage = row.stage_number or 0
+        total_stages = row.total_stages or 1
+        crop = row.crop or ""
 
-                    # 尝试从作物知识库获取阶段名称
-                    stage_name = self._get_stage_name(crop, next_stage, total_stages)
-                    progress["stage"] = stage_name
+        if current_stage < total_stages:
+            next_stage = current_stage + 1
+            stage_name = self._get_stage_name(crop, next_stage, total_stages)
+            repo.update(
+                row.id,
+                stage_number=next_stage,
+                progress_percent=0,
+                status="进行中",
+                stage=stage_name,
+                updated_at=datetime.now(),
+            )
+            return {
+                "success": True,
+                "message": f"已进入下一阶段：{stage_name}",
+                "new_stage": stage_name,
+                "stage_number": next_stage,
+                "is_completed": False,
+            }
 
-                    self._save_progresses(progresses)
-                    return {
-                        "success": True,
-                        "message": f"已进入下一阶段：{stage_name}",
-                        "new_stage": stage_name,
-                        "stage_number": next_stage,
-                        "is_completed": False
-                    }
-                else:
-                    # 所有阶段已完成
-                    progress["status"] = "已完成"
-                    progress["progress_percent"] = 100
-                    progress["actual_end_date"] = datetime.now().strftime("%Y-%m-%d")
-                    progress["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    self._save_progresses(progresses)
-                    return {
-                        "success": True,
-                        "message": "恭喜！所有阶段已完成！",
-                        "new_stage": progress.get("stage", "完成"),
-                        "stage_number": current_stage,
-                        "is_completed": True
-                    }
-
-        return {"success": False, "message": "未找到进度记录"}
+        repo.update(
+            row.id,
+            status="已完成",
+            progress_percent=100,
+            actual_end_date=datetime.now().date(),
+            updated_at=datetime.now(),
+        )
+        return {
+            "success": True,
+            "message": "恭喜！所有阶段已完成！",
+            "new_stage": row.stage or "完成",
+            "stage_number": current_stage,
+            "is_completed": True,
+        }
 
     def _get_stage_name(self, crop: str, stage_number: int, total_stages: int) -> str:
         """根据作物和阶段编号获取阶段名称"""

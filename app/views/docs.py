@@ -76,7 +76,7 @@ def render_docs_page():
         st.markdown("""
 ## 🔌 API 接口文档
 
-后端运行在 `http://localhost:8000`，所有接口返回 JSON。
+后端运行在 `http://localhost:18001`，所有接口返回 JSON。
 
 ### 对话
 
@@ -439,7 +439,7 @@ import cv2
 import base64
 import requests
 
-def capture_and_analyze(camera_url, api_base="http://localhost:8000"):
+def capture_and_analyze(camera_url, api_base="http://localhost:18001"):
     \"\"\"拍照并通过 API 分析\"\"\"
     cap = cv2.VideoCapture(camera_url)
     ret, frame = cap.read()

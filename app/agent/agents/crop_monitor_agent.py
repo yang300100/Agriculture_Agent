@@ -143,20 +143,13 @@ class CropMonitorAgent(BaseAgent):
                        extra_text: str = "") -> Dict:
         """使用本地DL模型分类 + LLM增强生成完整评估"""
         import base64
-        from core.model_registry_factory import get_model_registry
+        from core.model_registry_factory import resolve_inference_model
         from core.model_executor import ModelExecutor
         from models.base import ModelInput
 
         # Step 1: 本地DL模型分类
-        registry = get_model_registry()
+        registry, model_id = resolve_inference_model(DL_DEFAULT_MODEL)
         executor = ModelExecutor(registry)
-
-        model_id = DL_DEFAULT_MODEL
-        if not model_id:
-            models = registry.list_models()
-            if not models:
-                raise Exception("没有可用的DL模型")
-            model_id = models[0].model_id
 
         image_bytes = base64.b64decode(image_base64)
         model_input = ModelInput(image_bytes=image_bytes, top_k=3)

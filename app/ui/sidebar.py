@@ -4,10 +4,61 @@ Extracted from main.py sidebar (lines 2079-2525).
 Excludes: 我的信息, 我的地块, 财务管理 (moved to top-nav pages).
 """
 
-import os, streamlit as st
 from datetime import datetime, timedelta
+
+import streamlit as st
 from app.agent.config import TASK_DEFAULT_DAYS
 from app.api_client import api, invalidate_cache
+
+
+def _list_chat_sessions(limit=20):
+    """通过后端获取会话索引。"""
+    return api(f"/api/chat/sessions?limit={limit}", cache_ttl=30) or []
+
+
+def _invalidate_chat_sessions():
+    invalidate_cache("/api/chat/sessions")
+
+
+def _save_chat_session(session_id, messages):
+    result = api(
+        "/api/chat/sessions", "post",
+        {"session_id": session_id, "messages": messages},
+    )
+    _invalidate_chat_sessions()
+    return result
+
+
+def _render_reminder_notifications(check_interval_minutes=5):
+    """经由后端检查提醒，同时保留原有侧栏展示与五分钟节流。"""
+    now = datetime.now()
+    last_check = st.session_state.get("_reminder_last_check_at")
+    if last_check and (now - last_check).total_seconds() < check_interval_minutes * 60:
+        return
+    st.session_state["_reminder_last_check_at"] = now
+    result = api(
+        "/api/reminders/check", "post",
+        {"phone": st.session_state.get("user_phone", "")},
+    ) or {}
+    fired = result.get("fired", [])
+    upcoming = result.get("upcoming", [])
+    if fired:
+        st.toast("⏰ 农事提醒已到期！", icon="🌾")
+        for reminder in fired:
+            st.warning(
+                f"🌾 **{reminder.get('crop','')}** · {reminder.get('reminder_type','')}\n\n"
+                f"{reminder.get('task_description','')}"
+            )
+            sms = reminder.get("sms_result")
+            if sms:
+                st.caption("📱 短信已发送" if sms.get("success") else f"📱 短信发送失败: {sms.get('error','')}")
+    if upcoming:
+        with st.expander(f"📋 即将到期 ({len(upcoming)})", expanded=False):
+            for reminder in upcoming:
+                st.markdown(
+                    f"- 🌾 **{reminder.get('crop','')}** · {reminder.get('reminder_type','')} · "
+                    f"⏰ {reminder.get('next_trigger','')}\n  {reminder.get('task_description','')}"
+                )
 
 
 def render_common_sidebar():
@@ -29,14 +80,13 @@ def render_common_sidebar():
         # 登出
         if st.button("🚪 退出登录", key="sidebar_logout"):
             st.session_state.pop("username", None)
+            st.session_state.pop("auth_token", None)
             st.session_state.pop("chat_history", None)
             st.session_state.pop("user_profile_submitted", None)
             st.rerun()
 
         # ---- Reminder Notifications (throttled check) ----
-        from core.reminder_scheduler import render_reminder_notifications
-        user_phone = st.session_state.get("user_phone", "")
-        render_reminder_notifications(phone=user_phone)
+        _render_reminder_notifications()
 
         st.markdown("---")
 
@@ -46,11 +96,8 @@ def render_common_sidebar():
         st.markdown("---")
 
         # ---- Session Management ----
-        from datetime import datetime
-        from core.chat_history import ChatHistoryStore
-        store = ChatHistoryStore()
         current_sid = st.session_state.get("session_id", "default")
-        sessions = store.list_sessions(limit=20)
+        sessions = _list_chat_sessions(limit=20)
 
         c1, c2 = st.columns(2)
         with c1:
@@ -58,7 +105,7 @@ def render_common_sidebar():
                 # 保存当前
                 msgs = st.session_state.get("chat_history", [])
                 if msgs:
-                    store.save_session(current_sid, msgs)
+                    _save_chat_session(current_sid, msgs)
                 # 新会话
                 st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
                 st.session_state.chat_history = []
@@ -85,14 +132,16 @@ def render_common_sidebar():
                 if sid != current_sid:
                     msgs = st.session_state.get("chat_history", [])
                     if msgs:
-                        store.save_session(current_sid, msgs)
-                    st.session_state.chat_history = store.load_session(sid) or []
+                        _save_chat_session(current_sid, msgs)
+                    loaded = api(f"/api/chat/sessions/{sid}", cache_ttl=0) or {}
+                    st.session_state.chat_history = loaded.get("messages", [])
                     st.session_state.session_id = sid
                     st.rerun()
 
             # 删除按钮
             if st.button("🗑️ 删除当前对话", type="secondary", key="sidebar_delete_session"):
-                store.delete_session(current_sid)
+                api(f"/api/chat/sessions/{current_sid}", "delete")
+                _invalidate_chat_sessions()
                 st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
                 st.session_state.chat_history = []
                 st.rerun()
@@ -282,7 +331,7 @@ def _render_planting_progress():
     """Planting progress cards with custom progress bars and action buttons."""
     st.header("种植进度")
     try:
-        progress_cards = api("/api/progress", cache_ttl=5) or []
+        progress_cards = api("/api/progress", cache_ttl=30) or []
 
         if progress_cards:
             for card in progress_cards:
@@ -295,6 +344,7 @@ def _render_planting_progress():
                     with title_cols[1]:
                         if st.button("🗑️", key=f"del_prog_{card['id']}", help="删除此进度"):
                             api(f"/api/progress/{card['id']}", "delete")
+                            invalidate_cache("/api/progress", "/api/dashboard")
                             st.rerun()
 
                     _render_progress_bar(card.get('progress', 0), card.get('status', ''))
@@ -306,6 +356,7 @@ def _render_planting_progress():
                                      width='stretch'):
                             result = api(f"/api/progress/{card['id']}/advance", "post")
                             if result and result.get("success"):
+                                invalidate_cache("/api/progress", "/api/dashboard")
                                 st.rerun()
 
                     st.markdown("---")
@@ -332,6 +383,7 @@ def _render_planting_progress():
                                 "status": "进行中",
                             })
                             if r:
+                                invalidate_cache("/api/progress", "/api/dashboard")
                                 st.success(f"已添加 {new_crop}")
                                 st.session_state.show_add_progress = False
                                 st.rerun()
@@ -349,7 +401,7 @@ def _render_task_manager():
     """Farm task cards with custom progress bars, priority, and deadlines."""
     st.header("农事任务")
     try:
-        task_cards = api("/api/tasks", cache_ttl=5) or []
+        task_cards = api("/api/tasks", cache_ttl=30) or []
 
         if task_cards:
             for card in task_cards:
@@ -364,6 +416,7 @@ def _render_task_manager():
                     with title_cols[1]:
                         if st.button("🗑️", key=f"del_task_{card['id']}", help="删除此任务"):
                             api(f"/api/tasks/{card['id']}", "delete")
+                            invalidate_cache("/api/tasks", "/api/dashboard")
                             st.rerun()
 
                     desc = card.get('description', '')[:40] if card.get('description') else ""
@@ -443,6 +496,7 @@ def _render_task_manager():
                                     "end_date": end_date,
                                     "progress_percent": 0
                                 })
+                                invalidate_cache("/api/tasks", "/api/dashboard")
                                 st.success(f"已添加任务: {task_title}")
                                 st.session_state.show_add_task = False
                                 st.rerun()
@@ -477,22 +531,11 @@ def _render_sms_settings():
             if not phone:
                 st.warning("请先输入手机号码")
             else:
-                try:
-                    from core.sms_service import SMSService
-                    sms = SMSService()
-                    if not sms.is_configured:
-                        st.error("短信服务未配置，请在 .env 中设置 SMS_SECRET_ID 等参数")
-                    else:
-                        result = sms.send_reminder(
-                            phone=phone, crop="测试", task_type="测试",
-                            task_desc="这是一条测试短信", time_info="测试时间"
-                        )
-                        if result["success"]:
-                            st.success("测试短信发送成功！")
-                        else:
-                            st.error(f"发送失败: {result.get('error', '未知错误')}")
-                except Exception as e:
-                    st.error(f"短信服务异常: {e}")
+                result = api("/api/sms/test", "post", {"phone": phone}) or {}
+                if result.get("success"):
+                    st.success("测试短信发送成功！")
+                else:
+                    st.error(f"发送失败: {result.get('error', '未知错误')}")
 
 
 def _render_weather_panel():
@@ -540,7 +583,7 @@ def _render_weather_panel():
         elif not current:
             st.caption("点击上方按钮查询天气")
 
-    except Exception as e:
+    except Exception:
         st.info("天气服务暂未配置")
 
 
@@ -573,8 +616,8 @@ def _render_harvest_countdown():
 def _render_mobile_summary():
     """手机端侧边栏摘要：进度 + 任务数量统计"""
     try:
-        progresses = api("/api/progress", cache_ttl=5) or []
-        tasks = api("/api/tasks", cache_ttl=5) or []
+        progresses = api("/api/progress", cache_ttl=30) or []
+        tasks = api("/api/tasks", cache_ttl=30) or []
 
         p_active = len([p for p in progresses if p.get("status") == "进行中"])
         p_done = len([p for p in progresses if p.get("status") == "已完成"])
@@ -594,8 +637,7 @@ def _render_lunar_calendar():
     """农历和节气信息面板"""
     with st.expander("农历节气", expanded=False):
         try:
-            from core.lunar_calendar import get_lunar_today, get_solar_terms_in_range
-            from datetime import date
+            from core.lunar_calendar import get_lunar_today
             info = get_lunar_today()
             if info["lunar_month"]:
                 st.caption(f"农历 {info['lunar_month']}{info['lunar_day']}")

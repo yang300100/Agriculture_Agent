@@ -17,8 +17,10 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 import dotenv
 
+from core.storage_paths import DEFAULT_DATA_DIR
+
 dotenv.load_dotenv()
-DEFAULT_STORAGE_DIR = os.getenv("DATA_STORAGE_DIR", "data")
+DEFAULT_STORAGE_DIR = DEFAULT_DATA_DIR
 
 
 class CostType(Enum):

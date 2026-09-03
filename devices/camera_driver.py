@@ -17,6 +17,8 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
+from core.storage_paths import DEFAULT_DATA_DIR
+
 from .base import (
     BaseDeviceDriver, DeviceCapability, DeviceStatus,
     DeviceInfo, DeviceCommand, DeviceResult,
@@ -63,9 +65,16 @@ class CameraDriver(BaseDeviceDriver):
 
     driver_name = "camera"
 
-    def __init__(self, image_storage_dir: str = None):
+    def __init__(self, image_storage_dir: str = None,
+                 username: str = None):
         if not HAS_OPENCV:
             raise ImportError("opencv-python 未安装。请运行: pip install opencv-python")
+
+        # username 可能为 None（例如工厂调用时未传入或会话缺失）。
+        # 必须回退到默认值，否则下面 os.path.join(DEFAULT_DATA_DIR, None, "photos")
+        # 会抛 TypeError: join() argument must be str, bytes, or os.PathLike object,
+        # not 'NoneType'，导致整个摄像头驱动初始化失败、设备不可用。
+        username = username or "default"
 
         self._connected = False
         self._streaming: Dict[str, bool] = {}       # device_id → 是否正在推流
@@ -73,8 +82,9 @@ class CameraDriver(BaseDeviceDriver):
         self._devices: Dict[str, Dict] = {}          # device_id → {info, state}
         self._last_capture: Dict[str, str] = {}      # device_id → ISO timestamp
 
-        # 照片存储目录
-        self._image_storage_dir = image_storage_dir or os.path.join("data", "photos")
+        # 每个注册中心实例只服务一个用户，照片必须保存在该用户目录下。
+        self._image_storage_dir = image_storage_dir or os.path.join(
+            DEFAULT_DATA_DIR, username, "photos")
         os.makedirs(self._image_storage_dir, exist_ok=True)
 
     # ── 设备注册 ──────────────────────────────
@@ -334,6 +344,7 @@ class CameraDriver(BaseDeviceDriver):
                 message=f"抓拍成功 ({w}x{h}, {len(image_bytes)} bytes)",
                 raw_response={
                     "image_bytes": image_bytes,
+                    "saved_path": saved_path,
                     "metadata": {
                         "width": w, "height": h,
                         "size_bytes": len(image_bytes),
@@ -447,14 +458,13 @@ class CameraDriver(BaseDeviceDriver):
             logger.error("打开摄像头失败 (%s, %s): %s", camera_type, source, e)
             return None
 
-    def _save_image(self, device_id: str, image_bytes: bytes,
-                    username: str = "default") -> str:
+    def _save_image(self, device_id: str, image_bytes: bytes) -> str:
         """保存照片到磁盘
 
         Returns:
             保存的文件路径
         """
-        photo_dir = os.path.join(self._image_storage_dir, username, device_id)
+        photo_dir = os.path.join(self._image_storage_dir, device_id)
         os.makedirs(photo_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         filename = f"capture_{timestamp}.jpg"

@@ -82,8 +82,16 @@ class DeviceDriverRegistry:
                     driver.discover(), timeout=_DEFAULT_DRIVER_TIMEOUT
                 )
                 for d in devices:
+                    if d.device_id in new_map:
+                        logger.error(
+                            "发现重复设备 ID %s：驱动 %s 与 %s 冲突，已保留先注册的设备",
+                            d.device_id,
+                            new_map[d.device_id],
+                            name,
+                        )
+                        continue
                     new_map[d.device_id] = name
-                all_devices.extend(devices)
+                    all_devices.append(d)
                 logger.info("驱动 %s: 发现 %d 个设备", name, len(devices))
             except asyncio.TimeoutError:
                 logger.warning(
@@ -111,7 +119,24 @@ class DeviceDriverRegistry:
             )
 
         try:
-            return await driver.execute(device_id, command)
+            timeout = max(float(command.timeout_ms) / 1000.0, 0.001)
+            return await asyncio.wait_for(
+                driver.execute(device_id, command), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "设备 %s 执行指令 %s 超时（%dms）",
+                device_id,
+                command.command,
+                command.timeout_ms,
+            )
+            return DeviceResult(
+                success=False,
+                device_id=device_id,
+                executed_command=command.command,
+                message=f"设备指令执行超时（{command.timeout_ms}ms）",
+                error_code="TIMEOUT",
+            )
         except Exception as e:
             logger.error("设备 %s 执行失败: %s", device_id, e)
             return DeviceResult(

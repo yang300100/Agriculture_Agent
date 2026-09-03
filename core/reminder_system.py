@@ -18,11 +18,13 @@ from enum import Enum
 
 import dotenv
 
+from core.storage_paths import DEFAULT_DATA_DIR
+
 logger = logging.getLogger(__name__)
 
 # 加载环境变量
 dotenv.load_dotenv()
-DEFAULT_STORAGE_DIR = os.getenv("DATA_STORAGE_DIR", "data")
+DEFAULT_STORAGE_DIR = DEFAULT_DATA_DIR
 
 
 class ReminderType(Enum):
@@ -70,17 +72,31 @@ class Reminder:
     skipped_count: int
 
 
+def _decode_channels(value: Any) -> List[str]:
+    """把数据库中的 JSON 文本安全还原为渠道列表。"""
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        except json.JSONDecodeError:
+            return [value]
+    return []
+
+
 class ReminderStorage:
     """提醒数据存储"""
 
-    def __init__(self, storage_dir: str = None):
+    def __init__(self, storage_dir: str = None, username: str = "default"):
         from core.database.engine import init_db
         init_db()
         from core.database.repository.users import UserRepository
         repo = UserRepository()
-        self._user = repo.get_by_username("default")
+        self._user = repo.get_by_username(username)
         if not self._user:
-            self._user = repo.create(username="default", password_hash="")
+            self._user = repo.create(username=username, password_hash="")
 
     @property
     def _uid(self) -> int:
@@ -96,10 +112,19 @@ class ReminderStorage:
             "task_description": r.task_description, "growth_stage": r.growth_stage,
             "frequency": r.frequency, "interval_days": r.interval_days,
             "time_of_day": r.time_of_day, "advance_hours": r.advance_hours or 0,
-            "channels": r.channels, "status": r.status,
-            "last_triggered": r.last_triggered.isoformat() if r.last_triggered else "",
-            "next_trigger": r.next_trigger.isoformat() if r.next_trigger else "",
-            "created_at": r.created_at.isoformat() if r.created_at else "",
+            "channels": _decode_channels(r.channels), "status": r.status,
+            "last_triggered": (
+                r.last_triggered.strftime("%Y-%m-%d %H:%M")
+                if r.last_triggered else ""
+            ),
+            "next_trigger": (
+                r.next_trigger.strftime("%Y-%m-%d %H:%M")
+                if r.next_trigger else ""
+            ),
+            "created_at": (
+                r.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                if r.created_at else ""
+            ),
         } for r in reminders]
 
     def save_reminders(self, reminders: List[Dict[str, Any]]):
@@ -114,7 +139,11 @@ class ReminderStorage:
         "interval_days": r.get("interval_days"),
         "time_of_day": r.get("time_of_day"),
         "advance_hours": r.get("advance_hours", 0),
-        "channels": r.get("channels", "[]"),
+        "channels": (
+            r.get("channels", "[]")
+            if isinstance(r.get("channels", "[]"), str)
+            else json.dumps(r.get("channels", []), ensure_ascii=False)
+        ),
         "status": r.get("status", "active"),
         "next_trigger": r.get("next_trigger"),
         } for r in reminders]
@@ -145,9 +174,9 @@ class ReminderStorage:
 class ReminderSystem:
     """提醒系统主类"""
 
-    def __init__(self, storage_dir: str = None):
+    def __init__(self, storage_dir: str = None, username: str = "default"):
         storage_dir = storage_dir or DEFAULT_STORAGE_DIR
-        self.storage = ReminderStorage(storage_dir)
+        self.storage = ReminderStorage(storage_dir, username=username)
 
     def create_reminder(self, reminder_data: Dict[str, Any]) -> Reminder:
         """

@@ -47,19 +47,12 @@ def image_analysis_node(state: AgentState) -> AgentState:
 def _call_dl_model(state: AgentState) -> dict:
     """使用本地DL模型进行病虫害分类，然后用LLM增强"""
     import base64
-    from core.model_registry_factory import get_model_registry
+    from core.model_registry_factory import resolve_inference_model
     from core.model_executor import ModelExecutor
     from models.base import ModelInput
 
-    registry = get_model_registry()
+    registry, model_id = resolve_inference_model(DL_DEFAULT_MODEL)
     executor = ModelExecutor(registry)
-
-    model_id = DL_DEFAULT_MODEL
-    if not model_id:
-        models = registry.list_models()
-        if not models:
-            raise Exception("没有可用的DL模型。请将模型权重放入 models/weights/ 目录。")
-        model_id = models[0].model_id
 
     image_bytes = base64.b64decode(state.image_data)
     model_input = ModelInput(image_bytes=image_bytes, top_k=3)

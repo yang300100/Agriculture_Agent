@@ -7,7 +7,7 @@ from .base import (
 from .registry import DeviceDriverRegistry
 from .simulator_driver import SimulatorDriver
 
-# 可选依赖：MQTT / HTTP / Modbus 驱动
+# 可选依赖：MQTT / HTTP / Modbus / CoAP / OPC UA 驱动
 try:
     from .mqtt_driver import MQTTDriver
     _has_mqtt = True
@@ -30,6 +30,20 @@ except ImportError:
     _has_modbus = False
 
 try:
+    from .coap_driver import CoAPDriver
+    _has_coap = True
+except ImportError:
+    CoAPDriver = None
+    _has_coap = False
+
+try:
+    from .opcua_driver import OPCUADriver
+    _has_opcua = True
+except ImportError:
+    OPCUADriver = None
+    _has_opcua = False
+
+try:
     from .camera_driver import CameraDriver
     _has_camera = True
 except ImportError:
@@ -49,5 +63,7 @@ __all__ = [
     "MQTTDriver",
     "HTTPDriver",
     "ModbusDriver",
+    "CoAPDriver",
+    "OPCUADriver",
     "CameraDriver",
 ]

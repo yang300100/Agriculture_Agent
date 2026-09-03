@@ -44,23 +44,19 @@ class ModelExecutor:
     def infer_sync(self, model_id: str, model_input: ModelInput) -> ModelOutput:
         """同步推理桥接 — 自动处理运行中的事件循环（如 Streamlit 环境）"""
         try:
-            loop = asyncio.get_event_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(self.infer(model_id, model_input))
-            finally:
-                loop.close()
+            # 只关心当前线程是否真的有运行中的循环。get_event_loop() 可能返回
+            # 一个已关闭但仍被设置为当前循环的对象，继续复用会直接触发
+            # "Event loop is closed"。asyncio.run() 会为本次推理创建并清理新循环。
+            return asyncio.run(self.infer(model_id, model_input))
 
-        # 检查事件循环是否正在运行（如 Streamlit 的 asyncio 上下文中）
-        if loop.is_running():
-            # 在独立线程中创建新事件循环来执行异步推理
-            import concurrent.futures
-            def _run_in_new_loop():
-                return asyncio.run(self.infer(model_id, model_input))
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_run_in_new_loop)
-                return future.result(timeout=self.timeout_ms / 1000)
-        else:
-            return loop.run_until_complete(self.infer(model_id, model_input))
+        # 当前线程已有运行中的循环，不能嵌套 asyncio.run；改在独立线程执行。
+        import concurrent.futures
+
+        def _run_in_new_loop():
+            return asyncio.run(self.infer(model_id, model_input))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run_in_new_loop)
+            return future.result(timeout=self.timeout_ms / 1000)

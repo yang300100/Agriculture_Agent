@@ -1,6 +1,6 @@
 """仪表盘概览页 — 纯展示，数据从 API 获取"""
 
-import os, json, streamlit as st
+import streamlit as st
 from app.api_client import api
 
 
@@ -39,24 +39,17 @@ def render_dashboard_page():
             st.caption(f"- {a.get('type','')}（{a.get('level','')}）")
 
     # 持续异常天气
-    import json
-    persist_path = os.path.join("data", "weather_persistence.json")
-    if os.path.exists(persist_path):
-        with open(persist_path, encoding="utf-8") as f:
-            pdata = json.load(f)
-            for a in pdata.get("alerts", [])[:2]:
-                st.warning(f"🌧 **{a['type']}** 已持续 {a['days']} 天（{a.get('period','')}）\n\n{a.get('advice','')[:200]}")
+    pdata = data.get("weather_persistence", {})
+    for a in pdata.get("alerts", [])[:2]:
+        st.warning(f"🌧 **{a['type']}** 已持续 {a['days']} 天（{a.get('period','')}）\n\n{a.get('advice','')[:200]}")
 
     # 病害风险
-    risk_path = os.path.join("data", "disease_risks.json")
-    if os.path.exists(risk_path):
-        with open(risk_path, encoding="utf-8") as f:
-            risks = json.load(f).get("risks", [])
-        if risks:
-            st.markdown("---")
-            st.warning("🦠 病虫害风险提示")
-            for r in risks[:5]:
-                st.caption(f"- {r['crop']}：{r['disease']} — {r.get('advice','')}")
+    risks = data.get("disease_risks", [])
+    if risks:
+        st.markdown("---")
+        st.warning("🦠 病虫害风险提示")
+        for r in risks[:5]:
+            st.caption(f"- {r['crop']}：{r['disease']} — {r.get('advice','')}")
 
 
 def _render_progress(progresses):

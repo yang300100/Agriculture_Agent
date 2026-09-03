@@ -4,9 +4,10 @@ import os, json, logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
+from core.storage_paths import DEFAULT_DATA_DIR
+
 logger = logging.getLogger(__name__)
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HISTORY_FILE = os.path.join(_PROJECT_ROOT, "data", "weather_history.json")
+HISTORY_FILE = os.path.join(DEFAULT_DATA_DIR, "weather_history.json")
 
 # 持续异常阈值
 PERSISTENCE_RULES = {

@@ -14,6 +14,14 @@ __pycache__/
 dist/
 build/
 
+# 大体积模型权重只保存在本机，不提交到 Git。
+*.pth
+*.pt
+*.onnx
+/experiments/
+/train_data/
+/data/backups/
+
 # 运行时数据（本地存储）
 data/
 !data/.gitkeep
@@ -23,7 +31,8 @@ agriculture_faiss_index/
 # 文档（排除所有 .md，只保留 README 和 docs/）
 *.md
 !README.md
-/docs/
+/docs/*
+!/docs/hardware_protocols.md
 
 # 项目特定
 CLAUDE.md
@@ -33,3 +42,32 @@ lanqiao.py
 # 系统文件
 .DS_Store
 Thumbs.db
+/.context/
+
+# ── 敏感资料（商业机密/知识产权，勿提交）──────────────────────────
+/专利申请资料/
+/商业计划书/
+/商业计划书_高端/
+/资料ppt/
+/技术报告.docx
+/智能种植规划助手_技术答辩.pptx
+/t.pptx
+/病害.png
+
+# ── 生成产物 / 临时文件 ──────────────────────────────────────────
+/output/
+/tmp/
+/.codex_tmp/
+/hmpd_mermaid_out/
+/_template_preview.png
+/hmpd_dataflow.png
+
+# ── 前端项目（Next.js，只提交源码，排除依赖与构建产物）──────────────
+/frontend_next/node_modules/
+/frontend_next/.wrangler/
+/frontend_next/.vinext/
+/frontend_next/.openai/
+/frontend_next/.git.backup/
+/frontend_next/tsconfig.tsbuildinfo
+/frontend_next/dist/
+/frontend_next/build/

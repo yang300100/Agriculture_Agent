@@ -1,12 +1,14 @@
 """智能种植助手 — Streamlit 纯展示前端"""
 
-import os, sys, logging, json
+import logging
+import os
+import sys
 from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import streamlit as st
 
-from app.api_client import api, invalidate_cache
+from app.api_client import api
 from app.ui import apply_theme, render_nav_bar, render_common_sidebar
 from app.views.chat import (
     render_onboarding_form, render_chat_history, render_image_upload_expander,
@@ -23,6 +25,7 @@ from app.views.calculator import render_calculator_page
 from app.views.wizard import render_wizard_page
 from app.views.devices import render_devices_page
 from app.views.rules import render_rules_page
+from app.views.safety import render_safety_page
 from app.views.docs import render_docs_page
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -55,30 +58,18 @@ def _render_proactive_alerts():
         return
     st.session_state[key] = True
 
-    import json
+    data = api("/api/alerts/proactive", cache_ttl=300) or {}
     alerts = []
-    # 天气预警
-    wpath = os.path.join("data", "weather_alerts_cache.json")
-    if os.path.exists(wpath):
-        try:
-            with open(wpath, encoding="utf-8") as f:
-                w = json.load(f)
-            if w.get("has_alert"):
-                for a in w.get("alerts", []):
-                    alerts.append(f"⚠️ {a.get('type','')}（{a.get('level','')}）: {a.get('desc','')}")
-        except Exception:
-            pass
-    # 病虫害风险
-    dpath = os.path.join("data", "disease_risks.json")
-    if os.path.exists(dpath):
-        try:
-            with open(dpath, encoding="utf-8") as f:
-                d = json.load(f)
-            for r in d.get("risks", [])[:3]:
-                if r.get("risk") in ("高", "中"):
-                    alerts.append(f"🦠 {r['crop']} {r['disease']} 风险{r['risk']}（{r.get('advice','')[:40]}）")
-        except Exception:
-            pass
+    for item in data.get("alerts", []):
+        if item.get("kind") == "weather":
+            alerts.append(
+                f"⚠️ {item.get('type','')}（{item.get('level','')}）: {item.get('desc','')}"
+            )
+        else:
+            alerts.append(
+                f"🦠 {item.get('crop','')} {item.get('disease','')} "
+                f"风险{item.get('risk','')}（{item.get('advice','')[:40]}）"
+            )
     if alerts:
         with st.container():
             st.warning("**⚠️ 主动预警**")
@@ -119,31 +110,6 @@ def _restore_session_context():
         pass
 
 
-def _load_users():
-    """从DB加载用户"""
-    from core.database.repository.users import UserRepository
-    repo = UserRepository()
-    all_users = repo.get_all()
-    return {u.username: u.password_hash for u in all_users}
-
-def _save_users(users):
-    """写入用户到DB"""
-    from core.database.engine import init_db
-    from core.database.repository.users import UserRepository
-    init_db()
-    repo = UserRepository()
-    for username, password in users.items():
-        existing = repo.get_by_username(username)
-        if not existing:
-            pwd = password if isinstance(password, str) else password.get("password", "")
-            repo.create(username=username, password_hash=pwd)
-
-def _ensure_user_data_dir(username):
-    os.makedirs(os.path.join("data", username), exist_ok=True)
-
-def _user_data_dir():
-    return os.path.join("data", st.session_state.get("username", "default"))
-
 def _render_auth():
     if "username" in st.session_state:
         return True
@@ -153,10 +119,10 @@ def _render_auth():
         user = st.text_input("用户名", key="login_user")
         pwd = st.text_input("密码", type="password", key="login_pwd")
         if st.button("登录", width='stretch'):
-            users = _load_users()
-            if user in users and users[user] == pwd:
+            result = api("/api/auth/login", "post", {"username": user, "password": pwd})
+            if result and result.get("success"):
                 st.session_state.username = user
-                _ensure_user_data_dir(user)
+                st.session_state.auth_token = result.get("token", "")
                 st.rerun()
             else:
                 st.error("用户名或密码错误")
@@ -170,16 +136,17 @@ def _render_auth():
             elif new_pwd != new_pwd2:
                 st.error("两次密码不一致")
             else:
-                users = _load_users()
-                if new_user in users:
-                    st.error("用户名已存在")
-                else:
-                    users[new_user] = new_pwd
-                    _save_users(users)
-                    _ensure_user_data_dir(new_user)
+                result = api(
+                    "/api/auth/register", "post",
+                    {"username": new_user, "password": new_pwd},
+                )
+                if result and result.get("success"):
                     st.session_state.username = new_user
+                    st.session_state.auth_token = result.get("token", "")
                     st.success("注册成功！")
                     st.rerun()
+                else:
+                    st.error("用户名已存在或后端暂不可用")
     st.stop()
     return False
 
@@ -252,6 +219,9 @@ def main():
     elif current_page == "rules":
         st.divider()
         render_rules_page()
+    elif current_page == "safety":
+        st.divider()
+        render_safety_page()
     elif current_page == "docs":
         st.divider()
         render_docs_page()

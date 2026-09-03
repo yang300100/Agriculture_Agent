@@ -1,7 +1,5 @@
 """Chat page — 对话页面（仅 UI，后端通过 API 调用）+ 多会话管理"""
 
-import os, json
-from datetime import datetime
 import streamlit as st
 from app.api_client import api
 
@@ -22,19 +20,12 @@ def _render_device_message(content: str) -> bool:
     return False
 
 
-def _load_profile_from_disk():
-    """从磁盘加载用户档案（兼容旧数据）"""
-    path = os.path.join("data", "user_profile.json")
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return None
+def _load_profile():
+    """通过后端加载当前用户档案。"""
+    return api("/api/profile") or None
 
 
-def _save_profile_to_disk():
+def _save_profile():
     profile = {
         "user_region": st.session_state.get("user_region", ""),
         "user_soil_type": st.session_state.get("user_soil_type", ""),
@@ -43,11 +34,7 @@ def _save_profile_to_disk():
         "user_goals": st.session_state.get("user_goals", []),
         "user_phone": st.session_state.get("user_phone", ""),
     }
-    os.makedirs("data", exist_ok=True)
-    with open(os.path.join("data", "user_profile.json"), "w", encoding="utf-8") as f:
-        json.dump(profile, f, ensure_ascii=False, indent=2)
-    # 同时通过 API 保存
-    api("/api/profile", "post", profile)
+    return api("/api/profile", "post", profile)
 
 
 def render_onboarding_form():
@@ -57,7 +44,7 @@ def render_onboarding_form():
         st.session_state.user_profile_submitted = False
 
     if not st.session_state.user_profile_submitted:
-        saved = _load_profile_from_disk()
+        saved = _load_profile()
         if saved:
             st.session_state.user_region = saved.get("user_region", "")
             st.session_state.user_soil_type = saved.get("user_soil_type", "")
@@ -94,7 +81,9 @@ def render_onboarding_form():
                     st.session_state.user_goals = goals if goals else []
                     st.session_state.user_phone = phone
                     st.session_state.user_profile_submitted = True
-                    _save_profile_to_disk()
+                    result = _save_profile()
+                    if not result or not result.get("success"):
+                        raise RuntimeError("后端未能保存用户档案")
                     st.success("信息已保存！")
                     st.rerun()
                 except Exception:

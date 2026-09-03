@@ -1,7 +1,7 @@
 """通用 Repository 基类"""
 import datetime
 from typing import Optional, List, TypeVar, Generic, Type
-from sqlalchemy import Date
+from sqlalchemy import Date, DateTime
 from sqlalchemy.orm import Session
 from core.database.engine import get_session
 
@@ -17,7 +17,11 @@ class BaseRepository(Generic[T]):
         # 预热 Date 列名缓存
         self._date_columns = {
             c.name for c in self.model.__table__.columns
-            if isinstance(c.type, Date)
+            if isinstance(c.type, Date) and not isinstance(c.type, DateTime)
+        }
+        self._datetime_columns = {
+            c.name for c in self.model.__table__.columns
+            if isinstance(c.type, DateTime)
         }
 
     @property
@@ -27,7 +31,26 @@ class BaseRepository(Generic[T]):
         return self._session
 
     def _coerce_dates(self, kwargs: dict) -> dict:
-        """将字符串日期转为 Python date 对象，空串/非法值转为 None"""
+        """将字符串日期时间转换为 SQLAlchemy 可接受的 Python 对象。"""
+        for key in self._datetime_columns:
+            val = kwargs.get(key)
+            if isinstance(val, datetime.datetime):
+                continue
+            if isinstance(val, datetime.date):
+                kwargs[key] = datetime.datetime.combine(val, datetime.time())
+            elif isinstance(val, str):
+                text = val.strip()
+                if not text:
+                    kwargs[key] = None
+                else:
+                    try:
+                        kwargs[key] = datetime.datetime.fromisoformat(
+                            text.replace("Z", "+00:00")
+                        )
+                    except (ValueError, TypeError):
+                        kwargs[key] = None
+            elif val is not None:
+                kwargs[key] = None
         for key in self._date_columns:
             val = kwargs.get(key)
             if isinstance(val, str):

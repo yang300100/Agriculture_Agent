@@ -17,10 +17,12 @@ if not LLM_API_KEY:
     raise EnvironmentError("未检测到 LLM_API_KEY 环境变量！")
 
 # 深度学习模型配置（本地推理，替代Vision API）
-DL_BACKEND = os.getenv("DL_BACKEND", "onnx")
-DL_MODELS_DIR = os.getenv("DL_MODELS_DIR", "models/weights")
-DL_DEVICE = os.getenv("DL_DEVICE", "cpu")
-DL_DEFAULT_MODEL = os.getenv("DL_DEFAULT_MODEL", "")
+DL_BACKEND = os.getenv("DL_BACKEND", "onnx") or "onnx"                      # 推理后端: "onnx" | "torch"
+DL_MODELS_DIR = os.getenv("DL_MODELS_DIR", "models/weights") or "models/weights"  # 模型权重目录
+DL_DEVICE = os.getenv("DL_DEVICE", "cpu") or "cpu"                          # 推理设备: "cpu" | "cuda"
+# 默认模型ID: hmpd_net = HMPD-Net 多任务病虫害识别模型
+_DL_DEFAULT_ENV = os.getenv("DL_DEFAULT_MODEL", "")
+DL_DEFAULT_MODEL = _DL_DEFAULT_ENV if _DL_DEFAULT_ENV else "hmpd_net"
 
 # 向后兼容的 VISION_* 别名（指向 LLM 配置）
 VISION_MODEL = LLM_MODEL
@@ -42,9 +44,15 @@ _ENABLE_IMG_ENV = os.getenv("ENABLE_IMAGE_ANALYSIS", "").lower()
 if _ENABLE_IMG_ENV in ("true", "false"):
     ENABLE_IMAGE_ANALYSIS = _ENABLE_IMG_ENV == "true"
 else:
-    ENABLE_IMAGE_ANALYSIS = bool(os.getenv("DL_DEFAULT_MODEL", "")) or os.path.exists(
-        os.path.join(os.getenv("DL_MODELS_DIR", "models/weights"), "plant_village_wheat.onnx")
+    # 自动检测: 检查 HMPD-Net、plant_village_38 或 legacy 模型。
+    _has_model = (
+        os.path.exists(os.path.join(DL_MODELS_DIR, "hmpd_net.pth")) or
+        os.path.exists(os.path.join(DL_MODELS_DIR, "plant_village_38.onnx")) or
+        os.path.exists(os.path.join(DL_MODELS_DIR, "plant_village_38.pth")) or
+        os.path.exists(os.path.join(DL_MODELS_DIR, "plant_village_wheat.onnx")) or
+        os.path.exists(os.path.join(DL_MODELS_DIR, "plant_village_tomato.onnx"))
     )
+    ENABLE_IMAGE_ANALYSIS = _has_model
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
 # Agent 自主权级别: low(全部确认) / medium(规则边界内自动) / high(完全自主跳过确认)

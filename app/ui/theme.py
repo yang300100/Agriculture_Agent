@@ -4,7 +4,6 @@ Implements the cream-canvas + coral-primary + dark-navy design language from des
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 # =========================
 # Design Tokens
@@ -71,7 +70,8 @@ NAV_ITEMS = [
     {"id": "calculator", "label": "农资计算", "icon": "🧮"},
     {"id": "wizard", "label": "种植向导", "icon": "🪄"},
     {"id": "devices", "label": "设备仪表盘", "icon": "🤖"},
-    {"id": "rules", "label": "规则管理", "icon": "📋"},
+    {"id": "rules", "label": "自动化规则", "icon": "📋"},
+    {"id": "safety", "label": "安全策略", "icon": "🛡️"},
 ]
 
 
@@ -409,7 +409,6 @@ def render_nav_bar():
             new_id = current_id
         if new_id != current_id:
             st.session_state.current_page = new_id
-            st.rerun()
         return
 
     # ── 桌面端：右侧可折叠导航（纯 st.radio + CSS，不依赖 JS）──
@@ -611,4 +610,3 @@ div[role="radiogroup"]:has(> label:nth-child(10)):hover::after,
         new_id = current_id
     if new_id != current_id:
         st.session_state.current_page = new_id
-        st.rerun()

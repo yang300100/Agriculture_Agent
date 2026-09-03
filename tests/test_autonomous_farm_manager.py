@@ -1,5 +1,6 @@
 """自主决策编排器 单元测试"""
 import os, sys, json, pytest
+from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from core.autonomous_farm_manager import (
@@ -148,6 +149,18 @@ class TestDecisionEngine:
         assert "28.5" in prompt
         assert "soil_moisture" in prompt
 
+    def test_build_prompt_contains_exact_actionable_device_id(self, sample_state):
+        sample_state.available_devices = [{
+            "device_id": "irrigation_pump_01",
+            "name": "温室灌溉泵",
+            "capabilities": ["irrigate"],
+            "status": "online",
+            "location": "大棚A",
+        }]
+        prompt = AutonomousFarmManager().build_decision_prompt(sample_state)
+        assert "device_id=irrigation_pump_01" in prompt
+        assert "不得编造 device_id" in prompt
+
     def test_parse_valid_json(self):
         mgr = AutonomousFarmManager()
         content = '```json\n{"region":"大棚A","overall_assessment":"测试","actions":[],"follow_up":""}\n```'
@@ -218,6 +231,74 @@ class TestDecisionEngine:
         plan = mgr.validate_plan(plan, available_capabilities={"irrigate"})
         assert len(plan.actions) == 1
 
+    def test_validate_plan_rejects_unknown_device(self):
+        mgr = AutonomousFarmManager()
+        plan = DecisionPlan(region="大棚A", actions=[{
+            "action": "irrigate", "device_id": "fake_pump",
+            "params": {"duration": 10}, "reason": "测试",
+        }])
+        devices = [{
+            "device_id": "real_pump", "capabilities": ["irrigate"],
+            "status": "online",
+        }]
+        validated = mgr.validate_plan(plan, available_devices=devices)
+        assert validated.actions == []
+
+    def test_validate_plan_rejects_capability_mismatch(self):
+        mgr = AutonomousFarmManager()
+        plan = DecisionPlan(region="大棚A", actions=[{
+            "action": "fertigate", "device_id": "pump1",
+            "params": {"amount_kg": 2}, "reason": "测试",
+        }])
+        devices = [{
+            "device_id": "pump1", "capabilities": ["irrigate"],
+            "status": "online",
+        }]
+        validated = mgr.validate_plan(plan, available_devices=devices)
+        assert validated.actions == []
+
+    def test_validate_plan_accepts_matching_online_device(self):
+        mgr = AutonomousFarmManager()
+        plan = DecisionPlan(region="大棚A", actions=[{
+            "action": "irrigate", "device_id": "pump1",
+            "params": {"duration": 10}, "reason": "土壤偏干",
+        }])
+        devices = [{
+            "device_id": "pump1", "capabilities": ["irrigate"],
+            "status": "online",
+        }]
+        validated = mgr.validate_plan(plan, available_devices=devices)
+        assert len(validated.actions) == 1
+
+    def test_select_region_devices_accepts_plot_name_alias(self, monkeypatch):
+        from core import device_registry_factory
+        from core import plot_manager
+
+        class MockDevice:
+            device_id = "sensor_01"
+            location = "温室入口"
+
+        monkeypatch.setattr(
+            device_registry_factory,
+            "load_custom_devices",
+            lambda username: [{
+                "device_id": "sensor_01",
+                "plot_id": "hebei",
+                "location": "温室入口",
+            }],
+        )
+        monkeypatch.setattr(
+            plot_manager.PlotManager,
+            "get_plot",
+            lambda self, plot_id: {
+                "plot_id": "1", "name": "hebei",
+            } if plot_id == "1" else None,
+        )
+
+        selected = AutonomousFarmManager()._select_region_devices(
+            [MockDevice()], "123", "1")
+        assert len(selected) == 1
+
 
 class TestExecutionAndCycle:
     """执行和编排测试"""
@@ -229,11 +310,77 @@ class TestExecutionAndCycle:
         assert report is not None
         assert report.cycle_id != ""
         assert report.summary != ""
+        report_path = (
+            Path(os.environ["DATA_STORAGE_DIR"])
+            / "nonexistent_user" / "autonomous_reports"
+            / f"{report.cycle_id}.json"
+        )
+        assert report_path.is_file()
 
     def test_cycle_report_has_duration(self):
         mgr = AutonomousFarmManager()
         report = mgr.run_cycle("test_user", "test_region")
         assert report.duration_ms > 0
+        report_path = (
+            Path(os.environ["DATA_STORAGE_DIR"])
+            / "test_user" / "autonomous_reports"
+            / f"{report.cycle_id}.json"
+        )
+        assert report_path.is_file()
+
+    def test_weather_only_state_still_runs_decision(self, monkeypatch):
+        mgr = AutonomousFarmManager()
+        state = FarmState(
+            region="大棚A", username="test",
+            current_weather={"temperature": 30, "weather_desc": "晴"},
+        )
+        monkeypatch.setattr(
+            mgr, "collect_farm_state",
+            lambda *args, **kwargs: state,
+        )
+        monkeypatch.setattr(
+            mgr, "request_decision",
+            lambda prompt: DecisionPlan(
+                region="大棚A", overall_assessment="天气偏热", actions=[]),
+        )
+        monkeypatch.setattr(mgr, "_save_report", lambda report: None)
+
+        report = mgr.run_cycle("test", "大棚A")
+        assert report.decision_plan is not None
+        assert "天气偏热" in report.summary
+
+    def test_cycle_uses_configured_max_actions(self, monkeypatch):
+        from app.agent import config
+
+        mgr = AutonomousFarmManager()
+        state = FarmState(
+            region="大棚A", username="test",
+            current_weather={"temperature": 30, "weather_desc": "晴"},
+        )
+        plan = DecisionPlan(region="大棚A", actions=[
+            {"action": "alert", "reason": "提醒1"},
+            {"action": "alert", "reason": "提醒2"},
+        ])
+        captured = {}
+        monkeypatch.setattr(config, "AUTO_DECISION_MAX_ACTIONS", 1)
+        monkeypatch.setattr(
+            mgr, "collect_farm_state",
+            lambda *args, **kwargs: state,
+        )
+        monkeypatch.setattr(mgr, "request_decision", lambda prompt: plan)
+
+        def _capture_plan(checked_plan, username):
+            captured["actions"] = checked_plan.actions
+            return []
+
+        monkeypatch.setattr(
+            mgr, "execute_plan",
+            _capture_plan,
+        )
+        monkeypatch.setattr(mgr, "_save_report", lambda report: None)
+
+        mgr.run_cycle("test", "大棚A")
+        assert len(captured["actions"]) == 1
 
     def test_fallback_rule_engine_empty_state(self):
         mgr = AutonomousFarmManager()
@@ -241,6 +388,52 @@ class TestExecutionAndCycle:
         plan = mgr._fallback_rule_engine(state, "test")
         # 空状态可能匹配不到规则，返回 None 或空 actions
         assert plan is None or plan.actions == []
+
+    def test_fallback_rule_uses_short_sensor_name_and_capability(
+            self, monkeypatch):
+        from core import device_rule_engine
+
+        captured = {}
+
+        class FakeRuleEngine:
+            def __init__(self, username):
+                pass
+
+            def find_matching_rules(self, context):
+                captured["sensor_data"] = context["sensor_data"]
+                return [{
+                    "id": "dry_soil",
+                    "name": "土壤过干灌溉",
+                    "action": {
+                        "device_id": "irrigation_pump_01",
+                        "command": "start",
+                        "params": {"duration": 20},
+                    },
+                }]
+
+            def evaluate_action(self, rule, params, context):
+                return (
+                    device_rule_engine.RuleDecision.AUTO_EXECUTE,
+                    "规则通过",
+                    params,
+                )
+
+            def _infer_capability(self, action):
+                return "irrigate"
+
+        monkeypatch.setattr(device_rule_engine, "RuleEngine", FakeRuleEngine)
+        state = FarmState(
+            region="大棚A", username="test",
+            sensor_readings={"sensor_01.soil_moisture": 22.0},
+        )
+
+        mgr = AutonomousFarmManager()
+        monkeypatch.setattr(mgr, "_check_night_constraint",
+                            lambda *args, **kwargs: None)
+        plan = mgr._fallback_rule_engine(state, "test")
+        assert captured["sensor_data"]["soil_moisture"] == 22.0
+        assert plan.actions[0]["action"] == "irrigate"
+        assert plan.actions[0]["device_id"] == "irrigation_pump_01"
 
     def test_summarize_successful_report(self):
         mgr = AutonomousFarmManager()

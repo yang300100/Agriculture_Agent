@@ -2,9 +2,12 @@
 
 支持 ONNX Runtime 和 PyTorch 两种推理后端。
 通过 ModelRegistry 注册中心统一管理模型的发现、加载和推理。
+
+默认模型预设: hmpd_net (HMPD-Net, 47类联合分类 + 多任务输出)
 """
 from models.base import BaseModelBackend, ModelInfo, ModelInput, ModelOutput, Prediction, ModelCapability
 from models.registry import ModelRegistry
+from models.presets import PRESETS, PLANT_VILLAGE_38_CLASSES
 
 _ONNX_AVAILABLE = False
 _TORCH_AVAILABLE = False
@@ -12,7 +15,7 @@ _TORCH_AVAILABLE = False
 try:
     import onnxruntime  # noqa: F401
     _ONNX_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     pass
 
 try:

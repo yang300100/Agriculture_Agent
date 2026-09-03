@@ -9,10 +9,9 @@ import logging
 import os
 from typing import Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+from core.storage_paths import DEFAULT_DATA_DIR
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_DATA_DIR = os.path.join(_PROJECT_ROOT, "data")
+logger = logging.getLogger(__name__)
 
 # 内置中国城市坐标（用于设备 location 字面量匹配 → 自动创建地块）
 CITY_COORDS = {

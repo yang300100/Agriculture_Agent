@@ -15,7 +15,7 @@ import asyncio
 import functools
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List
 
 import requests
 
@@ -76,6 +76,7 @@ class HTTPDriver(BaseDeviceDriver):
                 "api_key": api_key,
             },
             "state": {"power": False, "status": "powered_off"},
+            "reachable": False,
         }
         logger.info("HTTP 设备已注册: %s → %s", device_id, base_url)
 
@@ -96,6 +97,7 @@ class HTTPDriver(BaseDeviceDriver):
                                                  params={"device_id": dev_id})
                 if resp.status_code == 200:
                     online_count += 1
+                    dev["reachable"] = True
                     resp_data = resp.json()
                     if isinstance(resp_data, dict):
                         # 如果是多设备服务器的 summary 格式({devices:...})，忽略
@@ -104,10 +106,13 @@ class HTTPDriver(BaseDeviceDriver):
                     else:
                         logger.debug("HTTP 设备 %s 返回非字典类型 state: %s", dev_id, type(resp_data).__name__)
                 else:
+                    dev["reachable"] = False
                     logger.debug("HTTP 设备 %s 返回 %d", dev_id, resp.status_code)
             except requests.ConnectionError:
+                dev["reachable"] = False
                 logger.debug("HTTP 设备 %s 不可达: %s", dev_id, base_url)
             except Exception as e:
+                dev["reachable"] = False
                 logger.debug("HTTP 设备 %s 连接异常: %s", dev_id, e)
 
         logger.info("HTTPDriver: 已连接 (%d/%d 设备在线)", online_count, len(self._devices))
@@ -135,7 +140,7 @@ class HTTPDriver(BaseDeviceDriver):
         for dev_id, dev in self._devices.items():
             info = dev["info"]
             state = dev["state"]
-            status = DeviceStatus.ONLINE if self._connected else DeviceStatus.OFFLINE
+            status = DeviceStatus.ONLINE if dev.get("reachable") else DeviceStatus.OFFLINE
             if state.get("status") == "error":
                 status = DeviceStatus.ERROR
 
@@ -185,11 +190,34 @@ class HTTPDriver(BaseDeviceDriver):
                 "device_id": device_id,
             }
 
-            resp = await self._async_request("POST", f"{base_url}/command",
-                                              json=payload, headers=headers, timeout=self._timeout)
+            request_timeout = max(float(command.timeout_ms) / 1000.0, 0.001)
+            resp = await self._async_request(
+                "POST", f"{base_url}/command",
+                json=payload, headers=headers, timeout=request_timeout,
+            )
 
             if resp.status_code == 200:
                 resp_data = resp.json() if resp.text else {}
+                if not isinstance(resp_data, dict):
+                    dev["reachable"] = True
+                    return DeviceResult(
+                        success=False, device_id=device_id,
+                        executed_command=command.command,
+                        message="HTTP 设备返回格式错误：响应必须是 JSON 对象",
+                        error_code="INVALID_RESPONSE",
+                    )
+                remote_success = bool(resp_data.get("success", False))
+                dev["reachable"] = True
+                if not remote_success:
+                    return DeviceResult(
+                        success=False,
+                        device_id=device_id,
+                        executed_command=command.command,
+                        actual_params=command.params,
+                        message=resp_data.get("message", "HTTP 设备拒绝执行指令"),
+                        error_code=resp_data.get("error_code", "DEVICE_REJECTED"),
+                        raw_response=resp_data,
+                    )
                 current = dev["state"].get("status", "powered_off")
 
                 if command.command in ("power_on", "boot"):
@@ -216,7 +244,7 @@ class HTTPDriver(BaseDeviceDriver):
                         dev["state"]["status"] = "standby"
 
                 return DeviceResult(
-                    success=resp_data.get("success", False),
+                    success=True,
                     device_id=device_id,
                     executed_command=command.command,
                     actual_params=command.params,
@@ -224,7 +252,7 @@ class HTTPDriver(BaseDeviceDriver):
                     raw_response=resp_data,
                 )
             else:
-                dev["state"]["status"] = "error"
+                dev["reachable"] = False
                 return DeviceResult(
                     success=False, device_id=device_id,
                     executed_command=command.command,
@@ -233,7 +261,7 @@ class HTTPDriver(BaseDeviceDriver):
                 )
 
         except requests.ConnectionError:
-            dev["state"]["status"] = "error"
+            dev["reachable"] = False
             return DeviceResult(
                 success=False, device_id=device_id,
                 executed_command=command.command,
@@ -241,8 +269,7 @@ class HTTPDriver(BaseDeviceDriver):
                 error_code="CONNECTION_REFUSED",
             )
         except requests.Timeout:
-            # 超时时也要标记设备状态为 error
-            dev["state"]["status"] = "error"
+            dev["reachable"] = False
             return DeviceResult(
                 success=False, device_id=device_id,
                 executed_command=command.command,
@@ -251,7 +278,7 @@ class HTTPDriver(BaseDeviceDriver):
             )
         except Exception as e:
             logger.error("HTTP 执行失败: %s → %s", device_id, e)
-            dev["state"]["status"] = "error"
+            dev["reachable"] = False
             return DeviceResult(
                 success=False, device_id=device_id,
                 executed_command=command.command,
@@ -278,10 +305,20 @@ class HTTPDriver(BaseDeviceDriver):
                                             params={"device_id": device_id})
             if resp.status_code == 200:
                 state = resp.json()
+                if not isinstance(state, dict):
+                    dev["reachable"] = True
+                    return {
+                        **dev["state"],
+                        "_driver": "http",
+                        "_read_at": datetime.now().isoformat(),
+                        "_error": "HTTP 状态响应必须是 JSON 对象",
+                    }
                 # 合并远程状态：本地兜底 + 远程覆盖
                 dev["state"].update(state)
+                dev["reachable"] = True
                 return {**dev["state"], "_driver": "http", "_read_at": datetime.now().isoformat()}
             else:
+                dev["reachable"] = False
                 return {
                     **dev["state"],
                     "_driver": "http",
@@ -289,6 +326,7 @@ class HTTPDriver(BaseDeviceDriver):
                     "_error": f"HTTP {resp.status_code}",
                 }
         except Exception as e:
+            dev["reachable"] = False
             return {
                 **dev["state"],
                 "_driver": "http",
@@ -315,7 +353,10 @@ class HTTPDriver(BaseDeviceDriver):
         api_key = info.get("api_key")
         if api_key:
             # 尝试 Bearer token 格式，如果看起来不像则用 X-API-Key
-            if api_key.startswith("sk-") or api_key.startswith("bearer"):
+            api_key = str(api_key).strip()
+            if api_key.lower().startswith("bearer "):
+                headers["Authorization"] = f"Bearer {api_key[7:].strip()}"
+            elif api_key.startswith("sk-"):
                 headers["Authorization"] = f"Bearer {api_key}"
             else:
                 headers["X-API-Key"] = api_key

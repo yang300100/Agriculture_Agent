@@ -1,11 +1,12 @@
 """测试虚拟设备驱动"""
-import sys, os
+import asyncio
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import asyncio
-import pytest
-from devices.simulator_driver import SimulatorDriver
 from devices.base import DeviceCommand, DeviceCapability
+from devices.simulator_driver import SimulatorDriver
 
 
 class TestSimulatorDriver:
@@ -53,7 +54,6 @@ class TestSimulatorDriver:
         assert len(self.driver._devices) == 6
 
     def test_connect_discover(self):
-        import asyncio
         async def _async_body():
             await self.driver.connect()
             devices = await self.driver.discover()
@@ -65,7 +65,6 @@ class TestSimulatorDriver:
         asyncio.run(_async_body())
 
     def test_execute_start_stop(self):
-        import asyncio
         async def _async_body():
             await self.driver.connect()
             cmd = DeviceCommand(command="start", params={"duration": 30})
@@ -85,7 +84,6 @@ class TestSimulatorDriver:
 
         asyncio.run(_async_body())
     def test_read_sensor_with_fluctuation(self):
-        import asyncio
         async def _async_body():
             await self.driver.connect()
             state1 = await self.driver.read_state("virtual_soil_sensor_01")
@@ -94,7 +92,6 @@ class TestSimulatorDriver:
 
         asyncio.run(_async_body())
     def test_simulated_failure(self):
-        import asyncio
         async def _async_body():
             driver = SimulatorDriver(simulated_latency_ms=0, simulated_failure_rate=1.0)
             await driver.connect()
@@ -105,7 +102,6 @@ class TestSimulatorDriver:
 
         asyncio.run(_async_body())
     def test_execute_unknown_device(self):
-        import asyncio
         async def _async_body():
             await self.driver.connect()
             cmd = DeviceCommand(command="start")

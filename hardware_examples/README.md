@@ -14,6 +14,7 @@
 | `camera_capture_test.py` | 摄像头拍照测试 | `opencv-python` |
 | `custom_devices_template.json` | 设备配置JSON模板 | 无 |
 | `test_integration.py` | 软硬件联动集成测试 | 见文件注释 |
+| `all_hardware_simulator.py` | HTTP/MQTT/Modbus 统一终端模拟器 | `flask`、`paho-mqtt` |
 
 ## 快速开始
 
@@ -34,6 +35,21 @@ mosquitto -v
 python hardware_examples/mqtt_sensor_node.py
 ```
 
+### 统一硬件模拟器
+
+```powershell
+# 默认端口：HTTP 5000、MQTT 1883、Modbus TCP 5020
+python hardware_examples/all_hardware_simulator.py
+
+# Windows 端口被 Hyper-V/WSL 保留时可安全覆盖
+$env:HARDWARE_HTTP_PORT = "15000"
+$env:HARDWARE_MQTT_PORT = "18883"
+$env:HARDWARE_MODBUS_PORT = "15020"
+python hardware_examples/all_hardware_simulator.py
+```
+
+注册到主系统的设备连接参数必须使用同一组覆盖端口。
+
 ## 文件树
 
 ```
@@ -46,5 +62,6 @@ hardware_examples/
 ├── http_device_client.py         # HTTP 设备客户端
 ├── camera_capture_test.py        # 摄像头拍照测试
 ├── custom_devices_template.json  # 设备配置模板
+├── all_hardware_simulator.py     # 统一三协议终端模拟器
 └── test_integration.py           # 集成测试
 ```

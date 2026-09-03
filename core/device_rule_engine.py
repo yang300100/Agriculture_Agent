@@ -10,42 +10,17 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+from core.device_safety_policy import ABSOLUTE_CEILINGS, SafetyPolicyService
+from core.storage_paths import DEFAULT_DATA_DIR
 
-_raw_dir = os.getenv("DATA_STORAGE_DIR", "data")
-DEFAULT_DATA_DIR = _raw_dir if _raw_dir else "data"
+logger = logging.getLogger(__name__)
 
 # ── 全局执行历史 + 线程锁，跨 RuleEngine 实例共享 ──
 _global_history: Dict[str, Dict] = {}
 _history_lock = threading.Lock()
 
 # ── 代码级硬限制（不可通过规则配置突破）— 唯一权威来源 ──
-HARD_LIMITS = {
-    "irrigate": {
-        "max_duration_per_use_minutes": 120,
-        "min_interval_seconds": 10,
-    },
-    "fertigate": {
-        "max_amount_per_use_kg": 50,
-        "min_interval_seconds": 10,
-    },
-    "ventilate": {
-        "max_duration_per_use_minutes": 120,
-        "min_interval_seconds": 5,
-    },
-    "light": {
-        "max_duration_per_use_minutes": 720,
-        "min_interval_seconds": 5,
-    },
-    "heat": {
-        "max_duration_per_use_minutes": 240,
-        "min_interval_seconds": 10,
-    },
-    "cool": {
-        "max_duration_per_use_minutes": 240,
-        "min_interval_seconds": 10,
-    },
-}
+HARD_LIMITS = ABSOLUTE_CEILINGS
 
 # 规则文件 JSON schema 基本要求
 _RULE_REQUIRED_FIELDS = {"trigger", "action"}
@@ -114,15 +89,40 @@ class RuleEngine:
             return
         repo = DeviceRuleRepository()
         db_rules = repo.find_by(user_id=user.id)
-        self.rules = [{
-            "id": r.id,
-            "name": r.name,
-            "enabled": bool(r.enabled),
-            "trigger": {"conditions": json.loads(r.conditions) if r.conditions else []},
-            "action": json.loads(r.actions) if r.actions else {},
-            "constraints": json.loads(r.constraints) if r.constraints else {},
-            "created_at": r.created_at.isoformat() if r.created_at else "",
-        } for r in db_rules]
+        self.rules = []
+        for row in db_rules:
+            try:
+                trigger_payload = json.loads(row.conditions) if row.conditions else []
+            except (TypeError, json.JSONDecodeError):
+                trigger_payload = []
+            if isinstance(trigger_payload, list):
+                # 兼容旧数据库：旧版只保存 conditions，逻辑默认为 AND。
+                trigger = {"logic": "AND", "conditions": trigger_payload}
+                metadata = {}
+            elif isinstance(trigger_payload, dict):
+                trigger = {
+                    "logic": str(trigger_payload.get("logic", "AND")).upper(),
+                    "conditions": trigger_payload.get("conditions", []),
+                }
+                metadata = trigger_payload
+            else:
+                trigger = {"logic": "AND", "conditions": []}
+                metadata = {}
+            try:
+                action = json.loads(row.actions) if row.actions else {}
+            except (TypeError, json.JSONDecodeError):
+                action = {}
+            self.rules.append({
+                "id": row.id,
+                "name": row.name,
+                "enabled": bool(row.enabled),
+                "trigger": trigger,
+                "action": action,
+                "constraints": json.loads(row.constraints) if row.constraints else {},
+                "ai_enhance": metadata.get("ai_enhance", {}),
+                "execution_mode": metadata.get("execution_mode", "auto"),
+                "created_at": row.created_at.isoformat() if row.created_at else "",
+            })
         logger.info("规则引擎(DB): 已加载 %d 条规则", len(self.rules))
 
     def _save_rules(self) -> None:
@@ -134,14 +134,28 @@ class RuleEngine:
         if not user:
             user = user_repo.create(username=self.username, password_hash="")
         repo = DeviceRuleRepository()
-        items = [{
-            "name": r.get("name", ""),
-            "enabled": 1 if r.get("enabled", True) else 0,
-            "conditions": json.dumps(r.get("trigger", {}).get("conditions", []), ensure_ascii=False),
-            "actions": json.dumps(r.get("action", {}), ensure_ascii=False),
-            "constraints": json.dumps(r.get("constraints", {}), ensure_ascii=False),
-        } for r in self.rules]
-        repo.replace_all_for_user(user.id, items)
+        items = []
+        for rule in self.rules:
+            trigger = rule.get("trigger", {})
+            trigger_payload = {
+                "logic": str(trigger.get("logic", "AND")).upper(),
+                "conditions": trigger.get("conditions", []),
+                "ai_enhance": rule.get("ai_enhance", {}),
+                "execution_mode": rule.get("execution_mode", "auto"),
+            }
+            items.append({
+                "id": rule.get("id"),
+                "name": rule.get("name", ""),
+                "enabled": 1 if rule.get("enabled", True) else 0,
+                "conditions": json.dumps(trigger_payload, ensure_ascii=False),
+                "actions": json.dumps(rule.get("action", {}), ensure_ascii=False),
+                "constraints": json.dumps(rule.get("constraints", {}), ensure_ascii=False),
+            })
+        rows = repo.sync_for_user(user.id, items)
+        for rule, row in zip(self.rules, rows):
+            rule["id"] = row.id
+            if not rule.get("created_at") and row.created_at:
+                rule["created_at"] = row.created_at.isoformat()
 
     def _backup_corrupted(self, path: str):
         """将损坏/异常文件备份，防止数据完全丢失"""
@@ -160,14 +174,14 @@ class RuleEngine:
 
     def get_rule(self, rule_id: str) -> Optional[Dict]:
         for r in self.rules:
-            if r["id"] == rule_id:
+            if str(r["id"]) == str(rule_id):
                 return deepcopy(r)
         return None
 
     def add_rule(self, rule: Dict) -> str:
-        if "id" not in rule:
-            import uuid
-            rule["id"] = f"rule_{uuid.uuid4().hex[:8]}"
+        rule = self._normalize_rule(rule)
+        # 数据库 ID 是唯一权威；忽略客户端自带 ID，防止覆盖其他规则。
+        rule.pop("id", None)
         rule.setdefault("enabled", True)
         # 基础 schema 校验
         missing = _RULE_REQUIRED_FIELDS - set(rule.keys())
@@ -178,7 +192,7 @@ class RuleEngine:
         self.rules.append(rule)
         self._save_rules()
         logger.info("规则已添加: %s", rule["id"])
-        return rule["id"]
+        return str(rule["id"])
 
     def update_rule(self, rule_id: str, updates: Dict) -> bool:
         # 复制 updates 避免修改调用者的数据
@@ -188,15 +202,17 @@ class RuleEngine:
             logger.warning("update_rule 忽略 id 字段 (不允许修改规则ID)")
             del updates["id"]
         for i, r in enumerate(self.rules):
-            if r["id"] == rule_id:
-                self.rules[i] = {**r, **updates}
+            if str(r["id"]) == str(rule_id):
+                self.rules[i] = self._normalize_rule({**r, **updates})
                 self._save_rules()
                 return True
         return False
 
     def delete_rule(self, rule_id: str) -> bool:
         before = len(self.rules)
-        self.rules = [r for r in self.rules if r["id"] != rule_id]
+        self.rules = [
+            r for r in self.rules if str(r["id"]) != str(rule_id)
+        ]
         if len(self.rules) < before:
             self._save_rules()
             return True
@@ -206,6 +222,38 @@ class RuleEngine:
         return self.update_rule(rule_id, {"enabled": enabled})
 
     # ── 规则评估 ─────────────────────────────
+
+    def _normalize_rule(self, rule: Dict) -> Dict:
+        """规范化自动化规则，同时兼容旧规则结构。"""
+        from core.device_action_schema import normalize_action
+
+        normalized = deepcopy(rule)
+        trigger = normalized.get("trigger", {})
+        conditions = trigger.get("conditions", [])
+        if not isinstance(conditions, list):
+            raise ValueError("规则 trigger.conditions 必须是列表")
+        logic = str(trigger.get("logic", "AND")).upper()
+        if logic not in {"AND", "OR"}:
+            raise ValueError("规则触发逻辑只能是 AND 或 OR")
+        normalized["trigger"] = {"logic": logic, "conditions": conditions}
+
+        action = dict(normalized.get("action", {}))
+        if not action.get("device_id"):
+            raise ValueError("规则必须选择目标设备")
+        capability = action.get("capability") or self._infer_capability(action)
+        action["capability"] = capability
+        action["command"] = str(action.get("command", "start")).lower()
+        action["params"] = normalize_action(
+            capability, action["command"], action.get("params", {})
+        )
+        normalized["action"] = action
+        mode = str(normalized.get("execution_mode", "auto")).lower()
+        if mode not in {"auto", "confirm", "notify"}:
+            raise ValueError("执行方式只能是 auto、confirm 或 notify")
+        normalized["execution_mode"] = mode
+        normalized.setdefault("constraints", {})
+        normalized.setdefault("ai_enhance", {})
+        return normalized
 
     def find_matching_rules(self, context: Dict) -> List[Dict]:
         matched = []
@@ -223,8 +271,23 @@ class RuleEngine:
         device_id = action.get("device_id", "")
         capability = self._infer_capability(action)
 
-        # 1. 硬限制检查
-        hard_ok, hard_reason = self._check_hard_limits(capability, proposed_params, device_id)
+        context = {**self._device_scope_context(device_id), **(context or {})}
+
+        # 1. 统一安全策略：先检查物理绝对上限，再检查用户可配置边界。
+        policy_result = SafetyPolicyService(self.username).evaluate(
+            device_id=device_id,
+            capability=capability,
+            params=proposed_params,
+            command=action.get("command", "start"),
+            context=context,
+        )
+        if policy_result.decision != RuleDecision.AUTO_EXECUTE:
+            return policy_result.decision, policy_result.reason, policy_result.params
+
+        # 兼容原有进程级最小秒级间隔，防止同一周期瞬时重复触发。
+        hard_ok, hard_reason = self._check_hard_limits(
+            capability, proposed_params, device_id
+        )
         if not hard_ok:
             return RuleDecision.REJECTED, hard_reason, proposed_params
 
@@ -239,6 +302,23 @@ class RuleEngine:
             proposed_params = self._apply_ai_enhance(ai_enhance, proposed_params, action.get("params", {}))
 
         return RuleDecision.AUTO_EXECUTE, "规则校验通过", proposed_params
+
+    def _device_scope_context(self, device_id: str) -> Dict:
+        """从设备配置补全地块范围，为未来 zone_id 留出兼容入口。"""
+        try:
+            from core.device_registry_factory import load_custom_devices
+
+            config = next(
+                (item for item in load_custom_devices(self.username)
+                 if item.get("device_id") == device_id),
+                {},
+            )
+            return {
+                "plot_id": config.get("plot_id"),
+                "zone_id": config.get("zone_id"),
+            }
+        except Exception:
+            return {}
 
     def record_execution(self, device_id: str, params: Dict, success: bool = True) -> None:
         """记录设备执行。
@@ -370,8 +450,30 @@ class RuleEngine:
 
     def _infer_capability(self, action: Dict) -> str:
         """从设备 ID 或 action 类型推断设备能力类型"""
+        explicit = str(action.get("capability", "")).lower()
+        if explicit in HARD_LIMITS:
+            return explicit
         device_id = action.get("device_id", "").lower()
         action_type = action.get("command", "").lower()
+
+        # 优先从数据库设备能力读取，避免依赖设备 ID 命名。
+        try:
+            from core.device_registry_factory import load_custom_devices
+
+            config = next(
+                (item for item in load_custom_devices(self.username)
+                 if str(item.get("device_id", "")).lower() == device_id),
+                None,
+            )
+            if config:
+                capabilities = [
+                    value for value in config.get("capabilities", [])
+                    if value in HARD_LIMITS
+                ]
+                if capabilities:
+                    return capabilities[0]
+        except Exception:
+            pass
 
         # 按优先级检查 device_id 关键词
         if "fertigat" in device_id or "fertil" in device_id:
@@ -479,7 +581,14 @@ class RuleEngine:
         result = dict(proposed)
         can_adjust = ai_config.get("can_adjust", [])
         ranges = ai_config.get("adjust_range", {})
+        absolute_ranges = ai_config.get("absolute_range", {})
         for field in can_adjust:
+            if field in result and field in absolute_ranges:
+                lo, hi = absolute_ranges[field]
+                if lo > hi:
+                    lo, hi = hi, lo
+                result[field] = max(lo, min(hi, result[field]))
+                continue
             if field in result and field in ranges:
                 min_adj, max_adj = ranges[field]
                 # 验证 min_adj <= max_adj，否则交换并警告

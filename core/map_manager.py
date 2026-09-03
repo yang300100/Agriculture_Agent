@@ -9,7 +9,6 @@ import uuid
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from pydantic import BaseModel, Field
-from shapely.geometry import Polygon
 import math
 
 logger = logging.getLogger(__name__)
@@ -110,10 +109,6 @@ class MapManager:
         if len(coordinates) < 3:
             return 0.0, 0.0
 
-        # 转换为Shapely Polygon (lon, lat) -> (x, y)
-        # 注意：Shapely使用平面坐标系，需要将球面坐标转换为近似平面坐标
-        polygon = Polygon(coordinates)
-
         # 计算中心点用于更准确的面积计算
         center_lon = sum(coord[0] for coord in coordinates) / len(coordinates)
         center_lat = sum(coord[1] for coord in coordinates) / len(coordinates)
@@ -155,14 +150,19 @@ class MapManager:
         if not coordinates:
             return 0.0, 0.0
 
-        # 使用多边形质心或简单平均值
+        # 使用鞋带公式计算多边形质心，退化图形则回落到平均值。
         if len(coordinates) >= 3:
-            try:
-                polygon = Polygon(coordinates)
-                centroid = polygon.centroid
-                return centroid.y, centroid.x  # lat, lon
-            except Exception:
-                logger.warning("Shapely 多边形计算失败，降级为坐标平均值")
+            cross_sum = 0.0
+            centroid_x = 0.0
+            centroid_y = 0.0
+            for index, (x1, y1) in enumerate(coordinates):
+                x2, y2 = coordinates[(index + 1) % len(coordinates)]
+                cross = x1 * y2 - x2 * y1
+                cross_sum += cross
+                centroid_x += (x1 + x2) * cross
+                centroid_y += (y1 + y2) * cross
+            if abs(cross_sum) > 1e-12:
+                return centroid_y / (3 * cross_sum), centroid_x / (3 * cross_sum)
 
         # 降级到平均值
         avg_lon = sum(coord[0] for coord in coordinates) / len(coordinates)
@@ -346,7 +346,7 @@ class MapManager:
 # Folium地图组件相关函数
 
 def create_folium_map(center_lat: float = 39.9, center_lon: float = 116.4,
-                      zoom: int = 12, drawn_shapes: List[Dict] = None) -> "folium.Map":
+                      zoom: int = 12, drawn_shapes: List[Dict] = None) -> Any:
     """
     创建Folium地图，集成绘制工具
 

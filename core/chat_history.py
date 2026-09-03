@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -10,18 +10,23 @@ logger = logging.getLogger(__name__)
 class ChatHistoryStore:
     """对话历史持久化存储（纯SQLite）"""
 
-    def __init__(self, storage_dir: str = None):
-        # storage_dir 参数保留以兼容旧调用方，不再使用
+    def __init__(self, storage_dir: str = None, username: str = None):
+        # storage_dir 参数保留以兼容旧调用方；新代码应显式传 username。
         from core.database.engine import init_db
         init_db()
+        if username is None and storage_dir:
+            # 兼容旧版传入 data/{username} 路径的调用方式。
+            import os
+            username = os.path.basename(storage_dir.rstrip("/\\"))
+        self.username = username or "default"
         self._ensure_user()
 
     def _ensure_user(self):
         from core.database.repository.users import UserRepository
         repo = UserRepository()
-        self._user = repo.get_by_username("default")
+        self._user = repo.get_by_username(self.username)
         if not self._user:
-            self._user = repo.create(username="default", password_hash="")
+            self._user = repo.create(username=self.username, password_hash="")
 
     @property
     def _uid(self) -> int:
@@ -68,7 +73,7 @@ class ChatHistoryStore:
 
     # ── 公共接口 ──────────────────────────────────
 
-    def save_session(self, session_id: str, messages: List[Dict], title: str = ""):
+    def save_session(self, session_id: str, messages: List[Dict], title: str = "") -> str:
         """保存一个会话（增量更新：先删旧，再插新）"""
         from core.database.repository.chat import ChatSessionRepository, ChatMessageRepository
         session_repo = ChatSessionRepository()
@@ -100,6 +105,7 @@ class ChatHistoryStore:
                 role=m.get("role", "user"),
                 content=m.get("content", ""),
             )
+        return str(sid)
 
     def load_session(self, session_id: str) -> Optional[List[Dict]]:
         data = self._load()

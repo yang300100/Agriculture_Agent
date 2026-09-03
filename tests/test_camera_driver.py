@@ -4,6 +4,7 @@ import pytest
 import asyncio
 import sys
 import os
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -202,7 +203,7 @@ class TestCameraDriverRegistration:
 
     def test_capture_succeeds_with_mock_camera(self):
         from devices.camera_driver import CameraDriver
-        driver = CameraDriver()
+        driver = CameraDriver(username="camera_user")
         driver.register_device(
             "cam_01", "摄像头1",
             capabilities=[DeviceCapability.CAPTURE],
@@ -219,6 +220,13 @@ class TestCameraDriverRegistration:
         assert result.executed_command == "capture"
         assert "image_bytes" in result.raw_response
         assert len(result.raw_response["image_bytes"]) > 0
+        saved_path = Path(result.raw_response["saved_path"])
+        expected_dir = (
+            Path(os.environ["DATA_STORAGE_DIR"])
+            / "camera_user" / "photos" / "cam_01"
+        ).resolve()
+        assert saved_path.parent.resolve() == expected_dir
+        assert saved_path.read_bytes() == result.raw_response["image_bytes"]
 
 
 class TestCameraDriverInRegistry:

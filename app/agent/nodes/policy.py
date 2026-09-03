@@ -1,9 +1,24 @@
 """政策补贴查询节点"""
 import logging
+from functools import lru_cache
+
 from langchain_core.messages import AIMessage
 from ..state import AgentState
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _get_policy_rag_resources():
+    """进程内复用知识库，避免每次政策查询重复加载 FAISS 索引。"""
+    from knowledge.faiss_agriculture_rag import FAISSAgricultureRAG
+    from knowledge.simple_agriculture_rag import SimpleAgricultureRAG
+
+    faiss_candidate = FAISSAgricultureRAG()
+    return (
+        SimpleAgricultureRAG(),
+        faiss_candidate if faiss_candidate.is_available else None,
+    )
 
 
 def policy_query_node(state: AgentState) -> AgentState:
@@ -33,11 +48,15 @@ def _collect_subsidies(query: str, crop: str, region: str) -> list:
         seen_contents.add(normalized)
         return False
 
+    try:
+        rag, faiss = _get_policy_rag_resources()
+    except Exception:
+        logger.warning("政策知识库初始化失败", exc_info=True)
+        rag, faiss = None, None
+
     # 1. 搜索 FAISS 政策索引
     try:
-        from knowledge.faiss_agriculture_rag import FAISSAgricultureRAG
-        faiss = FAISSAgricultureRAG()
-        if faiss.is_available:
+        if faiss and faiss.is_available:
             search_query = f"{crop} 补贴 政策 {region}" if crop else f"农业补贴 政策 {region}"
             faiss_results = faiss.search(search_query, k=3)
             for r in faiss_results:
@@ -52,9 +71,7 @@ def _collect_subsidies(query: str, crop: str, region: str) -> list:
 
     # 2. 从作物知识库获取市场/补贴信息
     try:
-        from knowledge.simple_agriculture_rag import SimpleAgricultureRAG
-        rag = SimpleAgricultureRAG()
-        rag_results = rag.search(f"{crop} 补贴 价格 政策", k=2)
+        rag_results = rag.search(f"{crop} 补贴 价格 政策", k=2) if rag else []
         for r in rag_results:
             if any(kw in r.get("content", "") for kw in ["补贴", "价格", "政策"]):
                 content = r.get("content", "")[:500]

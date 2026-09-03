@@ -1,9 +1,11 @@
 """种植进度跟踪节点 — 读取用户真实进度和任务"""
 
 import logging
+import os
 from datetime import datetime
 from langchain_core.messages import AIMessage
 from ..state import AgentState
+from core.storage_paths import DEFAULT_DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -11,10 +13,9 @@ logger = logging.getLogger(__name__)
 def progress_tracking_node(state: AgentState) -> AgentState:
     """查询用户的实际种植进度和待办任务"""
     try:
-        import os as _os
         from core.planting_tracker import PlantingTracker
         username = getattr(state, 'username', 'default')
-        tracker = PlantingTracker(_os.path.join("data", username))
+        tracker = PlantingTracker(os.path.join(DEFAULT_DATA_DIR, username))
         progresses = tracker.get_progress()
         tasks = tracker.get_tasks()
     except Exception as e:

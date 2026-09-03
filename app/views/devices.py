@@ -5,6 +5,7 @@ import base64
 import streamlit as st
 from datetime import datetime
 from app.api_client import api, invalidate_cache
+from app.views.device_pending import render_pending_actions
 
 # ── 中文翻译映射 ──────────────────────────────────
 
@@ -62,6 +63,8 @@ DRIVER_LABELS = {
     "mqtt":      "📡 MQTT",
     "http":      "🌐 HTTP REST",
     "modbus":    "🔧 Modbus",
+    "coap":      "📶 CoAP",
+    "opcua":     "🏭 OPC UA",
     "camera":    "📷 摄像头",
 }
 
@@ -126,7 +129,10 @@ def render_devices_page():
 
     online_count = sum(1 for d in devices if d.get("status") == "online")
     offline_count = sum(1 for d in devices if d.get("status") == "offline")
-    pending_list = [a for a in pending if a.get("status") == "pending"]
+    pending_list = [
+        action for action in pending
+        if action.get("status") in {"pending", "failed"}
+    ]
     pending_count = len(pending_list)
     today_actions = sum(1 for l in logs if l.get("timestamp", "").startswith(datetime.now().strftime("%Y-%m-%d")))
 
@@ -167,9 +173,15 @@ def render_devices_page():
                 new_name = st.text_input("设备名称 *", placeholder="如: 我的水泵#1", key="new_dev_name")
             with c2:
                 # 从地块列表中选择所属地块
-                from core.plot_manager import PlotManager
-                pm = PlotManager(st.session_state.get("username", "default"))
-                plots = pm.list_plots()
+                field_rows = api("/api/fields", cache_ttl=30) or []
+                plots = [{
+                    "plot_id": str(field.get("id", "")),
+                    "name": field.get("name", ""),
+                    "lat": field.get("center_lat", 0),
+                    "lon": field.get("center_lon", 0),
+                    "crop": field.get("current_crop", ""),
+                    "area_mu": field.get("area_mu", 0),
+                } for field in field_rows]
                 if plots:
                     plot_options = {f"{p['name']} ({p.get('crop', '未指定')})": p for p in plots}
                     selected_label = st.selectbox(
@@ -183,6 +195,11 @@ def render_devices_page():
                     st.warning("暂无地块，请先创建地块")
                     new_location = ""
                     new_plot_id = ""
+                new_zone_id = st.text_input(
+                    "作业分区 ID",
+                    placeholder="如: north_irrigation（未细分可留空）",
+                    key="new_dev_zone",
+                )
                 cap_options = ["irrigate", "fertigate", "ventilate", "heat", "cool", "shade", "light", "read_sensor", "capture"]
                 new_caps = st.multiselect(
                     "设备能力", cap_options,
@@ -203,11 +220,13 @@ def render_devices_page():
             st.markdown("**🔌 驱动与连接配置**")
             driver_choice = st.selectbox(
                 "驱动类型",
-                ["mqtt", "http", "modbus", "camera", "simulator"],
+                ["mqtt", "http", "modbus", "coap", "opcua", "camera", "simulator"],
                 format_func=lambda x: {
                     "mqtt": "📡 MQTT (通用 IoT 消息协议) [推荐]",
                     "http": "🌐 HTTP REST (智能插座/API 设备)",
                     "modbus": "🔧 Modbus RTU/TCP (工业传感器/PLC)",
+                    "coap": "📶 CoAP (低功耗传感器/边缘节点)",
+                    "opcua": "🏭 OPC UA (PLC/SCADA/工业网关)",
                     "camera": "📷 摄像头 (USB/RTSP/ESP32-CAM)",
                     "simulator": "🖥️ 虚拟模拟器 (仅开发测试)",
                 }.get(x, x),
@@ -216,9 +235,15 @@ def render_devices_page():
 
             # 根据驱动类型显示不同的连接参数
             mqtt_host = mqtt_port = mqtt_topic = mqtt_state_topic = None
+            mqtt_username = mqtt_password = None
+            mqtt_qos, mqtt_use_tls = 0, False
             http_base_url = http_api_key = None
             modbus_mode = modbus_port = None
             modbus_slave = 1
+            coap_base_uri = coap_command_path = coap_state_path = coap_token = None
+            opcua_endpoint = opcua_username = opcua_password = None
+            opcua_security_string = None
+            opcua_command_nodes = opcua_state_nodes = "{}"
 
             if driver_choice == "mqtt":
                 st.caption("MQTT 连接参数 — 设备通过 MQTT Broker 收发消息")
@@ -230,6 +255,15 @@ def render_devices_page():
                 with mc3:
                     mqtt_topic = st.text_input("控制主题", value=f"devices/{new_id}/control" if new_id else "", placeholder="如: greenhouse/pump/control", key="mqtt_topic")
                 mqtt_state_topic = st.text_input("状态主题 (可选)", placeholder="如: greenhouse/pump/state", key="mqtt_state_topic")
+                ma1, ma2, ma3, ma4 = st.columns(4)
+                with ma1:
+                    mqtt_username = st.text_input("用户名 (可选)", key="mqtt_username")
+                with ma2:
+                    mqtt_password = st.text_input("密码 (可选)", type="password", key="mqtt_password")
+                with ma3:
+                    mqtt_qos = st.selectbox("QoS", [0, 1, 2], key="mqtt_qos")
+                with ma4:
+                    mqtt_use_tls = st.checkbox("启用 TLS", key="mqtt_use_tls")
 
             elif driver_choice == "http":
                 st.caption("HTTP REST 连接参数 — 通过 HTTP 请求控制设备")
@@ -252,6 +286,54 @@ def render_devices_page():
                         modbus_port = st.text_input("IP:端口", value="192.168.1.200:502", key="modbus_port")
                 with mc3:
                     modbus_slave = st.number_input("从站地址", value=1, min_value=1, max_value=247, key="modbus_slave")
+
+            elif driver_choice == "coap":
+                st.caption("CoAP 连接参数 — 适合低功耗传感器和受限网络设备")
+                cc1, cc2, cc3 = st.columns(3)
+                with cc1:
+                    coap_base_uri = st.text_input(
+                        "Base URI *", placeholder="如: coap://192.168.1.50:5683",
+                        key="coap_base_uri",
+                    )
+                with cc2:
+                    coap_command_path = st.text_input(
+                        "指令路径", value="/command", key="coap_command_path"
+                    )
+                with cc3:
+                    coap_state_path = st.text_input(
+                        "状态路径", value="/state", key="coap_state_path"
+                    )
+                coap_token = st.text_input(
+                    "应用层令牌 (可选)", type="password", key="coap_token"
+                )
+
+            elif driver_choice == "opcua":
+                st.caption("OPC UA 连接参数 — 指令名和状态字段映射到固定节点，避免任意节点写入")
+                oc1, oc2, oc3 = st.columns(3)
+                with oc1:
+                    opcua_endpoint = st.text_input(
+                        "Endpoint *", placeholder="如: opc.tcp://192.168.1.60:4840",
+                        key="opcua_endpoint",
+                    )
+                with oc2:
+                    opcua_username = st.text_input("用户名 (可选)", key="opcua_username")
+                with oc3:
+                    opcua_password = st.text_input("密码 (可选)", type="password", key="opcua_password")
+                opcua_command_nodes = st.text_area(
+                    "指令节点映射 (JSON)",
+                    value='{"start":{"node_id":"ns=2;s=Pump.Start","value":true},"stop":{"node_id":"ns=2;s=Pump.Start","value":false}}',
+                    key="opcua_command_nodes",
+                )
+                opcua_state_nodes = st.text_area(
+                    "状态节点映射 (JSON)",
+                    value='{"temperature":"ns=2;s=Sensor.Temperature","status":"ns=2;s=Pump.Status"}',
+                    key="opcua_state_nodes",
+                )
+                opcua_security_string = st.text_input(
+                    "安全策略字符串 (生产环境推荐)",
+                    placeholder="如: Basic256Sha256,SignAndEncrypt,cert.pem,key.pem",
+                    key="opcua_security_string",
+                )
 
             elif driver_choice == "camera":
                 st.caption("📷 摄像头连接参数 — 支持 USB / IP(RTSP) / ESP32-CAM")
@@ -312,6 +394,7 @@ def render_devices_page():
                             "sensors": sensors_list,
                             "location": new_location,
                             "plot_id": new_plot_id,
+                            "zone_id": new_zone_id,
                             "driver": driver_choice,
                             "initial_state": {"power": False, "status": "powered_off"},
                         }
@@ -321,6 +404,10 @@ def render_devices_page():
                                 "host": mqtt_host, "port": mqtt_port,
                                 "control_topic": mqtt_topic,
                                 "state_topic": mqtt_state_topic if mqtt_state_topic else None,
+                                "username": mqtt_username or None,
+                                "password": mqtt_password or None,
+                                "qos": mqtt_qos,
+                                "use_tls": mqtt_use_tls,
                             }
                         elif driver_choice == "http":
                             if not http_base_url:
@@ -334,6 +421,36 @@ def render_devices_page():
                             device_config["connection"] = {
                                 "mode": modbus_mode, "port": modbus_port,
                                 "slave_id": modbus_slave,
+                            }
+                        elif driver_choice == "coap":
+                            if not coap_base_uri:
+                                st.error("CoAP 设备必须填写 Base URI！")
+                                st.stop()
+                            device_config["connection"] = {
+                                "base_uri": coap_base_uri.rstrip("/"),
+                                "command_path": coap_command_path or "/command",
+                                "state_path": coap_state_path or "/state",
+                                "auth_token": coap_token or None,
+                            }
+                        elif driver_choice == "opcua":
+                            if not opcua_endpoint:
+                                st.error("OPC UA 设备必须填写 Endpoint！")
+                                st.stop()
+                            try:
+                                command_nodes = json.loads(opcua_command_nodes or "{}")
+                                state_nodes = json.loads(opcua_state_nodes or "{}")
+                                if not isinstance(command_nodes, dict) or not isinstance(state_nodes, dict):
+                                    raise ValueError("节点映射必须是 JSON 对象")
+                            except (json.JSONDecodeError, ValueError) as exc:
+                                st.error(f"OPC UA 节点映射格式错误: {exc}")
+                                st.stop()
+                            device_config["connection"] = {
+                                "endpoint": opcua_endpoint,
+                                "username": opcua_username or None,
+                                "password": opcua_password or None,
+                                "security_string": opcua_security_string or None,
+                                "command_nodes": command_nodes,
+                                "state_nodes": state_nodes,
                             }
                         elif driver_choice == "camera":
                             if not camera_source:
@@ -475,9 +592,8 @@ def render_devices_page():
                     col_r, col_p = st.columns(2)
                     with col_r:
                         if st.button("🔄 重连并刷新", key=f"reconnect_{dev['device_id']}", use_container_width=True):
+                            api("/api/devices/refresh", method="post")
                             invalidate_cache("/api/devices", "/api/actions/log")
-                            from core.device_registry_factory import invalidate_registry_cache
-                            invalidate_registry_cache(st.session_state.get("username", "default"))
                             st.rerun()
                     with col_p:
                         if device_state_status == "powered_off":
@@ -559,35 +675,7 @@ def render_devices_page():
 
     st.divider()
 
-    # ── 待确认操作 ──────────────────────────────
-    st.markdown("### ⚠️ 待确认操作")
-
-    if not pending_list:
-        st.success("暂无待确认操作～")
-    else:
-        for action in pending_list:
-            with st.container():
-                cmd_label = _label(action.get('command', ''), COMMAND_LABELS)
-                st.warning(f"**{action.get('device_id', '未知设备')}** — {cmd_label}")
-                st.caption(f"参数: {action.get('params', {})}")
-                st.caption(f"原因: {action.get('reason', '需要用户确认')}")
-
-                c1, c2, c3 = st.columns([1, 1, 1])
-                with c1:
-                    if st.button("✅ 确认执行", key=f"confirm_{action['id']}"):
-                        result = api(f"/api/actions/{action['id']}/confirm", method="post")
-                        if result and result.get("success"):
-                            st.success("已执行！")
-                            invalidate_cache("/api/actions/pending", "/api/actions/log")
-                            st.rerun()
-                with c2:
-                    if st.button("✏️ 修改参数", key=f"edit_{action['id']}"):
-                        st.info("参数编辑功能将在后续版本中支持")
-                with c3:
-                    if st.button("❌ 拒绝", key=f"reject_{action['id']}"):
-                        api(f"/api/actions/{action['id']}/reject", method="post")
-                        invalidate_cache("/api/actions/pending")
-                        st.rerun()
+    render_pending_actions(pending_list)
 
     st.divider()
 

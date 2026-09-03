@@ -1,0 +1,8 @@
+-r base.txt
+-r hardware.txt
+-r model.txt
+-r optional.txt
+
+pytest>=7.0.0
+pytest-cov>=5.0.0
+ruff==0.12.0

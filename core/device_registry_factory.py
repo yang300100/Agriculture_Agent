@@ -12,25 +12,21 @@ import json
 import logging
 import os
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List
+
+from core.storage_paths import DEFAULT_DATA_DIR
 
 logger = logging.getLogger(__name__)
-
-# 项目根目录（本文件位于 <project_root>/core/device_registry_factory.py）
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# 数据存储目录：优先使用环境变量 DATA_STORAGE_DIR，否则使用项目根下的 data/
-_raw_data_dir = os.getenv("DATA_STORAGE_DIR")
-if _raw_data_dir and _raw_data_dir.strip():
-    DEFAULT_DATA_DIR = _raw_data_dir if os.path.isabs(_raw_data_dir) else os.path.join(_PROJECT_ROOT, _raw_data_dir)
-else:
-    DEFAULT_DATA_DIR = os.path.join(_PROJECT_ROOT, "data")
 
 # 内置虚拟设备 ID 集合 — 保留用于 ID 冲突检测，但不再自动创建
 BUILTIN_DEVICE_IDS = {
     "virtual_irrigation_01", "virtual_soil_sensor_01",
     "virtual_ventilation_01", "virtual_light_01",
     "virtual_fertigator_01", "virtual_heater_01",
+}
+
+SUPPORTED_DEVICE_DRIVERS = {
+    "simulator", "mqtt", "http", "modbus", "coap", "opcua", "camera",
 }
 
 # username 合法字符正则 — 防止路径穿越
@@ -81,6 +77,7 @@ def load_custom_devices(username: str) -> list:
             "connection": json.loads(c.connection) if c.connection else {},
             "location": c.location or "",
             "plot_id": c.plot_id,
+            "zone_id": c.zone_id or "",
             "initial_state": json.loads(c.initial_state) if c.initial_state else {},
         })
     return result
@@ -106,6 +103,7 @@ def save_custom_devices(username: str, devices: list) -> None:
         "connection": json.dumps(d.get("connection", {}), ensure_ascii=False),
         "location": d.get("location", ""),
         "plot_id": d.get("plot_id"),
+        "zone_id": d.get("zone_id") or None,
         "initial_state": json.dumps(d.get("initial_state", {}), ensure_ascii=False),
     } for d in devices]
     repo.replace_all_for_user(user.id, items)
@@ -131,17 +129,16 @@ def setup_registry(username: str = "default", loop=None):
     from devices.registry import DeviceDriverRegistry
 
     registry = DeviceDriverRegistry()
-    created_loop = False
     if loop is None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        created_loop = True
 
     custom_devices = load_custom_devices(username)
-    sim_configs, mqtt_configs, http_configs, modbus_configs, camera_configs = [], [], [], [], []
+    sim_configs, mqtt_configs, http_configs, modbus_configs = [], [], [], []
+    coap_configs, opcua_configs, camera_configs = [], [], []
 
     for cd in custom_devices:
-        driver_type = cd.get("driver", "mqtt")
+        driver_type = str(cd.get("driver", "mqtt")).lower()
         if driver_type == "simulator":
             sim_configs.append(cd)
         elif driver_type == "mqtt":
@@ -150,8 +147,18 @@ def setup_registry(username: str = "default", loop=None):
             http_configs.append(cd)
         elif driver_type == "modbus":
             modbus_configs.append(cd)
+        elif driver_type == "coap":
+            coap_configs.append(cd)
+        elif driver_type == "opcua":
+            opcua_configs.append(cd)
         elif driver_type == "camera":
             camera_configs.append(cd)
+        else:
+            logger.warning(
+                "设备 %s 使用未知驱动 %r，已跳过",
+                cd.get("device_id", "<unknown>"),
+                driver_type,
+            )
 
     if sim_configs:
         from devices.simulator_driver import SimulatorDriver
@@ -176,27 +183,46 @@ def setup_registry(username: str = "default", loop=None):
             mqtt_configs = []
     if mqtt_configs:
         try:
-            first = mqtt_configs[0]
-            conn = first.get("connection", {})
-            mqtt_drv = MQTTDriver(
-                broker_host=conn.get("host", "localhost"),
-                broker_port=conn.get("port", 1883),
-            )
+            broker_groups: Dict[tuple, List[dict]] = {}
             for cd in mqtt_configs:
                 conn = cd.get("connection", {})
-                mqtt_drv.register_device(
-                    device_id=cd["device_id"], name=cd["name"],
-                    capabilities=_safe_parse_capabilities(cd.get("capabilities", ["irrigate"])),
-                    sensors=cd.get("sensors", []), location=cd.get("location", ""),
-                    control_topic=conn.get("control_topic", f"devices/{cd['device_id']}/control"),
-                    state_topic=conn.get("state_topic"),
+                key = (
+                    str(conn.get("host", "localhost")),
+                    int(conn.get("port", 1883)),
+                    conn.get("username"), conn.get("password"),
+                    bool(conn.get("use_tls", False)), conn.get("ca_cert"),
+                    conn.get("client_cert"), conn.get("client_key"),
+                    bool(conn.get("tls_insecure", False)), conn.get("client_id"),
                 )
-            registry.register("mqtt", mqtt_drv)
-            connected = loop.run_until_complete(mqtt_drv.connect())
-            if not connected:
-                logger.info("MQTT 驱动已注册但 Broker 不可达，设备将显示为离线")
-            else:
-                logger.info("MQTT 驱动已连接: %d 个设备", len(mqtt_configs))
+                broker_groups.setdefault(key, []).append(cd)
+            for index, (key, devices_list) in enumerate(broker_groups.items(), start=1):
+                (
+                    host, port, username, password, use_tls, ca_cert,
+                    client_cert, client_key, tls_insecure, client_id,
+                ) = key
+                mqtt_drv = MQTTDriver(
+                    broker_host=host, broker_port=port,
+                    username=username, password=password, client_id=client_id,
+                    use_tls=use_tls, ca_cert=ca_cert,
+                    client_cert=client_cert, client_key=client_key,
+                    tls_insecure=tls_insecure,
+                )
+                for cd in devices_list:
+                    conn = cd.get("connection", {})
+                    mqtt_drv.register_device(
+                        device_id=cd["device_id"], name=cd["name"],
+                        capabilities=_safe_parse_capabilities(cd.get("capabilities", ["irrigate"])),
+                        sensors=cd.get("sensors", []), location=cd.get("location", ""),
+                        control_topic=conn.get("control_topic", f"devices/{cd['device_id']}/control"),
+                        state_topic=conn.get("state_topic"),
+                        qos=conn.get("qos", 0),
+                    )
+                registry.register(f"mqtt_{index}", mqtt_drv)
+                connected = loop.run_until_complete(mqtt_drv.connect())
+                if not connected:
+                    logger.info("MQTT 驱动已注册但 Broker %s:%s 不可达", host, port)
+                else:
+                    logger.info("MQTT 驱动已连接: %d 个设备 @ %s:%s", len(devices_list), host, port)
         except Exception as e:
             logger.warning("MQTT 驱动初始化失败: %s，%d 个设备将不可用", e, len(mqtt_configs))
 
@@ -234,28 +260,40 @@ def setup_registry(username: str = "default", loop=None):
             modbus_configs = []
     if modbus_configs:
         try:
-            port_groups: Dict[str, List[dict]] = {}
+            port_groups: Dict[tuple, List[dict]] = {}
             for cd in modbus_configs:
                 conn = cd.get("connection", {})
-                mode = conn.get("mode", "rtu")
+                mode = str(conn.get("mode", "rtu")).lower()
                 # 兼容 int/str 类型的 port，TCP 模式组合为 "host:port"
                 if mode == "tcp":
-                    host = conn.get("host", "127.0.0.1")
                     raw_port = conn.get("port", 502)
-                    # IPv6 地址需要用方括号包裹: [::1]:502
-                    if ":" in host and not host.startswith("["):
-                        port = f"[{host}]:{raw_port}"
+                    configured_host = conn.get("host")
+                    if configured_host:
+                        host = str(configured_host)
+                        # IPv6 地址需要用方括号包裹: [::1]:502
+                        if ":" in host and not host.startswith("["):
+                            port = f"[{host}]:{raw_port}"
+                        else:
+                            port = f"{host}:{raw_port}"
+                    elif isinstance(raw_port, str) and ":" in raw_port:
+                        # 前端兼容格式：port 字段直接保存 "host:port"。
+                        port = raw_port
                     else:
-                        port = f"{host}:{raw_port}"
+                        port = f"127.0.0.1:{raw_port}"
                 else:
                     port = str(conn.get("port", "/dev/ttyUSB0"))
-                if port not in port_groups:
-                    port_groups[port] = []
-                port_groups[port].append(cd)
-            for port, devices_list in port_groups.items():
-                first_dev = devices_list[0]
-                conn = first_dev.get("connection", {})
-                modbus_drv = ModbusDriver(mode=conn.get("mode", "rtu"), port=port)
+                group_key = (
+                    mode,
+                    port,
+                    int(conn.get("baudrate", 9600)),
+                    float(conn.get("timeout", 2.0)),
+                )
+                port_groups.setdefault(group_key, []).append(cd)
+            for index, (group_key, devices_list) in enumerate(port_groups.items(), start=1):
+                mode, port, baudrate, timeout = group_key
+                modbus_drv = ModbusDriver(
+                    mode=mode, port=port, baudrate=baudrate, timeout=timeout
+                )
                 for cd in devices_list:
                     conn = cd.get("connection", {})
                     modbus_drv.register_device(
@@ -264,7 +302,7 @@ def setup_registry(username: str = "default", loop=None):
                         sensors=cd.get("sensors", []), location=cd.get("location", ""),
                         slave_id=conn.get("slave_id", 1),
                     )
-                registry.register(f"modbus_{port}", modbus_drv)
+                registry.register(f"modbus_{index}", modbus_drv)
                 connected = loop.run_until_complete(modbus_drv.connect())
                 if not connected:
                     logger.info("Modbus 驱动已注册但设备不可达 (%s)，设备将显示为离线", port)
@@ -272,6 +310,49 @@ def setup_registry(username: str = "default", loop=None):
                     logger.info("Modbus 驱动已连接: %d 个设备 @ %s", len(devices_list), port)
         except Exception as e:
             logger.warning("Modbus 驱动初始化失败: %s，%d 个设备将不可用", e, len(modbus_configs))
+
+    if coap_configs:
+        try:
+            from devices.coap_driver import CoAPDriver
+            coap_drv = CoAPDriver()
+            for cd in coap_configs:
+                conn = cd.get("connection", {})
+                coap_drv.register_device(
+                    device_id=cd["device_id"], name=cd["name"],
+                    capabilities=_safe_parse_capabilities(cd.get("capabilities", ["read_sensor"])),
+                    sensors=cd.get("sensors", []), location=cd.get("location", ""),
+                    base_uri=conn.get("base_uri", ""),
+                    command_path=conn.get("command_path", "/command"),
+                    state_path=conn.get("state_path", "/state"),
+                    auth_token=conn.get("auth_token"),
+                )
+            registry.register("coap", coap_drv)
+            connected = loop.run_until_complete(coap_drv.connect())
+            logger.info("CoAP 驱动已加载: %d 个设备，在线=%s", len(coap_configs), connected)
+        except Exception as e:
+            logger.warning("CoAP 驱动初始化失败: %s，%d 个设备将不可用", e, len(coap_configs))
+
+    if opcua_configs:
+        try:
+            from devices.opcua_driver import OPCUADriver
+            opcua_drv = OPCUADriver()
+            for cd in opcua_configs:
+                conn = cd.get("connection", {})
+                opcua_drv.register_device(
+                    device_id=cd["device_id"], name=cd["name"],
+                    capabilities=_safe_parse_capabilities(cd.get("capabilities", ["read_sensor"])),
+                    sensors=cd.get("sensors", []), location=cd.get("location", ""),
+                    endpoint=conn.get("endpoint", ""),
+                    command_nodes=conn.get("command_nodes", {}),
+                    state_nodes=conn.get("state_nodes", {}),
+                    username=conn.get("username"), password=conn.get("password"),
+                    security_string=conn.get("security_string"),
+                )
+            registry.register("opcua", opcua_drv)
+            connected = loop.run_until_complete(opcua_drv.connect())
+            logger.info("OPC UA 驱动已加载: %d 个设备，在线=%s", len(opcua_configs), connected)
+        except Exception as e:
+            logger.warning("OPC UA 驱动初始化失败: %s，%d 个设备将不可用", e, len(opcua_configs))
 
     if camera_configs:
         try:
@@ -281,7 +362,7 @@ def setup_registry(username: str = "default", loop=None):
             camera_configs = []
     if camera_configs:
         try:
-            camera_drv = CameraDriver()
+            camera_drv = CameraDriver(username=username)
             for cd in camera_configs:
                 conn = cd.get("connection", {})
                 caps = _safe_parse_capabilities(cd.get("capabilities", ["capture"]))
@@ -336,6 +417,17 @@ _registry_cache: Dict[str, tuple] = {}
 _cache_lock = _threading.Lock()
 _CACHE_TTL_SECONDS = 120
 
+
+def _disconnect_cached_registry(registry) -> None:
+    """同步释放缓存驱动，避免 MQTT 后台线程和串口句柄泄漏。"""
+    tmp_loop = asyncio.new_event_loop()
+    try:
+        tmp_loop.run_until_complete(registry.disconnect_all())
+    except Exception:
+        logger.warning("缓存 Registry 断开失败", exc_info=True)
+    finally:
+        tmp_loop.close()
+
 def get_cached_registry(username: str = "default"):
     """获取缓存的设备注册中心（不含 event loop）。
 
@@ -346,6 +438,7 @@ def get_cached_registry(username: str = "default"):
         DeviceDriverRegistry — 已连接驱动的注册中心实例
     """
     now = _time.time()
+    expired_registry = None
     with _cache_lock:
         cached = _registry_cache.get(username)
         if cached:
@@ -354,6 +447,10 @@ def get_cached_registry(username: str = "default"):
                 return registry
             logger.debug("Registry 缓存过期 (%.0fs)，重建", now - timestamp)
             _registry_cache.pop(username, None)
+            expired_registry = registry
+
+    if expired_registry is not None:
+        _disconnect_cached_registry(expired_registry)
 
     # 重建（setup_registry 内部创建 loop 用于初始化连接）
     registry, init_loop = setup_registry(username)
@@ -402,35 +499,13 @@ def invalidate_registry_cache(username: str = None):
             if popped:
                 registry, _ = popped
                 try:
-                    # 断开所有驱动连接
-                    import asyncio as _asyncio
-                    tmp_loop = _asyncio.new_event_loop()
-                    _asyncio.set_event_loop(tmp_loop)
-                    try:
-                        tmp_loop.run_until_complete(registry.disconnect_all())
-                    except Exception:
-                        logger.warning("缓存清理时断开驱动失败", exc_info=True)
-                    finally:
-                        try:
-                            tmp_loop.close()
-                        except Exception:
-                            pass
-                        _asyncio.set_event_loop(None)
+                    _disconnect_cached_registry(registry)
                 except Exception:
                     pass
         else:
-            import asyncio as _asyncio
             for u, (registry, _) in list(_registry_cache.items()):
-                tmp_loop = None
                 try:
-                    tmp_loop = _asyncio.new_event_loop()
-                    tmp_loop.run_until_complete(registry.disconnect_all())
+                    _disconnect_cached_registry(registry)
                 except Exception:
                     logger.warning("缓存清理时断开驱动失败 [%s]", u, exc_info=True)
-                finally:
-                    if tmp_loop is not None:
-                        try:
-                            tmp_loop.close()
-                        except Exception:
-                            pass
             _registry_cache.clear()

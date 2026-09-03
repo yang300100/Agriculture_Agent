@@ -140,7 +140,7 @@
 
 ```
 ┌──────────────────────────────────────────────┐
-│ FastAPI (:8000) 常驻后端 │
+│ FastAPI (:18001) 常驻后端 │
 │ │
 │ APScheduler 定时任务 │
 │ ├─ 每 3min: 任务自动执行检查 │
@@ -198,6 +198,8 @@ Agent 支持通过 4 种协议接入真实 IoT 设备，实现自主控制。通
 | **MQTT** | MQTT 3.1.1 | ESP32/ESP8266、树莓派、任意 MQTT 设备 | `pip install paho-mqtt` |
 | **HTTP REST** | HTTP | 智能插座(Tasmota/ESPHome)、树莓派 GPIO 控制器 | 无（使用 `requests`） |
 | **Modbus** | RTU/TCP | PLC、变频器、工业传感器 | `pip install pymodbus` |
+| **CoAP** | CoAP/CoAPS | 低功耗传感器、受限网络节点、边缘设备 | `pip install aiocoap` |
+| **OPC UA** | OPC UA TCP | PLC、SCADA、工业网关 | `pip install asyncua` |
 
 ### 硬件模拟器（开发测试用）
 
@@ -373,7 +375,7 @@ python knowledge/build_faiss_rag.py
 python app/start.py all
 
 # 或分别启动
-python app/start.py backend # 终端 1: FastAPI :8000
+python app/start.py backend # 终端 1: FastAPI :18001
 python app/start.py web # 终端 2: Streamlit :8501
 ```
 
@@ -389,6 +391,7 @@ Agriculture_Agent/
 │ ├── api_server.py # FastAPI 主进程 + APScheduler
 │ ├── api_routes.py # ~20 个 REST API 端点
 │ ├── scheduler_jobs.py # 提醒/天气/病害定时任务
+│ ├── scheduler_runner.py # 独立单实例调度进程入口
 │ ├── agent/
 │ │ ├── config.py # 环境变量 + 关键词常量
 │ │ ├── state.py # AgentState（18 种意图）

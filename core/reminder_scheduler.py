@@ -21,8 +21,8 @@ DEFAULT_LOOKAHEAD_MINUTES = 30  # 提前多久的提醒视为"即将到期"
 class ReminderScheduler:
     """提醒调度器：检查到期/即将到期的提醒并触发通知"""
 
-    def __init__(self, storage_dir: str = None):
-        self.system = ReminderSystem(storage_dir)
+    def __init__(self, storage_dir: str = None, username: str = "default"):
+        self.system = ReminderSystem(storage_dir, username=username)
         self.storage = self.system.storage
 
     def get_due_reminders(self, user_id: str = "default") -> List[Dict[str, Any]]:

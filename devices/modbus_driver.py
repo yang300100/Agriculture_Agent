@@ -10,9 +10,10 @@
 """
 
 import asyncio
+import inspect
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List
 
 from .base import (
     BaseDeviceDriver, DeviceCapability, DeviceStatus,
@@ -51,8 +52,11 @@ class ModbusDriver(BaseDeviceDriver):
         if not HAS_PYMODBUS:
             raise ImportError("pymodbus 未安装。请运行: pip install pymodbus")
 
+        mode = str(mode).lower()
+        if mode not in ("rtu", "tcp"):
+            raise ValueError(f"Modbus mode 必须为 'rtu' 或 'tcp'，收到: {mode!r}")
         self._mode = mode
-        self._port = port
+        self._port = str(port)
         self._baudrate = baudrate
         self._timeout = timeout
         self._client = None
@@ -77,6 +81,7 @@ class ModbusDriver(BaseDeviceDriver):
             slave_id: Modbus 从站地址 (1-247)
         """
         # 校验 slave_id 范围：Modbus 标准规定 1-247
+        slave_id = int(slave_id)
         if not (1 <= slave_id <= 247):
             raise ValueError(f"Modbus slave_id 必须在 1-247 范围内，收到: {slave_id}")
 
@@ -100,7 +105,7 @@ class ModbusDriver(BaseDeviceDriver):
         # 关闭旧客户端，避免资源泄漏
         if self._client is not None:
             try:
-                self._client.close()
+                await asyncio.to_thread(self._client.close)
             except Exception:
                 pass
             self._client = None
@@ -136,7 +141,7 @@ class ModbusDriver(BaseDeviceDriver):
                 )
             # 用 try/except 包裹 connect() 避免未定义的 _connected 状态
             try:
-                self._connected = self._client.connect()
+                self._connected = await asyncio.to_thread(self._client.connect)
             except Exception as conn_err:
                 logger.error("Modbus connect() 调用失败: %s", conn_err)
                 self._connected = False
@@ -152,7 +157,7 @@ class ModbusDriver(BaseDeviceDriver):
 
     async def disconnect(self) -> None:
         if self._client:
-            self._client.close()
+            await asyncio.to_thread(self._client.close)
             self._client = None
         self._connected = False
         logger.info("ModbusDriver: 已断开")
@@ -228,8 +233,21 @@ class ModbusDriver(BaseDeviceDriver):
                 )
 
             # 写 HR[2]=命令码, HR[3]=duration(秒), 一次性写入确保原子性
-            duration = int(command.params.get("duration", 0)) * 60  # 分钟转秒
-            result = self._client.write_registers(2, [cmd_val, duration], slave=slave_id)
+            duration = int(command.params.get("duration") or 0) * 60  # 分钟转秒
+            if not (0 <= duration <= 65535):
+                return DeviceResult(
+                    success=False, device_id=device_id,
+                    executed_command=command.command,
+                    message="Modbus duration 超出单寄存器范围（0-1092 分钟）",
+                    error_code="INVALID_PARAMS",
+                )
+            unit_kwargs = self._unit_kwargs(self._client.write_registers, slave_id)
+            result = await asyncio.to_thread(
+                self._client.write_registers,
+                2,
+                [cmd_val, duration],
+                **unit_kwargs,
+            )
             if result.isError():
                 return DeviceResult(
                     success=False, device_id=device_id,
@@ -296,7 +314,15 @@ class ModbusDriver(BaseDeviceDriver):
         try:
             slave_id = dev["info"]["slave_id"]
             # 读 HR[0-14] 覆盖控制寄存器 + 传感器数据
-            result = self._client.read_holding_registers(0, count=15, slave=slave_id)
+            unit_kwargs = self._unit_kwargs(
+                self._client.read_holding_registers, slave_id
+            )
+            result = await asyncio.to_thread(
+                self._client.read_holding_registers,
+                0,
+                count=15,
+                **unit_kwargs,
+            )
             if not result.isError():
                 registers = result.registers
                 new_state = {
@@ -327,3 +353,17 @@ class ModbusDriver(BaseDeviceDriver):
             }
 
         return {**dev["state"], "_driver": "modbus", "_read_at": datetime.now().isoformat()}
+
+    @staticmethod
+    def _unit_kwargs(method, slave_id: int) -> Dict[str, int]:
+        """兼容 pymodbus 3.5-3.14 的从站参数改名。"""
+        try:
+            parameters = inspect.signature(method).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "device_id" in parameters:
+            return {"device_id": slave_id}
+        if "slave" in parameters:
+            return {"slave": slave_id}
+        # 新版本默认使用 device_id；无法反射签名时优先采用新接口。
+        return {"device_id": slave_id}

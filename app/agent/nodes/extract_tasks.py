@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
@@ -13,6 +14,7 @@ from ..state import AgentState
 from ..config import LLM_MODEL, LLM_TEMPERATURE, OPENAI_API_KEY, OPENAI_BASE_URL, DEBUG_MODE
 
 from core.planting_tracker import PlantingTracker
+from core.storage_paths import DEFAULT_DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +64,8 @@ def extract_and_create_tasks_node(state: AgentState) -> AgentState:
 
         if suggestions:
             # 创建任务（使用用户专属目录，与 API 读取路径一致）
-            import os as _os
             username = getattr(state, 'username', 'default')
-            tracker = PlantingTracker(_os.path.join("data", username))
+            tracker = PlantingTracker(os.path.join(DEFAULT_DATA_DIR, username))
             created_tasks = []
 
             for suggestion in suggestions:
@@ -221,10 +222,10 @@ def extract_suggestions_from_answer(answer: str, crop: str = "",
         try:
             response = llm.invoke([HumanMessage(content=extract_prompt)])
             content = response.content.strip()
-            logger.info("extract_tasks LLM 返回: len=%d\n%s", len(content), content[:1000])
+            logger.info("extract_tasks LLM 返回: len=%d", len(content))
         except Exception as e:
             logger.warning("extract_tasks LLM 调用超时或失败，跳过任务提取: %s", e)
-            return state  # 跳过任务提取，直接返回 state
+            return []
 
         # ── 智能提取 JSON 数组 ──
         suggestions = _parse_json_response(content)
@@ -287,7 +288,7 @@ def _parse_json_response(content: str) -> list:
     except json.JSONDecodeError:
         pass
 
-    logger.warning("extract_tasks 无法从LLM返回中提取JSON: %s", content[:500])
+    logger.warning("extract_tasks 无法从LLM返回中提取JSON: len=%d", len(content))
     return []
 
 

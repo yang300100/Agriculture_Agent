@@ -107,9 +107,12 @@ class AgentOrchestrator:
             logger.info("Agent 执行: %s → intent=%s", agent.name, intent)
             agent.invoke(state)
             answer = state.final_answer or ""
-            logger.info("Agent 完成: %s → final_answer=%s (len=%d)\n━━━ 回答内容 ━━━\n%s\n━━━━━━━━━━━━",
-                        agent.name, bool(answer), len(answer),
-                        answer[:2000] if len(answer) > 2000 else answer)
+            logger.info(
+                "Agent 完成: %s final_answer=%s answer_len=%d",
+                agent.name,
+                bool(answer),
+                len(answer),
+            )
         else:
             logger.warning("未找到可处理 intent=%s 的 Agent，回退 RAG 检索", intent)
         next_node = self._next_node(intent)
@@ -126,9 +129,7 @@ class AgentOrchestrator:
             primary_agent.invoke(state)
             results[primary_intent] = state.final_answer or ""
             answer = state.final_answer or ""
-            logger.info("Agent 完成(主): %s → answer_len=%d\n━━━ 回答内容(主) ━━━\n%s\n━━━━━━━━━━━━",
-                        primary_agent.name, len(answer),
-                        answer[:2000] if len(answer) > 2000 else answer)
+            logger.info("Agent 完成(主): %s answer_len=%d", primary_agent.name, len(answer))
 
         if len(intents) > 1:
             logger.info("并行执行 %d 个副 Agent: %s", len(intents) - 1, intents[1:])
@@ -144,9 +145,12 @@ class AgentOrchestrator:
                     logger.info("Agent 执行(副): %s → intent=%s", agent.name, intent)
                     agent.invoke(s_copy)
                     ans = s_copy.final_answer or ""
-                    logger.info("Agent 完成(副): %s → answer_len=%d\n━━━ 回答内容(副:%s) ━━━\n%s\n━━━━━━━━━━━━",
-                                agent.name, len(ans), intent,
-                                ans[:1500] if len(ans) > 1500 else ans)
+                    logger.info(
+                        "Agent 完成(副): %s intent=%s answer_len=%d",
+                        agent.name,
+                        intent,
+                        len(ans),
+                    )
                     secondary_states.append(s_copy)
                     return (intent, ans)
                 except Exception as e:
@@ -219,7 +223,7 @@ class AgentOrchestrator:
                 continue
             # 任务创建语境下，跳过 device_control（用户想创建任务而非执行设备）
             if is_task_creation and intent == "device_control":
-                logger.info("次级意图过滤(任务创建语境): 跳过 device_control, text=%s", question[:60])
+                logger.info("次级意图过滤(任务创建语境): 跳过 device_control")
                 continue
             matched = []
             for kw in keywords:
@@ -232,7 +236,7 @@ class AgentOrchestrator:
                         negated = True
                         break
                 if negated:
-                    logger.info("次级意图过滤(否定语境): intent=%s keyword=%s text=%s", intent, kw, question[:60])
+                    logger.info("次级意图过滤(否定语境): intent=%s keyword=%s", intent, kw)
                     continue
                 matched.append(kw)
             if matched:

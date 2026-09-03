@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 try:
     import onnxruntime as ort
     ONNX_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     ONNX_AVAILABLE = False
 
 

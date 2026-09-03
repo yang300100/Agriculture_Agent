@@ -1,6 +1,7 @@
 """提醒管理节点 - 创建和管理农事提醒"""
 
 import logging
+import os
 import re
 from datetime import datetime, timedelta
 
@@ -10,6 +11,7 @@ from ..state import AgentState
 
 from core.reminder_system import ReminderSystem
 from core.planting_tracker import PlantingTracker
+from core.storage_paths import DEFAULT_DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +93,8 @@ def reminder_management_node(state: AgentState) -> AgentState:
 
             # 同时创建任务卡片（用于前端展示）
             try:
-                import os as _os
                 username = getattr(state, 'username', 'default')
-                sd = _os.path.join("data", username)
+                sd = os.path.join(DEFAULT_DATA_DIR, username)
                 tracker = PlantingTracker(sd)
                 end_date = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
                 task_id = tracker.create_task({

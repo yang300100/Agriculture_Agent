@@ -22,6 +22,7 @@
 
 import sys
 import os
+import base64
 import json
 import time
 import struct
@@ -31,6 +32,19 @@ import threading
 import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+
+
+def _env_port(name: str, default: int) -> int:
+    """读取可覆盖端口，并在启动前给出清晰的配置错误。"""
+    value = int(os.getenv(name, str(default)))
+    if not (1 <= value <= 65535):
+        raise ValueError(f"{name} 必须在 1-65535 范围内，收到: {value}")
+    return value
+
+
+HTTP_PORT = _env_port("HARDWARE_HTTP_PORT", 5000)
+MQTT_PORT = _env_port("HARDWARE_MQTT_PORT", 1883)
+MODBUS_PORT = _env_port("HARDWARE_MODBUS_PORT", 5020)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -73,7 +87,7 @@ DEVICE_DEFS = {
         "name": "温室灌溉泵",
         "type": "irrigate",
         "protocol": PROTO_HTTP,
-        "http_url": "http://127.0.0.1:5000",
+        "http_url": f"http://127.0.0.1:{HTTP_PORT}",
         "initial": {"power": True, "status": "standby", "flow_rate": 0, "total_water_liters": 156.8},
         "sensors": ["flow_rate", "total_water_liters"],
     },
@@ -89,7 +103,7 @@ DEVICE_DEFS = {
         "name": "温室补光灯",
         "type": "light",
         "protocol": PROTO_HTTP,
-        "http_url": "http://127.0.0.1:5000",
+        "http_url": f"http://127.0.0.1:{HTTP_PORT}",
         "initial": {"power": True, "status": "standby", "brightness_percent": 0},
         "sensors": ["brightness_percent"],
     },
@@ -114,7 +128,7 @@ DEVICE_DEFS = {
         "name": "施肥一体机",
         "type": "fertigate",
         "protocol": PROTO_HTTP,
-        "http_url": "http://127.0.0.1:5000",
+        "http_url": f"http://127.0.0.1:{HTTP_PORT}",
         "initial": {"power": True, "status": "standby", "flow_rate": 0, "total_fertilizer_kg": 23.5},
         "sensors": ["flow_rate", "total_fertilizer_kg"],
     },
@@ -346,38 +360,16 @@ class UnifiedDeviceManager:
 
     @staticmethod
     def _generate_simulated_jpeg() -> bytes:
-        """生成最小有效 JPEG 图像（绿色模拟作物画面）"""
-        import struct
-        # 最小 JPEG: SOI + APP0/JFIF + DQT + SOF0 + DHT + SOS + compressed data + EOI
-        # 使用一个极简的 1x1 绿色像素 JPEG
-        jpeg = bytes([
-            0xFF, 0xD8,  # SOI
-            0xFF, 0xE0,  # APP0
-            0x00, 0x10,  # len
-            0x4A, 0x46, 0x49, 0x46, 0x00,  # "JFIF\0"
-            0x01, 0x01,  # v1.1
-            0x00,        # units
-            0x00, 0x01, 0x00, 0x01,  # 1x1 dpi
-            0x00, 0x00,  # thumbnail
-            # DQT
-            0xFF, 0xDB, 0x00, 0x43, 0x00,
-        ] + bytes([0x10] * 64) + bytes([  # quant table
-            # SOF0
-            0xFF, 0xC0, 0x00, 0x0B, 0x08,
-            0x00, 0x01, 0x00, 0x01,  # 1x1
-            0x01, 0x01, 0x00,
-            # DHT
-            0xFF, 0xC4, 0x00, 0x1F, 0x00,
-            0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
-            # SOS + compressed
-            0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00,
-            0x00, 0x00,  # dummy MCU
-            # EOI
-            0xFF, 0xD9,
-        ])
-        return jpeg
+        """返回内嵌的有效 1×1 绿色 JPEG，保持模拟器零额外依赖。"""
+        encoded = (
+            "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQO"
+            "DwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcH"
+            "BwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo"
+            "KCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAA"
+            "AAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAA"
+            "AAAABv/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJQAXDX/2Q=="
+        )
+        return base64.b64decode(encoded)
 
 
 def _fmt_params(p: dict) -> str:
@@ -442,23 +434,25 @@ def create_http_server(mgr: UnifiedDeviceManager) -> bool:
     def run():
         import logging
         logging.getLogger('werkzeug').setLevel(logging.ERROR)
-        app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+        app.run(host="0.0.0.0", port=HTTP_PORT, debug=False, use_reloader=False)
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
-    time.sleep(0.5)
 
-    # 验证
-    try:
-        import requests
-        r = requests.get("http://localhost:5000/health", timeout=3)
-        if r.status_code == 200:
-            log_info(f"[HTTP] 服务器就绪 -> :5000", C.G)
-            return True
-    except Exception:
-        pass
-    log_info(f"[HTTP] 服务器就绪 -> :5000", C.G)
-    return True
+    # Flask 首次导入在较慢的 Windows 环境中可能超过 0.5 秒，轮询就绪状态。
+    last_error = None
+    for _ in range(20):
+        try:
+            import requests
+            r = requests.get(f"http://127.0.0.1:{HTTP_PORT}/health", timeout=0.5)
+            if r.status_code == 200:
+                log_info(f"[HTTP] 服务器就绪 -> :{HTTP_PORT}", C.G)
+                return True
+        except Exception as exc:
+            last_error = exc
+        time.sleep(0.25)
+    log_info(f"[HTTP] 启动失败 (:{HTTP_PORT}): {last_error}", C.R)
+    return False
 
 
 # ═══════════════════════════════════════════════════
@@ -475,7 +469,7 @@ MQTT_PINGRESP, MQTT_DISCONNECT = 13, 14
 class MqttBroker:
     """内嵌 MQTT 3.1.1 Broker（QoS 0，支持 +/# 通配符）"""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 1883):
+    def __init__(self, host: str = "127.0.0.1", port: int = MQTT_PORT):
         self._host = host
         self._port = port
         self._subscriptions: Dict[str, List] = {}     # topic -> [writer, ...]
@@ -641,7 +635,7 @@ class MqttDeviceHandler:
     """MQTT 设备处理器 — 基于 paho-mqtt，订阅控制主题并处理指令。"""
 
     def __init__(self, mgr: UnifiedDeviceManager, broker_host: str = "127.0.0.1",
-                 broker_port: int = 1883):
+                 broker_port: int = MQTT_PORT):
         self._mgr = mgr
         self._host = broker_host
         self._port = broker_port
@@ -742,7 +736,7 @@ class MqttDeviceHandler:
 class SimpleMqttClient:
     """简易 MQTT 客户端 — 终端通过此客户端向 MQTT 设备发送指令。"""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 1883):
+    def __init__(self, host: str = "127.0.0.1", port: int = MQTT_PORT):
         self._host = host; self._port = port
         self._sock: Optional[socket.socket] = None
         self._lock = threading.Lock()
@@ -819,7 +813,7 @@ class ModbusTcpServer:
     STATUS_RMAP = {0: "powered_off", 1: "standby", 2: "running", 3: "error"}
     CMD_MAP = {1: "power_on", 2: "power_off", 3: "start", 4: "stop", 5: "reset"}
 
-    def __init__(self, mgr: UnifiedDeviceManager, host: str = "127.0.0.1", port: int = 5020):
+    def __init__(self, mgr: UnifiedDeviceManager, host: str = "127.0.0.1", port: int = MODBUS_PORT):
         self._mgr = mgr
         self._host = host; self._port = port
         self._running = False
@@ -996,7 +990,7 @@ class ModbusTcpServer:
 class SimpleModbusClient:
     """简易 Modbus TCP 客户端 — 终端通过此客户端向 Modbus 设备发送指令。"""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 5020):
+    def __init__(self, host: str = "127.0.0.1", port: int = MODBUS_PORT):
         self._host = host; self._port = port
 
     def write_command(self, slave_id: int, command: str, params: dict = None):
@@ -1095,7 +1089,7 @@ class TerminalUI:
         self._mgr = mgr
         self._mqtt = mqtt_client
         self._modbus = modbus_client
-        self._http_url = "http://127.0.0.1:5000"
+        self._http_url = f"http://127.0.0.1:{HTTP_PORT}"
 
     def banner(self):
         print(f"""
@@ -1105,7 +1099,7 @@ class TerminalUI:
   ║     Farm Hardware Simulator (Full Protocol Stack)          ║
   ╚══════════════════════════════════════════════════════════════╝{C.W}
 
-  {C.BOLD}协议:{C.W}  🌐 HTTP(:5000)  |  📡 MQTT(:1883)  |  🔧 Modbus TCP(:5020)
+  {C.BOLD}协议:{C.W}  🌐 HTTP(:{HTTP_PORT})  |  📡 MQTT(:{MQTT_PORT})  |  🔧 Modbus TCP(:{MODBUS_PORT})
 
   {C.Y}HTTP 设备 (3台):{C.W}   灌溉泵 / 补光灯 / 施肥一体机
   {C.Y}MQTT 设备 (2台):{C.W}   通风扇 / 加热器
@@ -1349,26 +1343,30 @@ def main():
     http_ok = create_http_server(mgr)
 
     # ── 3. MQTT Broker ──
-    mqtt_broker = MqttBroker("127.0.0.1", 1883)
+    mqtt_broker = MqttBroker("127.0.0.1", MQTT_PORT)
     mqtt_broker.start()
     time.sleep(0.5)  # 等待 broker 绑定端口
     mqtt_broker_ok = mqtt_broker._started
 
     # ── 4. MQTT 设备处理器 ──
-    mqtt_handler = MqttDeviceHandler(mgr)
+    mqtt_handler = MqttDeviceHandler(mgr, broker_port=MQTT_PORT)
     mqtt_handler_ok = mqtt_handler.connect() if mqtt_broker_ok else False
 
     # ── 5. MQTT 客户端（供终端使用）──
-    mqtt_client = SimpleMqttClient()
+    mqtt_client = SimpleMqttClient(port=MQTT_PORT)
     mqtt_client_ok = mqtt_client.connect() if mqtt_broker_ok else False
 
     # ── 6. Modbus TCP 服务器 ──
-    modbus_server = ModbusTcpServer(mgr)
-    modbus_server.start()
-    modbus_ok = True  # 简化：默认启动成功
+    modbus_server = ModbusTcpServer(mgr, port=MODBUS_PORT)
+    try:
+        modbus_server.start()
+        modbus_ok = True
+    except OSError as exc:
+        modbus_ok = False
+        log_info(f"[Modbus] 启动失败 (:{MODBUS_PORT}): {exc}", C.R)
 
     # ── 7. Modbus 客户端（供终端使用）──
-    modbus_client = SimpleModbusClient()
+    modbus_client = SimpleModbusClient(port=MODBUS_PORT) if modbus_ok else None
 
     # ── 8. 传感器数据模拟 ──
     sensor = SensorSimulator(mgr).start(interval=5)
@@ -1386,7 +1384,7 @@ def main():
 
     print(f"  {C.BOLD}{'═'*60}{C.W}")
     print(f"  {C.G}  {proto_str}{C.W}")
-    print(f"  {C.G}  HTTP :5000 {'✅' if http_ok else '❌'}  |  MQTT :1883 {'✅' if mqtt_broker_ok else '❌'}  |  Modbus :5020 {'✅' if modbus_ok else '❌'}{C.W}")
+    print(f"  {C.G}  HTTP :{HTTP_PORT} {'✅' if http_ok else '❌'}  |  MQTT :{MQTT_PORT} {'✅' if mqtt_broker_ok else '❌'}  |  Modbus :{MODBUS_PORT} {'✅' if modbus_ok else '❌'}{C.W}")
     print(f"  {C.G}  全部设备默认通电待机，等待指令...{C.W}")
     print(f"  {C.BOLD}{'═'*60}{C.W}")
     print(f"  {C.DIM}输入 {C.C}help{C.DIM} 查看命令 | {C.C}list{C.DIM} 查看状态{C.W}\n")
