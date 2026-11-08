@@ -6,6 +6,7 @@
 - 支持进度更新和历史记录
 """
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta
@@ -30,6 +31,9 @@ class TaskStatus(Enum):
     IN_PROGRESS = "进行中"
     COMPLETED = "已完成"
     OVERDUE = "已逾期"
+    RUNNING = "运行中"
+    ABORTED = "已中止"
+    FAILED = "失败"
 
 
 class TaskType(Enum):
@@ -65,6 +69,7 @@ class PlantingTask:
     device_id: Optional[str] = None
     device_command: Optional[str] = None
     device_params: Optional[Dict[str, Any]] = None
+    execution_state: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -84,6 +89,7 @@ class PlantingProgress:
     notes: str
     created_at: str
     updated_at: str
+    plot_id: Optional[str] = None
 
 
 class PlantingTracker:
@@ -104,9 +110,23 @@ class PlantingTracker:
     def _uid(self) -> int:
         return self._user.id
 
-    def _generate_id(self) -> str:
-        """生成唯一ID"""
-        return f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{os.urandom(4).hex()}"
+    def _find_owned_record(self, repo, record_id: str):
+        """只查哥哥自己的记录，避免误操作其他用户的数据。"""
+        try:
+            numeric_id = int(record_id)
+        except (ValueError, TypeError):
+            return None
+        return repo.find_one(id=numeric_id, user_id=self._uid)
+
+    @staticmethod
+    def _decode_device_params(value) -> Optional[Dict[str, Any]]:
+        """把旧记录中的 JSON 安全还原成设备参数。"""
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError):
+                return None
+        return value if isinstance(value, dict) else None
 
     # ========== 任务管理 ==========
 
@@ -115,7 +135,7 @@ class PlantingTracker:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         task = PlantingTask(
-            id=self._generate_id(),
+            id="",
             crop=task_data.get("crop", ""),
             task_type=task_data.get("task_type", "其他"),
             title=task_data.get("title", ""),
@@ -138,10 +158,21 @@ class PlantingTracker:
         return task
 
     def _save_task(self, task: PlantingTask):
-        """保存任务到文件"""
-        tasks = self._load_tasks()
-        tasks.append(asdict(task))
-        self._save_tasks(tasks)
+        """只插入新任务，保留哥哥已有任务的 ID 和时间。"""
+        from core.database.repository.planting import PlantingTaskRepository
+
+        values = asdict(task)
+        for key in ("id", "created_at", "updated_at"):
+            values.pop(key)
+        values["device_params"] = (
+            json.dumps(task.device_params, ensure_ascii=False)
+            if task.device_params is not None else None
+        )
+        values["execution_state"] = json.dumps(task.execution_state) if task.execution_state else None
+        row = PlantingTaskRepository().create(user_id=self._uid, **values)
+        task.id = str(row.id)
+        task.created_at = row.created_at.isoformat()
+        task.updated_at = row.updated_at.isoformat()
 
     def _load_tasks(self) -> List[Dict[str, Any]]:
         """从DB加载所有任务"""
@@ -155,34 +186,28 @@ class PlantingTracker:
             "start_date": t.start_date.isoformat() if t.start_date else "",
             "end_date": t.end_date.isoformat() if t.end_date else "",
             "completed_date": t.completed_date.isoformat() if t.completed_date else "",
-            "progress_percent": 0,  # DB模型无此字段，默认0
+            "progress_percent": 100 if t.status == "已完成" else (t.progress_percent or 0),
             "notes": t.notes or "",
             "created_at": t.created_at.isoformat() if t.created_at else "",
             "updated_at": t.updated_at.isoformat() if t.updated_at else "",
             "device_id": t.device_id, "device_command": t.device_command,
-            "device_params": t.device_params,
+            "device_params": self._decode_device_params(t.device_params),
+            "execution_state": self._decode_device_params(t.execution_state),
         } for t in tasks]
-
-    def _save_tasks(self, tasks: List[Dict[str, Any]]):
-        """保存任务列表到DB"""
-        from core.database.repository.planting import PlantingTaskRepository
-        repo = PlantingTaskRepository()
-        items = [{
-            "crop": t.get("crop", ""), "task_type": t.get("task_type", ""),
-            "title": t.get("title", ""), "description": t.get("description", ""),
-            "status": t.get("status", "待办"), "priority": t.get("priority", "medium"),
-            "start_date": t.get("start_date"), "end_date": t.get("end_date"),
-            "completed_date": t.get("completed_date"),
-            "device_id": t.get("device_id"), "device_command": t.get("device_command"),
-            "device_params": t.get("device_params"),
-            "notes": t.get("notes", ""),
-        } for t in tasks]
-        repo.replace_all_for_user(self._uid, items)
 
     def get_tasks(self, crop: Optional[str] = None, status: Optional[str] = None) -> List[PlantingTask]:
         """获取任务列表，支持筛选"""
+        self.sync_running_device_tasks()
         tasks_data = self._load_tasks()
         tasks = [PlantingTask(**data) for data in tasks_data]
+        today = datetime.now().date()
+        for task in tasks:
+            if task.status in ("待办", "进行中") and task.end_date:
+                try:
+                    if datetime.strptime(task.end_date, "%Y-%m-%d").date() < today:
+                        task.status = "已逾期"
+                except (ValueError, TypeError):
+                    logger.warning("无法解析任务截止日期: %s", task.end_date)
 
         if crop:
             tasks = [t for t in tasks if t.crop == crop]
@@ -197,36 +222,304 @@ class PlantingTracker:
 
     def update_task_status(self, task_id: str, status: str, progress: Optional[int] = None) -> bool:
         """更新任务状态，返回 True 表示找到并更新，False 表示未找到"""
-        tasks = self._load_tasks()
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        found = False
+        from core.database.repository.planting import PlantingTaskRepository
 
+        repo = PlantingTaskRepository()
+        task = self._find_owned_record(repo, task_id)
+        if task is None:
+            return False
+        updates = {"status": status, "updated_at": datetime.now()}
+        if progress is not None:
+            updates["progress_percent"] = progress
+        if status == "已完成":
+            updates["progress_percent"] = 100
+            updates["completed_date"] = datetime.now().date()
+        from core.reminder_system import ReminderSystem
+        reminders = ReminderSystem(username=self._username)
+        with repo.session_scope() as session:
+            row = session.merge(task)
+            for key, value in updates.items():
+                setattr(row, key, value)
+            reminders.sync_task_reminders(task_id, status=status, session=session)
+            session.commit()
+        return True
+
+    def update_task(self, task_id: str, changes: Dict[str, Any]) -> bool:
+        """哥哥，只编辑安排和说明，运行中的设备参数与状态原样保留。"""
+        from core.database.repository.planting import PlantingTaskRepository
+
+        allowed = {"title", "crop", "task_type", "description", "priority", "start_date", "end_date"}
+        if set(changes) - allowed:
+            raise ValueError("任务编辑包含不可修改的字段")
+        repo = PlantingTaskRepository()
+        task = self._find_owned_record(repo, task_id)
+        if task is None:
+            return False
+        dates = {}
+        for key in ("start_date", "end_date"):
+            value = changes.get(key, getattr(task, key))
+            if isinstance(value, str):
+                if value:
+                    try:
+                        parsed = datetime.strptime(value, "%Y-%m-%d").date()
+                        if parsed.isoformat() != value:
+                            raise ValueError()
+                    except ValueError as exc:
+                        raise ValueError("日期必须为有效的 YYYY-MM-DD") from exc
+                    dates[key] = parsed
+                else:
+                    dates[key] = None
+            else:
+                dates[key] = value
+        if dates["start_date"] and dates["end_date"] and dates["start_date"] > dates["end_date"]:
+            raise ValueError("截止日期不能早于开始日期")
+        if "priority" in changes and changes["priority"] not in {"high", "medium", "low"}:
+            raise ValueError("优先级必须为 high、medium 或 low")
+        updates = {**changes, "updated_at": datetime.now()}
+        from core.reminder_system import ReminderSystem
+        reminders = ReminderSystem(username=self._username)
+        with repo.session_scope() as session:
+            row = session.merge(task)
+            for key, value in repo._coerce_dates(updates).items():
+                setattr(row, key, value)
+            if "start_date" in changes or "end_date" in changes:
+                new_date = changes.get("end_date") or changes.get("start_date")
+                reminders.sync_task_reminders(task_id, start_date=new_date, session=session)
+            session.commit()
+        return True
+
+    def record_device_task_result(self, task_id: str, result: Dict[str, Any], registry=None, loop=None) -> None:
+        """哥哥，下发成功只代表开始；持续作业要等设备的真实结束证据。"""
+        from core.database.repository.planting import PlantingTaskRepository
+
+        repo = PlantingTaskRepository()
+        task = self._find_owned_record(repo, task_id)
+        if task is None:
+            return
+        if not result.get("success"):
+            pending = result.get("decision") in {"need_confirm", "rejected", "notify_only"}
+            self.update_task_status(task_id, "待办" if pending else "失败", 0)
+            return
+        if task.device_command != "start":
+            self.update_task_status(task_id, "已完成", 100)
+            self.sync_running_device_tasks(registry, loop)
+            return
+        device_result = result.get("result")
+        state = getattr(device_result, "actual_params", None) or {}
+        if not state.get("run_id") and registry is not None and loop is not None:
+            state = loop.run_until_complete(registry.read_state(task.device_id))
+        runtime = {
+            "run_id": state.get("run_id"),
+            "started_at": state.get("run_started_at") or datetime.now().isoformat(),
+            "run_until": state.get("run_until"),
+        }
+        repo.update(task.id, status="运行中", progress_percent=10,
+                    execution_state=json.dumps(runtime, ensure_ascii=False), updated_at=datetime.now())
+
+    def sync_running_device_tasks(self, registry=None, loop=None) -> None:
+        """哥哥，跨请求恢复设备状态；未知和离线不能当作完成。"""
+        from core.database.repository.planting import PlantingTaskRepository
+        repo = PlantingTaskRepository()
+        # 哥哥，保留数据库原始执行快照，提交结果时才知道有没有被新一轮领取替换。
+        tasks = [row for row in repo.find_by(user_id=self._uid) if (
+            row.status == "运行中" or (
+                row.status == "进行中" and row.device_command == "start"
+                and (self._decode_device_params(row.execution_state) or {}).get("run_id")
+            )
+        )]
+        if not tasks:
+            return
+        if registry is None or loop is None:
+            from core.device_registry_factory import RegistrySession
+            try:
+                with RegistrySession(self._username) as (owned_registry, owned_loop):
+                    owned_loop.run_until_complete(owned_registry.discover_all())
+                    self.sync_running_device_tasks(owned_registry, owned_loop)
+            except Exception:
+                logger.warning("读取运行中任务设备状态失败，保留原状态", exc_info=True)
+            return
+        from core.database.models import PlantingTask as TaskRecord
+        from core.reminder_system import ReminderSystem
+        reminders = ReminderSystem(username=self._username)
+        states = {}
         for task in tasks:
-            if task["id"] == task_id:
-                task["status"] = status
-                task["updated_at"] = now
-                if progress is not None:
-                    task["progress_percent"] = progress
-                if status == "已完成":
-                    task["completed_date"] = datetime.now().strftime("%Y-%m-%d")
-                found = True
-                break
+            if task.device_id not in states:
+                states[task.device_id] = loop.run_until_complete(registry.read_state(task.device_id))
+            state = states[task.device_id]
+            if not isinstance(state, dict) or (
+                state.get("error") and state.get("status") not in {"error", "fault", "failed"}
+            ):
+                continue
+            runtime = self._decode_device_params(task.execution_state) or {}
+            run_id = runtime.get("run_id")
+            history = state.get("run_history") or {}
+            ended = history.get(run_id) or {} if isinstance(history, dict) else {}
+            if not ended and run_id and state.get("last_ended_run_id") == run_id:
+                ended = {"reason": state.get("last_run_end_reason"), "ended_at": state.get("last_run_ended_at")}
+            if task.status == "进行中":
+                if not run_id or (run_id != state.get("run_id") and not ended):
+                    continue
+                source = ended or {
+                    "started_at": state.get("run_started_at"), "run_until": state.get("run_until"),
+                }
+                runtime.update(
+                    started_at=source.get("started_at") or runtime.get("started_at"),
+                    run_until=source.get("run_until", runtime.get("run_until")),
+                )
+            status = None
+            if ended:
+                reason = ended.get("reason")
+                if reason == "completed":
+                    status = "已完成"
+                elif reason == "interrupted":
+                    status = "已中止"
+                elif reason == "failed":
+                    status = "失败"
+            if not status and state.get("status") in {"error", "fault", "failed"}:
+                status = "失败"
+            if not status and run_id and state.get("run_id") and state["run_id"] != run_id:
+                status = "已中止"
+            if status:
+                runtime.update(ended_at=ended.get("ended_at") or datetime.now().isoformat(),
+                               end_reason=status)
+            if not status and task.status != "进行中":
+                continue
+            updates = {
+                "status": status or "运行中",
+                "execution_state": json.dumps(runtime, ensure_ascii=False),
+                "updated_at": datetime.now(),
+            }
+            if status == "已完成":
+                updates.update(progress_percent=100, completed_date=datetime.now().date())
+            # 哥哥，状态、执行编号和关联提醒一起提交；旧读取绝不能盖掉新启动的回执。
+            with repo.session_scope() as session:
+                changed = session.query(TaskRecord).filter(
+                    TaskRecord.id == task.id, TaskRecord.user_id == self._uid,
+                    TaskRecord.status == task.status,
+                    TaskRecord.execution_state == task.execution_state,
+                ).update(updates, synchronize_session=False)
+                if changed and status:
+                    reminders.sync_task_reminders(str(task.id), status=status, session=session)
+                session.commit()
 
-        self._save_tasks(tasks)
-        return found
+    def claim_device_task(self, task_id: str) -> bool:
+        """哥哥，先原子领取设备任务，避免手动操作和后台同时下发。"""
+        from sqlalchemy import or_
+        from core.database.engine import get_session
+        from core.database.models import PlantingTask as TaskRecord
+
+        try:
+            numeric_id = int(task_id)
+        except (ValueError, TypeError):
+            return False
+        with get_session() as session:
+            query = session.query(TaskRecord).filter(
+                TaskRecord.id == numeric_id,
+                TaskRecord.user_id == self._uid,
+                or_(
+                    TaskRecord.status.in_(["待办", "已逾期", "失败", "已中止", ""]),
+                    TaskRecord.status.is_(None),
+                ),
+                TaskRecord.device_id.isnot(None),
+                TaskRecord.device_id != "",
+                TaskRecord.device_command.isnot(None),
+                TaskRecord.device_command != "",
+            )
+            task = query.first()
+            if task is None:
+                return False
+            runtime = self._decode_device_params(task.execution_state) or {}
+            if not runtime.get("run_id") or runtime.get("started_at") or task.status == "失败":
+                import uuid
+                runtime = {"run_id": uuid.uuid4().hex}
+            claimed = query.update({
+                "status": "进行中", "progress_percent": 10,
+                "execution_state": json.dumps(runtime, ensure_ascii=False),
+                "updated_at": datetime.now(),
+            }, synchronize_session=False)
+            session.commit()
+            return bool(claimed)
+
+    def device_task_execution_lock(self, task_id: str):
+        """哥哥，同一任务在API、确认与后台之间共用一个系统执行锁。"""
+        from core.device_executor import _PendingFileLock
+        from core.storage_paths import DEFAULT_DATA_DIR
+        numeric_id = int(task_id)
+        return _PendingFileLock(os.path.join(DEFAULT_DATA_DIR, self._username, f"task_{numeric_id}.executing.lock"))
+
+    def recover_unrecorded_device_task(self, task_id: str, registry, loop) -> bool:
+        """哥哥，仅在持有任务锁的显式重试中恢复虚拟设备的孤立领取，保留执行编号。"""
+        from core.device_registry_factory import load_custom_devices
+        from core.database.engine import get_session
+        from core.database.models import PlantingTask as TaskRecord
+
+        self.sync_running_device_tasks(registry, loop)
+        task = next((row for row in self._load_tasks() if row["id"] == str(task_id)), None)
+        if not task or task["status"] != "进行中":
+            return False
+        config = next((row for row in load_custom_devices(self._username) if row["device_id"] == task["device_id"]), {})
+        # 真实协议未声明执行编号幂等时，不能根据缺失回执猜测设备没有启动。
+        if config.get("driver") != "simulator":
+            return False
+        state = loop.run_until_complete(registry.read_state(task["device_id"]))
+        if not isinstance(state, dict) or state.get("error") or state.get("status") not in {"powered_off", "standby", "running"}:
+            return False
+        runtime = task.get("execution_state") or {}
+        run_id = runtime.get("run_id")
+        if not run_id or state.get("run_id") == run_id or state.get("last_ended_run_id") == run_id or run_id in (state.get("run_history") or {}):
+            return False
+        with get_session() as session:
+            recovered = session.query(TaskRecord).filter(
+                TaskRecord.id == int(task_id), TaskRecord.user_id == self._uid,
+                TaskRecord.status == "进行中",
+            ).update({"status": "待办", "progress_percent": 0, "updated_at": datetime.now()}, synchronize_session=False)
+            session.commit()
+            return bool(recovered)
+
+    def recover_interrupted_device_task(self, task_id: str, interrupted_at: str) -> bool:
+        """哥哥，只恢复旧执行留下的任务，不能覆盖后来已经领取的操作。"""
+        self.sync_running_device_tasks()
+        from core.database.engine import get_session
+        from core.database.models import PlantingTask as TaskRecord
+
+        try:
+            numeric_id = int(task_id)
+            interrupted_time = datetime.fromisoformat(interrupted_at)
+        except (ValueError, TypeError):
+            return False
+        if interrupted_time.tzinfo is not None:
+            interrupted_time = interrupted_time.astimezone().replace(tzinfo=None)
+        with get_session() as session:
+            recovered = session.query(TaskRecord).filter(
+                TaskRecord.id == numeric_id,
+                TaskRecord.user_id == self._uid,
+                TaskRecord.status == "进行中",
+                TaskRecord.updated_at <= interrupted_time,
+            ).update({
+                "status": "待办", "progress_percent": 0, "updated_at": datetime.now(),
+            }, synchronize_session=False)
+            session.commit()
+            return bool(recovered)
 
     def delete_task(self, task_id: str) -> bool:
         """删除任务"""
-        tasks = self._load_tasks()
-        original_count = len(tasks)
-        tasks = [t for t in tasks if t["id"] != task_id]
-        if len(tasks) < original_count:
-            self._save_tasks(tasks)
-            return True
-        return False
+        from core.database.repository.planting import PlantingTaskRepository
+
+        repo = PlantingTaskRepository()
+        task = self._find_owned_record(repo, task_id)
+        if task is None:
+            return False
+        from core.reminder_system import ReminderSystem
+        reminders = ReminderSystem(username=self._username)
+        with repo.session_scope() as session:
+            reminders.sync_task_reminders(task_id, deleted=True, session=session)
+            session.delete(session.merge(task))
+            session.commit()
+        return True
 
     def get_task_by_id(self, task_id: str) -> Optional[PlantingTask]:
         """按 ID 获取单个任务"""
+        self.sync_running_device_tasks()
         tasks = self._load_tasks()
         for task_data in tasks:
             if task_data.get("id") == task_id:
@@ -240,12 +533,26 @@ class PlantingTracker:
 
     # ========== 进度管理 ==========
 
+    def validate_plot_id(self, plot_id):
+        if plot_id in (None, ""):
+            return None
+        if isinstance(plot_id, bool) or not isinstance(plot_id, (int, str)):
+            raise ValueError("地块编号必须是整数")
+        from core.database.repository.fields import FieldRepository
+        try:
+            numeric_id = int(plot_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("地块编号无效") from exc
+        if not FieldRepository().find_one(id=numeric_id, user_id=self._uid):
+            raise ValueError("地块不存在或不属于当前账号")
+        return str(numeric_id)
+
     def create_progress(self, progress_data: Dict[str, Any]) -> PlantingProgress:
         """创建新的进度记录"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         progress = PlantingProgress(
-            id=self._generate_id(),
+            id="",
             crop=progress_data.get("crop", ""),
             stage=progress_data.get("stage", ""),
             stage_number=progress_data.get("stage_number", 1),
@@ -258,17 +565,30 @@ class PlantingTracker:
             tasks=progress_data.get("tasks", []),
             notes=progress_data.get("notes", ""),
             created_at=now,
-            updated_at=now
+            updated_at=now,
+            plot_id=self.validate_plot_id(progress_data.get("plot_id")),
         )
+
+        if progress.start_date:
+            start = datetime.strptime(progress.start_date, "%Y-%m-%d").date()
+            if start > datetime.now().date():
+                progress.status = "待开始"
+                progress.progress_percent = 0
 
         self._save_progress(progress)
         return progress
 
     def _save_progress(self, progress: PlantingProgress):
-        """保存进度到文件"""
-        progresses = self._load_progresses()
-        progresses.append(asdict(progress))
-        self._save_progresses(progresses)
+        """只插入新进度，把数据库中的真实 ID 返回给哥哥。"""
+        from core.database.repository.planting import PlantingPlanRepository
+
+        values = asdict(progress)
+        for key in ("id", "tasks", "created_at", "updated_at"):
+            values.pop(key)
+        row = PlantingPlanRepository().create(user_id=self._uid, **values)
+        progress.id = str(row.id)
+        progress.created_at = row.created_at.isoformat()
+        progress.updated_at = row.updated_at.isoformat()
 
     def _load_progresses(self) -> List[Dict[str, Any]]:
         """从DB加载所有进度"""
@@ -277,6 +597,7 @@ class PlantingTracker:
         plans = repo.find_by(user_id=self._uid)
         return [{
             "id": str(p.id), "crop": p.crop or "", "stage": p.stage or "",
+            "plot_id": str(p.plot_id) if p.plot_id is not None else None,
             "stage_number": p.stage_number or 1, "total_stages": p.total_stages or 4,
             "start_date": p.start_date.isoformat() if p.start_date else "",
             "expected_end_date": p.expected_end_date.isoformat() if p.expected_end_date else "",
@@ -284,24 +605,10 @@ class PlantingTracker:
             "progress_percent": p.progress_percent or 0,
             "status": p.status or "进行中",
             "tasks": [],  # DB模型无此字段，默认空
-            "notes": "",  # DB模型无此字段，默认空
+            "notes": p.notes or "",
             "created_at": p.created_at.isoformat() if p.created_at else "",
             "updated_at": p.updated_at.isoformat() if p.updated_at else "",
         } for p in plans]
-
-    def _save_progresses(self, progresses: List[Dict[str, Any]]):
-        """保存进度列表到DB"""
-        from core.database.repository.planting import PlantingPlanRepository
-        repo = PlantingPlanRepository()
-        items = [{
-            "crop": p.get("crop", ""), "stage": p.get("stage"),
-            "stage_number": p.get("stage_number"), "total_stages": p.get("total_stages"),
-            "start_date": p.get("start_date"), "expected_end_date": p.get("expected_end_date"),
-            "actual_end_date": p.get("actual_end_date"),
-            "progress_percent": p.get("progress_percent", 0),
-            "status": p.get("status", "active"),
-        } for p in progresses]
-        repo.replace_all_for_user(self._uid, items)
 
     def get_progress(self, crop: Optional[str] = None) -> List[PlantingProgress]:
         """获取进度列表"""
@@ -317,26 +624,30 @@ class PlantingTracker:
 
     def update_progress(self, progress_id: str, updates: Dict[str, Any]):
         """更新进度"""
-        progresses = self._load_progresses()
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        from core.database.repository.planting import PlantingPlanRepository
 
-        for progress in progresses:
-            if progress["id"] == progress_id:
-                progress.update(updates)
-                progress["updated_at"] = now
-                break
-
-        self._save_progresses(progresses)
+        repo = PlantingPlanRepository()
+        progress = self._find_owned_record(repo, progress_id)
+        if progress is None:
+            return False
+        allowed = {
+            "crop", "stage", "stage_number", "total_stages", "start_date",
+            "expected_end_date", "actual_end_date", "progress_percent", "status", "notes", "plot_id",
+        }
+        values = {key: value for key, value in updates.items() if key in allowed}
+        if "plot_id" in values:
+            values["plot_id"] = self.validate_plot_id(values["plot_id"])
+        values["updated_at"] = datetime.now()
+        repo.update(progress.id, **values)
+        return True
 
     def delete_progress(self, progress_id: str) -> bool:
         """删除进度记录"""
-        progresses = self._load_progresses()
-        original_count = len(progresses)
-        progresses = [p for p in progresses if p["id"] != progress_id]
-        if len(progresses) < original_count:
-            self._save_progresses(progresses)
-            return True
-        return False
+        from core.database.repository.planting import PlantingPlanRepository
+
+        repo = PlantingPlanRepository()
+        progress = self._find_owned_record(repo, progress_id)
+        return repo.delete(progress.id) if progress is not None else False
 
     def advance_to_next_stage(self, progress_id: str) -> Dict[str, Any]:
         """
@@ -357,9 +668,12 @@ class PlantingTracker:
         row = repo.get_by_id(int(progress_id)) if str(progress_id).isdigit() else None
         if not row or row.user_id != self._uid:
             return {"success": False, "message": "未找到进度记录"}
+        if row.start_date and row.start_date > datetime.now().date():
+            return {"success": False, "message": "哥哥，计划尚未到开始日期，不能提前推进阶段。"}
 
-        current_stage = row.stage_number or 0
-        total_stages = row.total_stages or 1
+        progress = self._effective_progress(self._load_progress_by_id(str(row.id)))
+        current_stage = progress.stage_number
+        total_stages = progress.total_stages
         crop = row.crop or ""
 
         if current_stage < total_stages:
@@ -368,6 +682,7 @@ class PlantingTracker:
             repo.update(
                 row.id,
                 stage_number=next_stage,
+                total_stages=total_stages,
                 progress_percent=0,
                 status="进行中",
                 stage=stage_name,
@@ -383,6 +698,9 @@ class PlantingTracker:
 
         repo.update(
             row.id,
+            stage_number=current_stage,
+            stage=progress.stage,
+            total_stages=total_stages,
             status="已完成",
             progress_percent=100,
             actual_end_date=datetime.now().date(),
@@ -391,7 +709,7 @@ class PlantingTracker:
         return {
             "success": True,
             "message": "恭喜！所有阶段已完成！",
-            "new_stage": row.stage or "完成",
+            "new_stage": progress.stage or "完成",
             "stage_number": current_stage,
             "is_completed": True,
         }
@@ -450,7 +768,8 @@ class PlantingTracker:
                     days_elapsed = (current_date - start_date).days
 
                     if days_elapsed < 0:
-                        return {"success": False, "message": "开始日期在未来，无法计算进度"}
+                        self.update_progress(progress_id, {"status": "待开始", "progress_percent": 0})
+                        return {"success": True, "status": "待开始", "progress_percent": 0, "stage_progress": 0, "overall_progress": 0, "message": "计划尚未开始"}
 
                     # 获取作物生长阶段信息
                     from .planting_planner import CropDatabase
@@ -464,33 +783,24 @@ class PlantingTracker:
                         # 使用默认阶段计算
                         result = self._calculate_with_default_stages(days_elapsed)
 
-                    # 自动推进：只前进不后退（尊重用户手动推进的阶段）
-                    current_stage = progress.get("stage_number", 0)
-                    calc_stage = result["stage_number"]
-                    if calc_stage > current_stage:
-                        progress["stage_number"] = calc_stage
-                        progress["stage"] = result["stage_name"]
-                        progress["total_stages"] = result["total_stages"]
-                        progress["status"] = result["status"]
-                        progress["progress_percent"] = result["progress_percent"]
-                    elif calc_stage == current_stage:
-                        progress["stage"] = result["stage_name"]
-                        progress["progress_percent"] = result["progress_percent"]
-                        progress["total_stages"] = result["total_stages"]
-                    # calc_stage < current_stage: 用户手动推进过了，保持不动
-                    progress["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    self._save_progresses(progresses)
+                    # 哥哥，保存值和返回值都尊重已经人工确认的阶段与完成状态。
+                    effective = PlantingProgress(**progress)
+                    if effective.status != "已完成":
+                        effective = self._merge_display_data(effective, result)
+                    self.update_progress(progress_id, asdict(effective))
 
                     return {
                         "success": True,
-                        "stage_number": result["stage_number"],
-                        "stage_name": result["stage_name"],
-                        "progress_percent": result["progress_percent"],
-                        "total_stages": result["total_stages"],
+                        "stage_number": effective.stage_number,
+                        "stage_name": effective.stage,
+                        "progress_percent": effective.progress_percent,
+                        "stage_progress": effective.progress_percent,
+                        "overall_progress": self._overall_progress(effective),
+                        "total_stages": effective.total_stages,
                         "days_elapsed": days_elapsed,
-                        "days_in_stage": result["days_in_stage"],
-                        "status": result["status"],
-                        "message": f"已自动计算进度：{result['stage_name']} ({result['progress_percent']}%)"
+                        "days_in_stage": result["days_in_stage"] if effective.stage_number == result["stage_number"] else 0,
+                        "status": effective.status,
+                        "message": f"当前阶段：{effective.stage} ({effective.progress_percent}%)"
                     }
 
                 except Exception as e:
@@ -559,7 +869,7 @@ class PlantingTracker:
             current_date = datetime.now()
             days_elapsed = (current_date - start_date).days
             if days_elapsed < 0:
-                return None
+                return {"stage_number": progress.stage_number, "stage_name": progress.stage, "progress_percent": 0, "total_stages": progress.total_stages, "status": "待开始"}
             from .planting_planner import CropDatabase
             crop_db = CropDatabase()
             crop_info = crop_db.get_crop(crop)
@@ -588,10 +898,37 @@ class PlantingTracker:
                 "stage": calc_result["stage_name"],
                 "progress_percent": calc_result["progress_percent"],
                 "total_stages": calc_result["total_stages"],
+                "status": calc_result["status"],
             }
         else:
             return progress  # 用户手动推进过了，保持不动
         return replace(progress, **updates)
+
+    def _overall_progress(self, progress: PlantingProgress) -> int:
+        """哥哥，整季进度只按起点和总天数计算，不随阶段清零。"""
+        if progress.status == "已完成":
+            return 100
+        try:
+            start = datetime.strptime(progress.start_date, "%Y-%m-%d").date()
+            elapsed = max(0, (datetime.now().date() - start).days)
+            if progress.expected_end_date:
+                end = datetime.strptime(progress.expected_end_date, "%Y-%m-%d").date()
+                total = (end - start).days
+            else:
+                from .planting_planner import CropDatabase
+                info = CropDatabase().get_crop(progress.crop)
+                total = sum(stage.get("duration_days", 30) for stage in info.growth_stages) if info and info.growth_stages else 164
+            return min(100, int(elapsed * 100 / total)) if total > 0 else 0
+        except (ValueError, TypeError):
+            return 0
+
+    def _effective_progress(self, progress: PlantingProgress) -> PlantingProgress:
+        """哥哥，卡片和人工推进共用有效阶段，显示值仍不偷偷写入数据库。"""
+        if progress.status != "已完成":
+            result = self._calc_progress_display(progress)
+            if result is not None:
+                return self._merge_display_data(progress, result)
+        return progress
 
     # ========== 卡片数据生成 ==========
 
@@ -601,10 +938,22 @@ class PlantingTracker:
 
         cards = []
         for task in tasks[:limit]:
+            retry_available = False
+            if task.status == "进行中":
+                from core.device_registry_factory import load_custom_devices
+                config = next((item for item in load_custom_devices(self._username) if item["device_id"] == task.device_id), {})
+                if config.get("driver") == "simulator":
+                    lock = self.device_task_execution_lock(task.id)
+                    if lock.acquire():
+                        retry_available = True
+                        lock.release()
             # 计算状态颜色
             status_color = {
                 "待办": "gray",
                 "进行中": "blue",
+                "运行中": "blue",
+                "已中止": "orange",
+                "失败": "red",
                 "已完成": "green",
                 "已逾期": "red"
             }.get(task.status, "gray")
@@ -621,7 +970,7 @@ class PlantingTracker:
             if task.end_date:
                 try:
                     end = datetime.strptime(task.end_date, "%Y-%m-%d")
-                    delta = (end - datetime.now()).days
+                    delta = (end.date() - datetime.now().date()).days
                     days_left = delta if delta >= 0 else 0
                 except (ValueError, TypeError):
                     logger.warning("无法解析任务截止日期: %s", task.end_date)
@@ -630,6 +979,7 @@ class PlantingTracker:
                 "id": task.id,
                 "type": "task",
                 "crop": task.crop,
+                "task_type": task.task_type,
                 "title": task.title,
                 "description": task.description,
                 "status": task.status,
@@ -645,38 +995,21 @@ class PlantingTracker:
                 "device_id": task.device_id,
                 "device_command": task.device_command,
                 "device_params": task.device_params,
+                "execution_state": task.execution_state,
+                "started_at": (task.execution_state or {}).get("started_at"),
+                "run_until": (task.execution_state or {}).get("run_until"),
+                "ended_at": (task.execution_state or {}).get("ended_at"),
+                "retry_available": retry_available,
             })
 
         return cards
 
-    def get_progress_cards(self, limit: int = 5) -> List[Dict[str, Any]]:
-        """获取进度卡片数据（供前端展示），自动计算已知作物的进度（不持久化）"""
+    def get_progress_cards(self, limit: Optional[int] = 5) -> List[Dict[str, Any]]:
+        """获取进度卡片数据；哥哥可传 None 获取全部，自动计算不持久化。"""
         progresses = self.get_progress()
-        now = datetime.now()
-
         cards = []
         for progress in progresses[:limit]:
-            refreshed = progress  # 默认不自动计算，直接使用原值
-
-            # 跳过刚被手动操作过的进度（10 秒内），避免自动计算覆盖手动操作
-            updated_at = getattr(progress, "updated_at", None)
-            skip_auto = False
-            if updated_at:
-                try:
-                    last_update = datetime.strptime(updated_at, "%Y-%m-%d %H:%M:%S")
-                    if (now - last_update).total_seconds() < 10:
-                        skip_auto = True
-                except ValueError:
-                    pass
-
-            if progress.status != "已完成" and not skip_auto:
-                try:
-                    # 只计算进度展示值，不调用 auto_calculate_progress（它会持久化）
-                    calc_result = self._calc_progress_display(progress)
-                    if calc_result is not None:
-                        refreshed = self._merge_display_data(progress, calc_result)
-                except Exception:
-                    pass
+            refreshed = self._effective_progress(progress)
 
             status_color = {
                 "进行中": "blue",
@@ -692,7 +1025,7 @@ class PlantingTracker:
                     crop_db = CropDatabase()
                     crop_info = crop_db.get_crop(refreshed.crop)
                     if crop_info and crop_info.growth_stages:
-                        stage_label = f"{refreshed.stage}（自动检测）"
+                        stage_label = f"{refreshed.stage}（预计阶段）"
                 except Exception:
                     pass
 
@@ -704,11 +1037,14 @@ class PlantingTracker:
                 "stage_number": refreshed.stage_number,
                 "total_stages": refreshed.total_stages,
                 "progress": refreshed.progress_percent,
+                "stage_progress": refreshed.progress_percent,
+                "overall_progress": self._overall_progress(refreshed),
                 "status": refreshed.status,
                 "status_color": status_color,
                 "start_date": refreshed.start_date,
                 "expected_end_date": refreshed.expected_end_date,
                 "tasks_count": len(refreshed.tasks),
+                "plot_id": refreshed.plot_id,
                 "notes": refreshed.notes,
             })
 
@@ -731,7 +1067,7 @@ class PlantingTracker:
         task_stats = {
             "total": len(tasks),
             "pending": len([t for t in tasks if t.status == "待办"]),
-            "in_progress": len([t for t in tasks if t.status == "进行中"]),
+            "in_progress": len([t for t in tasks if t.status in {"进行中", "运行中"}]),
             "completed": len([t for t in tasks if t.status == "已完成"]),
             "overdue": len([t for t in tasks if t.status == "已逾期"])
         }

@@ -13,6 +13,19 @@ from ..config import *
 
 logger = logging.getLogger(__name__)
 
+_TASK_REQUEST = re.compile(
+    r"(?:添加|创建|新建|设置|安排|帮我建|帮我加).*?(?:任务|提醒|待办)|提醒(?:我|一下|[：:])"
+)
+
+
+def _is_task_request(question: str) -> bool:
+    """哥哥，明确的操作请求才允许创建提醒，否定和既往记录要排除。"""
+    return bool(_TASK_REQUEST.search(question)) and not re.search(
+        r"(?:不要|不用|别|取消|删除|如何|怎么|怎样|查看|查询).{0,6}(?:创建|添加|设置|提醒|新建)|"
+        r"(?:创建|添加|设置|新建)[了过]",
+        question,
+    )
+
 
 def classify_intent(state: AgentState) -> AgentState:
     """
@@ -21,6 +34,19 @@ def classify_intent(state: AgentState) -> AgentState:
     """
     state.progress_message = "正在分析您的意图..."
     user_question = state.user_question or ""
+
+    if re.search(r"(?:查看|查询|看看|列出|显示).*?(?:任务|待办)", user_question):
+        state.intent_type = "progress_tracking"
+        state.need_rag = False
+        state.need_clarification = False
+        return state
+
+    # 哥哥，明确的建任务请求先在本地识别，问候前缀和模型故障都不会吞掉它。
+    if _is_task_request(user_question):
+        state.intent_type = "reminder_setup"
+        state.need_rag = False
+        state.need_clarification = False
+        return state
 
     # 如果 parse_input 已通过语音指令预设了意图，跳过 LLM 分类
     # 所有非 unclear 预设意图都信任 parse_input 的判断，避免被 LLM 覆盖
@@ -194,7 +220,7 @@ def _fallback_intent_classification(user_question: str) -> Dict[str, Any]:
         return {"intent_type": "planting_schedule", "need_rag": True, "need_clarification": False, "reasoning": "关键词匹配"}
     elif any(keyword in user_question for keyword in PLANTING_METHOD_KEYWORDS):
         return {"intent_type": "planting_method", "need_rag": True, "need_clarification": False, "reasoning": "关键词匹配"}
-    elif any(keyword in user_question for keyword in REMINDER_KEYWORDS):
+    elif _is_task_request(user_question):
         return {"intent_type": "reminder_setup", "need_rag": False, "need_clarification": False, "reasoning": "关键词匹配"}
     elif any(keyword in user_question for keyword in PROGRESS_KEYWORDS):
         return {"intent_type": "progress_tracking", "need_rag": True, "need_clarification": False, "reasoning": "关键词匹配"}

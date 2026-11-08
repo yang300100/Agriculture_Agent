@@ -50,6 +50,9 @@ export type Progress = JsonMap & {
   stage: string;
   progress_percent: number;
   status: string;
+  plot_id?: string | null;
+  overall_progress?: number;
+  stage_progress?: number;
 };
 
 export type Device = JsonMap & {

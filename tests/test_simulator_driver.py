@@ -3,6 +3,8 @@ import asyncio
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from devices.base import DeviceCommand, DeviceCapability
@@ -121,3 +123,86 @@ class TestSimulatorDriver:
     def test_get_history(self):
         self.driver._history.append({"test": True})
         assert len(self.driver.get_history()) == 1
+
+
+@pytest.mark.parametrize(
+    "device_id,capability,commands,expected",
+    [
+        ("irrigation_01", DeviceCapability.IRRIGATE, ["power_on"], 44.8),
+        ("irrigation_01", DeviceCapability.IRRIGATE, ["start", "stop"], 44.8),
+        ("pump_01", DeviceCapability.IRRIGATE, ["start"], 46.0),
+        ("irrigation_fan", DeviceCapability.VENTILATE, ["start"], 44.8),
+    ],
+)
+def test_土壤水分只响应正在工作的灌溉能力设备(
+    monkeypatch, device_id, capability, commands, expected
+):
+    monkeypatch.setattr(
+        "devices.simulator_driver.random.uniform", lambda lo, hi: (lo + hi) / 2
+    )
+
+    async def run():
+        driver = SimulatorDriver(simulated_latency_ms=0)
+        await driver.connect()
+        driver.add_virtual_device(device_id, "测试执行器", [capability])
+        driver.add_virtual_device(
+            "soil_01", "测试土壤传感器", [DeviceCapability.READ_SENSOR],
+            sensors=["soil_moisture"], initial_state={"soil_moisture": 45.0},
+        )
+        for command in commands:
+            assert (await driver.execute(device_id, DeviceCommand(command=command))).success
+        assert (await driver.read_state("soil_01"))["soil_moisture"] == expected
+
+    asyncio.run(run())
+
+
+def test_不同地块的灌溉反馈不会串到另一块土壤(monkeypatch):
+    monkeypatch.setattr(
+        "devices.simulator_driver.random.uniform", lambda lo, hi: (lo + hi) / 2
+    )
+
+    async def run():
+        driver = SimulatorDriver(simulated_latency_ms=0)
+        await driver.connect()
+        for suffix, location in [("a", "东侧地块"), ("b", "西侧地块")]:
+            driver.add_virtual_device(
+                f"pump_{suffix}", "测试水泵", [DeviceCapability.IRRIGATE],
+                location=location,
+            )
+            driver.add_virtual_device(
+                f"soil_{suffix}", "测试土壤传感器", [DeviceCapability.READ_SENSOR],
+                sensors=["soil_moisture"], location=location,
+                initial_state={"soil_moisture": 45.0},
+            )
+        assert (await driver.execute("pump_a", DeviceCommand(command="start"))).success
+        assert (await driver.read_state("soil_a"))["soil_moisture"] == 46.0
+        assert (await driver.read_state("soil_b"))["soil_moisture"] == 44.8
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "sensor_location,pump_location", [("", ""), ("东侧地块", ""), ("", "东侧地块")]
+)
+def test_缺少位置信息时保持旧模拟设备的灌溉反馈(
+    monkeypatch, sensor_location, pump_location
+):
+    monkeypatch.setattr(
+        "devices.simulator_driver.random.uniform", lambda lo, hi: (lo + hi) / 2
+    )
+
+    async def run():
+        driver = SimulatorDriver(simulated_latency_ms=0)
+        await driver.connect()
+        driver.add_virtual_device(
+            "pump_01", "测试水泵", [DeviceCapability.IRRIGATE], location=pump_location,
+        )
+        driver.add_virtual_device(
+            "soil_01", "测试土壤传感器", [DeviceCapability.READ_SENSOR],
+            sensors=["soil_moisture"], location=sensor_location,
+            initial_state={"soil_moisture": 45.0},
+        )
+        assert (await driver.execute("pump_01", DeviceCommand(command="start"))).success
+        assert (await driver.read_state("soil_01"))["soil_moisture"] == 46.0
+
+    asyncio.run(run())

@@ -190,6 +190,9 @@ class HTTPDriver(BaseDeviceDriver):
                 "device_id": device_id,
             }
 
+            if command.execution_id:
+                payload["execution_id"] = command.execution_id
+
             request_timeout = max(float(command.timeout_ms) / 1000.0, 0.001)
             resp = await self._async_request(
                 "POST", f"{base_url}/command",
@@ -206,7 +209,15 @@ class HTTPDriver(BaseDeviceDriver):
                         message="HTTP 设备返回格式错误：响应必须是 JSON 对象",
                         error_code="INVALID_RESPONSE",
                     )
-                remote_success = bool(resp_data.get("success", False))
+                if command.execution_id and resp_data.get("execution_id") != command.execution_id:
+                    return DeviceResult(False, device_id, command.command, message="设备回执编号不匹配", error_code="ACK_UNCONFIRMED", execution_id=command.execution_id)
+                if command.command == "capture" and isinstance(resp_data.get("image_base64"), str):
+                    import base64
+                    try:
+                        resp_data["image_bytes"] = base64.b64decode(resp_data["image_base64"], validate=True)
+                    except (ValueError, TypeError):
+                        return DeviceResult(False, device_id, command.command, message="图像编码无效", error_code="INVALID_RESPONSE", execution_id=command.execution_id)
+                remote_success = resp_data.get("success") is True
                 dev["reachable"] = True
                 if not remote_success:
                     return DeviceResult(
@@ -250,6 +261,7 @@ class HTTPDriver(BaseDeviceDriver):
                     actual_params=command.params,
                     message=resp_data.get("message", f"[HTTP] 指令已发送到 {base_url}"),
                     raw_response=resp_data,
+                    execution_id=command.execution_id, acknowledged=bool(command.execution_id),
                 )
             else:
                 dev["reachable"] = False
@@ -296,7 +308,7 @@ class HTTPDriver(BaseDeviceDriver):
         dev = self._devices[device_id]
         base_url = dev["info"].get("base_url")
         if not base_url:
-            return {**dev["state"], "_driver": "http", "_read_at": datetime.now().isoformat()}
+            return {**dev["state"], "_driver": "http", "_quality": "error", "_error": "未配置地址"}
 
         try:
             headers = self._make_headers(dev["info"])
@@ -311,10 +323,13 @@ class HTTPDriver(BaseDeviceDriver):
                         **dev["state"],
                         "_driver": "http",
                         "_read_at": datetime.now().isoformat(),
+                        "_quality": "error",
                         "_error": "HTTP 状态响应必须是 JSON 对象",
                     }
                 # 合并远程状态：本地兜底 + 远程覆盖
                 dev["state"].update(state)
+                dev["state"].update({"_observed_at": datetime.now().isoformat(), "_quality": "good"})
+                dev["state"].pop("_error", None)
                 dev["reachable"] = True
                 return {**dev["state"], "_driver": "http", "_read_at": datetime.now().isoformat()}
             else:
@@ -323,6 +338,7 @@ class HTTPDriver(BaseDeviceDriver):
                     **dev["state"],
                     "_driver": "http",
                     "_read_at": datetime.now().isoformat(),
+                    "_quality": "error",
                     "_error": f"HTTP {resp.status_code}",
                 }
         except Exception as e:
@@ -331,6 +347,7 @@ class HTTPDriver(BaseDeviceDriver):
                 **dev["state"],
                 "_driver": "http",
                 "_read_at": datetime.now().isoformat(),
+                "_quality": "error",
                 "_error": str(e),
             }
 

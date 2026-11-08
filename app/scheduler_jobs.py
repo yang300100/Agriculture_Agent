@@ -115,110 +115,113 @@ def check_reminders_job():
         logger.warning("提醒检查失败: %s", e)
 
 
+def _disease_usernames():
+    from core.database.repository.users import UserRepository
+    return [u.username for u in UserRepository().get_all() if u.username]
+
+
 def check_weather_job():
-    """每 30 分钟：天气预警 + 历史记录 + 持续异常检测 + SMS 推送"""
-    try:
-        import os, json
-        from core.weather_alerts import check_weather_alert_for_region
-        from core.weather_service import WeatherService
-        from core.weather_history import record_today, check_persistence
-        from core.sms_service import SMSService
-        from core.planting_tracker import PlantingTracker
-
-        region, phone = _get_profile()
-        ws = WeatherService()
-
-        # 1. 天气预警
-        result = check_weather_alert_for_region(region)
-        if result:
-            os.makedirs(DEFAULT_DATA_DIR, exist_ok=True)
-            with open(os.path.join(DEFAULT_DATA_DIR, "weather_alerts_cache.json"), "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=2)
-            if result.get("has_alert"):
-                logger.info("天气预警: %s %d条", region, result.get("count", 0))
-
-        # 2. 记录今日天气（持续异常检测用）
-        current = ws.get_current_weather(region)
-        if current:
-            record_today({
-                "rain": any(kw in current.weather_desc for kw in ["雨", "rain", "shower", "drizzle"]),
-                "temp_high": current.temperature_high,
-                "temp_low": current.temperature_low,
-                "humidity": current.humidity,
-                "desc": current.weather_desc,
-            })
-
-            # 3. 持续异常检测
-            tracker = PlantingTracker()
-            active = tracker.get_progress()
-            active_crops = list(set(p.crop for p in active if p.status == "进行中"))
-            persistence = check_persistence(active_crops)
-            if persistence:
-                os.makedirs(DEFAULT_DATA_DIR, exist_ok=True)
-                with open(os.path.join(DEFAULT_DATA_DIR, "weather_persistence.json"), "w", encoding="utf-8") as f:
-                    json.dump({"updated": datetime.now().isoformat(), "alerts": persistence},
-                              f, ensure_ascii=False, indent=2)
-
-                # 4. SMS 推送
-                if phone:
-                    sms = SMSService()
-                    if sms.is_configured:
-                        for alert in persistence:
-                            msg = f"【{alert['type']}】已持续{alert['days']}天（{alert['period']}）。{alert['advice'][:200]}"
-                            sms.send_sms([phone], [alert['type'], str(alert['days']), msg[:100], ""])
-                            logger.info("持续天气 SMS 已发送: %s", alert['type'])
-    except Exception as e:
-        logger.warning("天气综合检查失败: %s", e)
-
-
-def _get_profile():
-    """读取用户档案中的地区+手机号"""
-    import os, json
-    path = os.path.join(DEFAULT_DATA_DIR, "user_profile.json")
-    if os.path.exists(path):
+    """哥哥，按用户地块获取天气，不写共享缓存或发送短信。"""
+    for username in _disease_usernames():
         try:
-            with open(path, encoding="utf-8") as f:
-                p = json.load(f)
-                return p.get("user_region", "北京") or "北京", p.get("user_phone", "")
-        except Exception:
-            pass
-    return "北京", ""
+            _weather_by_plot(username)
+        except Exception as exc:
+            logger.warning("地块天气检查失败 [%s]: %s", username, exc)
 
 
 def check_disease_job():
-    """每 6 小时评估病虫害风险（使用量化阈值引擎）"""
-    try:
-        import os, json
-        from core.weather_service import WeatherService
-        from core.disease_risk import assess_all_active_crops
-
-        # 获取当前天气
-        ws = WeatherService()
-        current = ws.get_current_weather("北京")
-        wdata = {
-            "temperature": current.temperature if current else 20,
-            "humidity": current.humidity if current else 60,
-            "rain_24h": getattr(current, "precipitation", 0) or 0,
-            "forecast_rain": False,
-        }
-        # 检查未来预报是否有雨
+    """哥哥，每个地块独立评估并覆盖旧风险，天气缺失时清空旧结论。"""
+    from pathlib import Path
+    from core.plot_manager import PlotManager
+    from core.disease_risk import assess_disease_risk
+    from core.device_registry_factory import _validate_username
+    for username in _disease_usernames():
         try:
-            forecast = ws.get_forecast("北京", 2)
-            for w in forecast:
-                if any(kw in w.weather_desc for kw in ["雨", "rain", "shower"]):
-                    wdata["forecast_rain"] = True
-                    break
-        except Exception:
-            pass
+            _validate_username(username)
+            plots = PlotManager(username).list_plots()
+            weather = _weather_by_plot(username)
+            for plot in plots:
+                plot_id = str(plot.get("plot_id", ""))
+                if not plot_id.isdecimal():
+                    logger.warning("跳过无效地块 ID [%s/%s]", username, plot_id)
+                    continue
+                current = weather.get(plot_id, {})
+                risks = []
+                assessed = bool(plot.get("crop") and "temperature" in current and "humidity" in current)
+                if assessed:
+                    risks = assess_disease_risk(plot["crop"], temperature=current["temperature"], humidity=current["humidity"])
+                directory = Path(DEFAULT_DATA_DIR) / username / "disease_risks"
+                directory.mkdir(parents=True, exist_ok=True)
+                target = directory / f"{plot_id}.json"
+                tmp = target.with_suffix(".tmp")
+                tmp.write_text(json.dumps({"updated": datetime.now().isoformat(), "plot_id": plot_id, "risks": risks, "quality": "good" if assessed else "unavailable"}, ensure_ascii=False), encoding="utf-8")
+                os.replace(tmp, target)
+        except Exception as exc:
+            logger.warning("病害检查失败 [%s]: %s", username, exc)
 
-        risks = assess_all_active_crops(wdata)
-        if risks:
-            os.makedirs(DEFAULT_DATA_DIR, exist_ok=True)
-            with open(os.path.join(DEFAULT_DATA_DIR, "disease_risks.json"), "w", encoding="utf-8") as f:
-                json.dump({"updated": datetime.now().isoformat(), "risks": risks}, f, ensure_ascii=False)
-            logger.info("病害风险: %d条", len(risks))
-    except Exception as e:
-        logger.warning("病害检查失败: %s", e)
+
+def _weather_by_plot(username):
+    """哥哥，只用用户自己地块的有效坐标和真实天气。"""
+    import math
+    from core.plot_manager import PlotManager
+    from core.weather_service import WeatherService
+    service = WeatherService()
+    result = {}
+    for plot in PlotManager(username).list_plots():
+        try:
+            lat, lon = float(plot.get("lat")), float(plot.get("lon"))
+            if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180) or (lat == 0 and lon == 0):
+                continue
+            raw = service.get_grid_weather(lon, lat)
+            if not isinstance(raw, dict):
+                continue
+            observed = datetime.fromisoformat(str(raw.get("obsTime", "")).replace("Z", "+00:00"))
+            current_time = datetime.now().astimezone()
+            if observed.tzinfo is None:
+                observed = observed.astimezone()
+            if not 0 <= (current_time - observed).total_seconds() <= 3600:
+                continue
+            values = {}
+            for key, source in (("temperature", "temp"), ("humidity", "humidity"), ("precipitation", "precip")):
+                if source in raw:
+                    number = float(raw[source])
+                    limits = {"temperature": (-60, 100), "humidity": (0, 100), "precipitation": (0, 1000)}
+                    if math.isfinite(number) and limits[key][0] <= number <= limits[key][1]:
+                        values[key] = number
+            if values:
+                result[str(plot["plot_id"])] = values
+        except (TypeError, ValueError, KeyError, OverflowError) as exc:
+            logger.warning("地块天气无效 [%s/%s]: %s", username, plot.get("plot_id"), exc)
+    return result
+
+
+def _collect_device_rule_context(username, registry, loop):
+    """哥哥，保留每个设备的读数，交给规则引擎按地块隔离。"""
+    from core.device_registry_factory import load_custom_devices
+    from core.observation_quality import validate_sensor_state
+
+    configs = load_custom_devices(username)
+    states = {}
+    devices = loop.run_until_complete(registry.discover_all())
+    for device in devices:
+        try:
+            state = loop.run_until_complete(registry.read_state(device.device_id))
+            if isinstance(state, dict):
+                valid, issues = validate_sensor_state(state)
+                # 哥哥，状态和质量留给执行安全检查，规则只看合格数值。
+                retained = {k: v for k, v in state.items() if k.startswith("_") or k in ("status", "power", "error")}
+                retained.update(valid)
+                if issues:
+                    retained["_observation_issues"] = issues
+                states[device.device_id] = retained
+        except Exception as exc:
+            logger.warning("读取设备状态失败 [%s/%s]: %s", username, device.device_id, exc)
+    try:
+        weather = _weather_by_plot(username)
+    except Exception as exc:
+        logger.warning("读取地块天气失败 [%s]: %s", username, exc)
+        weather = {}
+    return {"device_configs": configs, "device_states": states, "weather_by_plot": weather}
 
 
 def check_device_rules_job():
@@ -264,42 +267,29 @@ def check_device_rules_job():
 
         for username in usernames:
             engine = RuleEngine(username=username)
+            if not any(rule.get("enabled", True) for rule in engine.rules):
+                continue
 
             # 使用 setup_registry 加载用户设备并读取传感器数据
             registry, loop = setup_registry(username)
             try:
-                # 读取所有真实设备状态；短字段名用于兼容现有规则，带设备ID的
-                # 字段用于解决多个分区传感器同名时的歧义。
-                devices = loop.run_until_complete(registry.discover_all())
-                sensor_data = {}
-                for device in devices:
-                    state = loop.run_until_complete(
-                        registry.read_state(device.device_id)
-                    )
-                    if not state or state.get("error"):
-                        continue
-                    for key, value in state.items():
-                        if isinstance(value, (int, float)) and not key.startswith("_"):
-                            sensor_data.setdefault(key, value)
-                            sensor_data[f"{device.device_id}.{key}"] = value
-
-                context = {"sensor_data": sensor_data, "weather": {}}
+                context = _collect_device_rule_context(username, registry, loop)
                 matched = engine.find_matching_rules(context)
 
                 if not matched:
                     continue
 
                 executor = DeviceExecutor(registry, username=username)
-                autonomy = get_autonomy_level()
+                autonomy = get_autonomy_level(username)
 
                 for rule in matched:
                     action = rule.get("action", {})
                     proposed = action.get("params", {})
+                    rule_context = engine.context_for_device(
+                        action.get("device_id", ""), context
+                    )
                     decision, reason, final_params = engine.evaluate_action(
-                        rule, proposed, {
-                            "device_id": action.get("device_id", ""),
-                            "sensor_data": sensor_data,
-                        })
+                        rule, proposed, rule_context)
                     decision = apply_autonomy(decision, autonomy)
                     execution_mode = rule.get("execution_mode", "auto")
 
@@ -321,11 +311,22 @@ def check_device_rules_job():
                         params=final_params,
                     )
                     if decision == RuleDecision.AUTO_EXECUTE:
+                        if cmd.command == "start":
+                            # 哥哥，周期规则不替运行中的设备续期，手动启动仍可重设计时。
+                            try:
+                                current_state = loop.run_until_complete(
+                                    registry.read_state(action.get("device_id"))
+                                )
+                            except Exception as exc:
+                                logger.warning("读取自动启动目标状态失败，跳过本轮: %s", exc)
+                                continue
+                            if current_state.get("error") or current_state.get("status") == "running":
+                                continue
                         result = executor.execute_sync(
                             action.get("device_id"), cmd,
                             trigger="rule", rule_id=rule["id"], decision=decision,
                             loop=loop, capability=action.get("capability"),
-                            policy_context={"sensor_data": sensor_data},
+                            policy_context=rule_context,
                         )
 
                         if result["success"]:
@@ -336,13 +337,21 @@ def check_device_rules_job():
                                             device_id=action.get("device_id", ""),
                                             action=action.get("command", "start"))
                     else:
+                        if decision == RuleDecision.NEED_CONFIRM and any(
+                            str(pending.get("rule_id")) == str(rule.get("id"))
+                            and pending.get("device_id") == action.get("device_id")
+                            and pending.get("command") == cmd.command
+                            and pending.get("params") == final_params
+                            for pending in executor.list_pending()
+                        ):
+                            continue
                         executor.record_decision(
                             action.get("device_id", ""), cmd,
                             decision=decision, reason=reason,
                             trigger="rule", rule_id=rule.get("id"),
                             add_pending=decision == RuleDecision.NEED_CONFIRM,
                             capability=action.get("capability"),
-                            policy_context={"sensor_data": sensor_data},
+                            policy_context=rule_context,
                         )
             finally:
                 close_registry(loop, registry)
@@ -361,23 +370,33 @@ def check_device_rules_job():
 def check_task_execution_job():
     """每 3 分钟检查待执行的设备任务，匹配启用规则后自动执行"""
     try:
-        import os
-        from datetime import datetime
         from core.planting_tracker import PlantingTracker
-        from core.device_rule_engine import RuleEngine
+        from core.device_rule_engine import RuleDecision, RuleEngine, apply_autonomy
         from devices.base import DeviceCommand
         from core.device_executor import DeviceExecutor
         from core.device_registry_factory import setup_registry, close_registry
+        from core.database.engine import get_session
+        from core.database.models import PlantingTask, User
+        from app.agent.config import get_autonomy_level
 
         data_dir = DEFAULT_DATA_DIR
-        usernames = ["default"]
+        usernames = {"default"}
+        with get_session() as session:
+            rows = (
+                session.query(User.username)
+                .join(PlantingTask, PlantingTask.user_id == User.id)
+                .filter(PlantingTask.device_id.isnot(None))
+                .distinct()
+                .all()
+            )
+            usernames.update(row[0] for row in rows if row[0])
         if os.path.exists(data_dir):
             for d in os.listdir(data_dir):
                 user_path = os.path.join(data_dir, d)
                 if os.path.isdir(user_path) and os.path.exists(os.path.join(user_path, "planting_tasks.json")):
-                    usernames.append(d)
+                    usernames.add(d)
 
-        for username in set(usernames):
+        for username in usernames:
             sd = os.path.join(DEFAULT_DATA_DIR, username)
             tracker = PlantingTracker(sd)
             pending_tasks = tracker.get_pending_device_tasks()
@@ -386,65 +405,89 @@ def check_task_execution_job():
                 continue
 
             engine = RuleEngine(username=username)
+            registry, loop = setup_registry(username)
+            try:
+                context = _collect_device_rule_context(username, registry, loop)
+                matched = engine.find_matching_rules(context)
+                executor = DeviceExecutor(registry, username=username)
+                autonomy = get_autonomy_level(username)
 
-            for task in pending_tasks:
-                # 检查是否有匹配规则且 evaluate_action 为 auto_execute
-                matched = engine.find_matching_rules({})
-                matching_rule = None
-                for rule in matched:
-                    if not rule.get("enabled", True):
-                        continue
-                    rule_action = rule.get("action", {})
-                    decision, reason, final_params = engine.evaluate_action(
-                        rule, task.device_params or {},
-                        {"device_id": task.device_id}
-                    )
-                    if decision == "auto_execute":
-                        matching_rule = rule
-                        break
-
-                if not matching_rule:
-                    continue
-
-                # 检查截止日期是否已过
-                if task.end_date:
+                for task in pending_tasks:
+                    # 哥哥，尚未到期的任务和已过截止日期的任务都不能提前下发。
                     try:
-                        end_date = datetime.strptime(task.end_date, "%Y-%m-%d")
-                        if datetime.now().date() > end_date.date():
+                        today = datetime.now().date()
+                        if task.start_date and datetime.strptime(task.start_date, "%Y-%m-%d").date() > today:
+                            continue
+                        if task.end_date and datetime.strptime(task.end_date, "%Y-%m-%d").date() < today:
                             tracker.update_task_status(task.id, "已逾期")
-                            logger.info("任务 %s 已逾期，自动标记", task.title)
                             continue
                     except (ValueError, TypeError):
-                        pass
+                        logger.warning("设备任务日期无效，跳过执行: %s", task.id)
+                        continue
 
-                # 执行任务
-                try:
-                    registry, loop = setup_registry(username)
+                    task_context = {
+                        **engine.context_for_device(task.device_id, context),
+                        "task_id": task.id,
+                    }
+                    matching_rule = None
+                    final_params = task.device_params or {}
+                    for rule in matched:
+                        rule_action = rule.get("action", {})
+                        if (rule.get("execution_mode", "auto") != "auto"
+                                or rule_action.get("device_id") != task.device_id
+                                or rule_action.get("command", "start") != task.device_command):
+                            continue
+                        decision, _, evaluated_params = engine.evaluate_action(
+                            rule, task.device_params or {}, task_context
+                        )
+                        if apply_autonomy(decision, autonomy) == RuleDecision.AUTO_EXECUTE:
+                            matching_rule = rule
+                            final_params = evaluated_params
+                            break
+                    if not matching_rule:
+                        continue
+                    task_execution_lock = tracker.device_task_execution_lock(task.id)
+                    if not task_execution_lock.acquire():
+                        continue
                     try:
-                        loop.run_until_complete(registry.discover_all())
+                        if not tracker.claim_device_task(task.id):
+                            continue
+                        # 哥哥，领取后再检查待确认队列，避免与手动执行并发重复下发。
+                        if any(
+                            str((action.get("policy_context") or {}).get("task_id")) == task.id
+                            for action in executor.list_pending()
+                        ):
+                            tracker.update_task_status(task.id, "待办", progress=0)
+                            continue
                         cmd = DeviceCommand(
                             command=task.device_command,
-                            params=task.device_params or {},
+                            params=final_params,
                         )
-                        executor = DeviceExecutor(registry, username=username)
-                        tracker.update_task_status(task.id, "进行中", progress=10)
                         result = executor.execute_sync(
                             task.device_id, cmd,
                             trigger="task_scheduler",
                             rule_id=matching_rule.get("id"),
+                            loop=loop,
+                            capability=matching_rule.get("action", {}).get("capability"),
+                            policy_context=task_context,
                         )
                         if result["success"]:
-                            engine.record_execution(task.device_id, task.device_params or {})
-                            tracker.update_task_status(task.id, "已完成", progress=100)
+                            engine.record_execution(task.device_id, final_params)
+                            tracker.record_device_task_result(task.id, result, registry, loop)
                             logger.info("自动执行任务成功: %s → %s", task.title, task.device_id)
                         else:
-                            tracker.update_task_status(task.id, "待办", progress=0)
+                            tracker.record_device_task_result(task.id, result, registry, loop)
+                            # 哥哥，目标设备已移除时终止此任务，不能恢复设备后悄悄自动重发。
+                            if not any(c.get("device_id") == task.device_id for c in context["device_configs"]):
+                                tracker.update_task_status(task.id, "失败", progress=0)
                             logger.warning("自动执行任务失败: %s → %s", task.title, task.device_id)
+                    except Exception as e:
+                        logger.warning("自动执行任务异常: %s → %s", task.title, e)
+                        tracker.update_task_status(task.id, "失败", progress=0)
                     finally:
-                        close_registry(loop, registry)
-                except Exception as e:
-                    logger.warning("自动执行任务异常: %s → %s", task.title, e)
-                    tracker.update_task_status(task.id, "待办", progress=0)
+                        task_execution_lock.release()
+            finally:
+                close_registry(loop, registry)
 
     except Exception as e:
         logger.warning("任务自动执行检查失败: %s", e)
@@ -642,10 +685,16 @@ def _process_camera_actions(actions: list, username: str, registry, loop, camera
 
         engine = RuleEngine(username=username)
         executor = DeviceExecutor(registry, username=username)
-        autonomy = get_autonomy_level()
+        autonomy = get_autonomy_level(username)
 
-        # 发现可用的执行设备
+        # 哥哥，摄像头和执行设备必须明确绑定同一地块。
         all_devices = loop.run_until_complete(registry.discover_all())
+        context = _collect_device_rule_context(username, registry, loop)
+        configs = {item.get("device_id"): item for item in context["device_configs"]}
+        camera_plot = configs.get(camera_id, {}).get("plot_id")
+        if camera_plot in (None, ""):
+            logger.warning("摄像头未绑定地块，拒绝自动设备动作: %s", camera_id)
+            return
 
         for action in actions:
             action_type = action.get("action", "")
@@ -669,40 +718,31 @@ def _process_camera_actions(actions: list, username: str, registry, loop, camera
             # 找到匹配的执行设备
             target_device = None
             for d in all_devices:
-                if capability in [c.value for c in d.capabilities]:
+                if str(configs.get(d.device_id, {}).get("plot_id") or "") == str(camera_plot) and capability in [c.value for c in d.capabilities]:
                     target_device = d.device_id
                     break
             if not target_device:
                 logger.info("未找到 %s 类型执行设备，跳过", action_type)
                 continue
 
-            # 通过 RuleEngine 评估 — 收集真实传感器数据
-            sensor_data = {}
-            for d in all_devices:
-                try:
-                    state = loop.run_until_complete(registry.read_state(d.device_id))
-                    if state and not state.get("error"):
-                        for k, v in state.items():
-                            if isinstance(v, (int, float)) and not k.startswith("_"):
-                                sensor_data[k] = v
-                except Exception:
-                    pass  # 单个设备读取失败不影响整体
-            context = {"sensor_data": sensor_data, "weather": {}}
-            matched = engine.find_matching_rules(context)
+            # 哥哥，沿用按地块过滤、校验新鲜度的采集结果。
+            matched = [rule for rule in engine.find_matching_rules(context)
+                       if rule.get("action", {}).get("device_id") == target_device]
+            target_context = engine.context_for_device(target_device, context)
             duration = 15  # 默认时长
 
             if matched:
                 rule = matched[0]
                 proposed = rule.get("action", {}).get("params", {"duration": duration})
                 decision, reason, final_params = engine.evaluate_action(
-                    rule, proposed, context
+                    rule, proposed, target_context
                 )
                 decision = apply_autonomy(decision, autonomy)
 
                 if decision == RuleDecision.AUTO_EXECUTE:
                     cmd = DeviceCommand(command="start", params=final_params)
                     result = executor.execute_sync(
-                        target_device, cmd, trigger="camera", rule_id=rule["id"]
+                        target_device, cmd, trigger="camera", rule_id=rule["id"], policy_context=target_context
                     )
                     if result["success"]:
                         engine.record_execution(target_device, final_params)
@@ -717,7 +757,7 @@ def _process_camera_actions(actions: list, username: str, registry, loop, camera
                 if autonomy == "high" and urgency in ("immediate", "today"):
                     cmd = DeviceCommand(command="start", params={"duration": duration})
                     result = executor.execute_sync(
-                        target_device, cmd, trigger="camera"
+                        target_device, cmd, trigger="camera", policy_context=target_context
                     )
                     if result["success"]:
                         logger.info(

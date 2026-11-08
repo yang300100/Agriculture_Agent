@@ -57,16 +57,17 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
 # Agent 自主权级别: low(全部确认) / medium(规则边界内自动) / high(完全自主跳过确认)
 
-def get_autonomy_level() -> str:
-    """获取当前自主权级别，优先从 session_state 读取，否则用环境变量"""
-    try:
-        import streamlit as st
-        level = st.session_state.get("autonomy_level")
-        if level and level in ("low", "medium", "high"):
-            return level
-    except Exception:
-        pass
-    return os.getenv("AUTONOMY_LEVEL", "medium").lower()
+def get_autonomy_level(username: str = "default") -> str:
+    """哥哥，只读取当前用户的持久设置；旧档案沿用部署默认值。"""
+    from core.database.repository.users import UserProfileRepository, UserRepository
+
+    user = UserRepository().get_by_username(username)
+    if user:
+        profile = UserProfileRepository().get_by_user_id(user.id)
+        if profile and profile.autonomy_level in ("low", "medium", "high"):
+            return profile.autonomy_level
+    fallback = os.getenv("AUTONOMY_LEVEL", "medium").lower()
+    return fallback if fallback in ("low", "medium", "high") else "medium"
 
 # 模块级缓存（非 Streamlit 环境使用）
 AUTONOMY_LEVEL = os.getenv("AUTONOMY_LEVEL", "medium").lower()

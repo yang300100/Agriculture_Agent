@@ -30,8 +30,8 @@ def test_最后阶段完成后记录标记为已完成(tmp_path):
     tracker.create_progress({
         "crop": "测试作物",
         "stage": "收获期",
-        "stage_number": 1,
-        "total_stages": 1,
+        "stage_number": 8,
+        "total_stages": 8,
         "status": "进行中",
     })
     persisted = tracker.get_progress()[0]

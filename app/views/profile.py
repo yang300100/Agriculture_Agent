@@ -6,6 +6,10 @@ from app.api_client import api
 def render_profile_page():
     st.markdown("## 基本信息")
     st.markdown("管理您的个人种植档案。")
+    profile = api("/api/profile")
+    if profile is None:
+        st.error("哥哥，档案读取失败，请稍后重试。")
+        return
     with st.form("profile_page_form"):
         c1, c2 = st.columns(2)
         with c1:
@@ -31,7 +35,7 @@ def render_profile_page():
             "medium": "⚖️ 中等 — 规则边界内自动执行，超出边界需确认（推荐）",
             "high": "🚀 高自主 — 完全自主决策执行，无需确认（仅适合高度信任场景）",
         }
-        current_autonomy = st.session_state.get("autonomy_level", "medium")
+        current_autonomy = profile.get("autonomy_level", "medium")
         autonomy_opts = list(autonomy_labels.keys())
         idx = autonomy_opts.index(current_autonomy) if current_autonomy in autonomy_opts else 1
         autonomy_level = st.radio(
@@ -43,18 +47,20 @@ def render_profile_page():
         )
 
         if st.form_submit_button("保存修改", type="primary", width='stretch'):
+            result = api("/api/profile", "post", {
+                "user_region": region, "user_soil_type": soil_type if soil_type != "请选择" else "",
+                "user_farm_size": farm_size, "user_experience": experience if experience != "请选择" else "",
+                "user_goals": goals, "user_phone": phone,
+                "autonomy_level": autonomy_level,
+            })
+            if not result or not result.get("success"):
+                st.error("哥哥，档案保存失败，设置尚未更新。")
+                return
             st.session_state.user_region = region
             st.session_state.user_soil_type = soil_type if soil_type != "请选择" else ""
             st.session_state.user_farm_size = farm_size
             st.session_state.user_experience = experience if experience != "请选择" else ""
             st.session_state.user_goals = goals
             st.session_state.user_phone = phone
-            st.session_state.autonomy_level = autonomy_level
-            api("/api/profile", "post", {
-                "user_region": region, "user_soil_type": soil_type if soil_type != "请选择" else "",
-                "user_farm_size": farm_size, "user_experience": experience if experience != "请选择" else "",
-                "user_goals": goals, "user_phone": phone,
-                "autonomy_level": autonomy_level,
-            })
             st.success("信息已更新！")
             st.rerun()

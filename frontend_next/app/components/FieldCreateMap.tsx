@@ -19,6 +19,7 @@ export function FieldCreateMap({
   setPoints: Dispatch<SetStateAction<number[][]>>;
 }) {
   const container = useRef<HTMLDivElement>(null);
+  const initialPoints = useRef(points);
   const leaflet = useRef<LeafletModule | null>(null);
   const map = useRef<import("leaflet").Map | null>(null);
   const drawingLayer = useRef<import("leaflet").LayerGroup | null>(null);
@@ -63,6 +64,13 @@ export function FieldCreateMap({
       map.current = instance;
       drawingLayer.current = drawGroup;
       locationLayer.current = locateGroup;
+      // 哥哥，复制地块时先定位到已有边界，不改变新绘制时的地图视野。
+      if (initialPoints.current.length >= 3) {
+        instance.fitBounds(
+          L.latLngBounds(initialPoints.current.map((point) => [point[1], point[0]])),
+          { padding: [24, 24], maxZoom: 18 },
+        );
+      }
       setReady(true);
       requestAnimationFrame(() => instance.invalidateSize());
     }

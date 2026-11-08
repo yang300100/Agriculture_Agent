@@ -10,11 +10,13 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from urllib.parse import parse_qsl, urlencode
 from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field as PydanticField
+from pydantic import BaseModel, Field as PydanticField, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,25 @@ def _safe_username(username: str = "default") -> str:
 def _report_dir(username: str = "default") -> Path:
     """返回用户巡检报告目录。"""
     return Path(_storage_dir(username), "autonomous_reports").resolve()
+
+
+def _scoped_disease_risks(username: str) -> list:
+    from core.plot_manager import PlotManager
+    from datetime import timezone
+    risks = []
+    for plot in PlotManager(_safe_username(username)).list_plots():
+        plot_id = str(plot.get("plot_id", ""))
+        if not plot_id.isdecimal():
+            continue
+        try:
+            data = json.loads(Path(_storage_dir(username), "disease_risks", f"{plot_id}.json").read_text(encoding="utf-8"))
+            observed = datetime.fromisoformat(data["updated"].replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc) if observed.tzinfo else datetime.now()
+            if str(data.get("plot_id")) == plot_id and 0 <= (now - observed).total_seconds() <= 86400 and isinstance(data.get("risks"), list):
+                risks.extend({**item, "plot_id": plot_id} for item in data["risks"] if isinstance(item, dict))
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return risks
 
 
 def _safe_report_path(username: str, cycle_id: str) -> Path:
@@ -106,8 +127,15 @@ class ChatRequest(BaseModel):
     image_mime_type: Optional[str] = None
     username: str = "default"
 
+class AutonomyScheduleData(BaseModel):
+    """哥哥，排期只改变时间，不能偷偷更换设备与动作。"""
+    model_config = {"extra": "forbid"}
+    due_at: datetime
+
+
 class ProgressData(BaseModel):
     crop: str
+    plot_id: Optional[int] = PydanticField(default=None, gt=0, strict=True)
     stage: str = ""
     stage_number: int = 1
     total_stages: int = 5
@@ -117,6 +145,17 @@ class ProgressData(BaseModel):
     status: str = "进行中"
     notes: str = ""
 
+    @field_validator("start_date", "expected_end_date")
+    @classmethod
+    def validate_dates(cls, value):
+        if value:
+            try:
+                if datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d") != value:
+                    raise ValueError()
+            except ValueError as exc:
+                raise ValueError("日期必须为有效的 YYYY-MM-DD") from exc
+        return value
+
 class TaskData(BaseModel):
     crop: str
     task_type: str = "其他"
@@ -124,6 +163,7 @@ class TaskData(BaseModel):
     description: str = ""
     status: str = "待办"
     priority: str = "medium"
+    start_date: str = ""
     end_date: str = ""
     progress_percent: int = 0
     # 设备控制字段（可选）
@@ -131,11 +171,44 @@ class TaskData(BaseModel):
     device_command: Optional[str] = None
     device_params: Optional[Dict[str, Any]] = None
 
+
+class TaskUpdateData(BaseModel):
+    """哥哥，任务编辑只开放文字与日期，不开放设备指令和状态。"""
+    model_config = {"extra": "forbid"}
+    title: Optional[str] = None
+    crop: Optional[str] = None
+    task_type: Optional[str] = None
+    description: Optional[str] = None
+    priority: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+    @field_validator("title", "crop", "task_type", "description", "priority", "start_date", "end_date")
+    @classmethod
+    def validate_not_null(cls, value):
+        if value is None:
+            raise ValueError("编辑字段不能为 null")
+        return value
+
 class FieldData(BaseModel):
     name: str
     coordinates: List[List[float]] = PydanticField(default_factory=list)
     soil_type: str = ""
     current_crop: str = ""
+
+    @field_validator("coordinates")
+    @classmethod
+    def validate_coordinates(cls, coordinates):
+        """哥哥，先检查经纬度，别让不完整边界进入面积计算。"""
+        for point in coordinates:
+            if len(point) != 2:
+                raise ValueError("每个坐标点必须包含经度和纬度")
+            longitude, latitude = point
+            if not (math.isfinite(longitude) and math.isfinite(latitude)):
+                raise ValueError("经纬度必须是有限数值")
+            if not (-180 <= longitude <= 180 and -90 <= latitude <= 90):
+                raise ValueError("经纬度超出有效范围")
+        return coordinates
 
 class CostData(BaseModel):
     crop: str
@@ -157,6 +230,7 @@ class ProfileData(BaseModel):
     user_experience: str = ""
     user_goals: List[str] = PydanticField(default_factory=list)
     user_phone: str = ""
+    autonomy_level: Optional[Literal["low", "medium", "high"]] = None
 
 class ReminderData(BaseModel):
     crop: str
@@ -174,6 +248,13 @@ class PlanRequest(BaseModel):
     goals: List[str] = PydanticField(default_factory=list)
     experience: str = ""
     crop: str = ""
+    plot_id: Optional[int] = PydanticField(default=None, gt=0, strict=True)
+    start_date: str = ""
+
+    @field_validator("start_date")
+    @classmethod
+    def validate_start_date(cls, value):
+        return ProgressData.validate_dates(value)
 
 
 class AuthRequest(BaseModel):
@@ -319,6 +400,14 @@ def _migrate_legacy_chat_history(user) -> None:
 
 def register_routes(app: FastAPI):
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_response(request: Request, exc: RequestValidationError):
+        """哥哥，无穷大等非法输入也要返回正常的 422，不能让错误序列化再失败。"""
+        details = jsonable_encoder(exc.errors(), custom_encoder={
+            float: lambda value: value if math.isfinite(value) else str(value),
+        })
+        return JSONResponse(status_code=422, content={"detail": details})
+
     @app.middleware("http")
     async def validate_username_query(request: Request, call_next):
         """统一拦截非法用户名，保护所有按用户拼接的存储路径。"""
@@ -424,7 +513,7 @@ def register_routes(app: FastAPI):
     # ── 对话 ──────────────────────────────────────────
 
     @app.post("/api/chat")
-    def chat(req: ChatRequest, request: Request, username: str = "default"):
+    def chat(req: ChatRequest, request: Request, username: Optional[str] = None):
         from app.agent.state import AgentState
         from app.chat_service import get_chat_agent
 
@@ -435,18 +524,35 @@ def register_routes(app: FastAPI):
         ):
             raise HTTPException(status_code=403, detail="无权以其他用户身份发起对话")
         resolved_username = _safe_username(
-            authenticated_username or username or req.username
+            authenticated_username or username or req.username or "default"
         )
-        agent = get_chat_agent()
 
+        from langchain_core.messages import AIMessage, HumanMessage
+        history = []
+        # 哥哥，只接收用户和助手消息，客户端不能替换系统指令。
+        message_types = {"user": HumanMessage, "assistant": AIMessage}
+        for message in req.messages:
+            role = message.get("role")
+            message_type = message_types.get(role) if isinstance(role, str) else None
+            content = message.get("content")
+            if message_type and isinstance(content, str) and content.strip():
+                history.append(message_type(content=content))
+        content = req.user_question.strip()
+        if not content and history and isinstance(history[-1], HumanMessage):
+            content = history[-1].content
+        content = content or "请分析这张农作物图片"
+        if not history or not isinstance(history[-1], HumanMessage) or history[-1].content != content:
+            history.append(HumanMessage(content=content))
+
+        profile = dict(req.user_profile)
+        for name in ("region", "soil_type", "farm_size", "experience", "goals", "phone"):
+            if name not in profile and f"user_{name}" in profile:
+                profile[name] = profile[f"user_{name}"]
         state = AgentState(
-            messages=[],
-            user_profile=req.user_profile,
+            messages=history,
+            user_profile=profile,
             username=resolved_username,
         )
-        from langchain_core.messages import HumanMessage
-        content = req.user_question or "请分析这张农作物图片"
-        state.messages.append(HumanMessage(content=content))
 
         if req.image_data:
             state.image_data = req.image_data
@@ -454,6 +560,7 @@ def register_routes(app: FastAPI):
             state.has_image = True
 
         try:
+            agent = get_chat_agent()
             result = agent.invoke(state)
             if isinstance(result, dict):
                 state = AgentState(**result)
@@ -465,7 +572,7 @@ def register_routes(app: FastAPI):
             answer = "抱歉，处理请求时发生内部错误，请稍后重试。"
             error_code = "AGENT_EXECUTION_FAILED"
         else:
-            error_code = ""
+            error_code = state.error_code
 
         logger.info(
             "对话请求完成: user=%s answer_len=%d error_code=%s",
@@ -486,6 +593,9 @@ def register_routes(app: FastAPI):
             "final_answer": answer,
             "short_term_facts": facts,
             "error_code": error_code,
+            "device_command": state.device_command,
+            "device_result": state.device_result,
+            "pending_action": state.pending_action,
         }
 
     # ── 对话历史 ──────────────────────────────────────
@@ -523,19 +633,19 @@ def register_routes(app: FastAPI):
     def dashboard(username: str = "default"):
         from core.planting_tracker import PlantingTracker
         from core.finance_manager import FinanceManager
+        from core.database.repository.users import UserProfileRepository
         from core.weather_alerts import check_weather_alert_for_region
         from core.lunar_calendar import get_lunar_today
 
         sd = _storage_dir(username)
         tracker = PlantingTracker(sd)
-        progresses = [{
-            "id": p.id, "crop": p.crop, "stage": p.stage,
-            "stage_number": p.stage_number, "total_stages": p.total_stages,
-            "progress_percent": p.progress_percent, "status": p.status,
-        } for p in tracker.get_progress()]
+        progresses = [
+            {**card, "progress_percent": card["stage_progress"]}
+            for card in tracker.get_progress_cards(limit=None)
+        ]
 
         tasks = tracker.get_tasks()
-        active = [t for t in tasks if t.status in ("待办", "进行中")]
+        active = [t for t in tasks if t.status in ("待办", "进行中", "运行中")]
         overdue = [t for t in tasks if t.status == "已逾期"]
 
         fm = FinanceManager(sd)
@@ -547,7 +657,10 @@ def register_routes(app: FastAPI):
 
         alerts = None
         try:
-            alerts = check_weather_alert_for_region("北京")
+            profile = UserProfileRepository().get_by_user_id(tracker._uid)
+            region = profile.region if profile and profile.region else ""
+            if region:
+                alerts = check_weather_alert_for_region(region)
         except Exception:
             pass
 
@@ -555,16 +668,8 @@ def register_routes(app: FastAPI):
 
         persistence = {}
         disease_risks = []
-        try:
-            with open(os.path.join(DEFAULT_DATA_DIR, "weather_persistence.json"), encoding="utf-8") as f:
-                persistence = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            pass
-        try:
-            with open(os.path.join(DEFAULT_DATA_DIR, "disease_risks.json"), encoding="utf-8") as f:
-                disease_risks = json.load(f).get("risks", [])
-        except (OSError, json.JSONDecodeError):
-            pass
+        # 哥哥，共享天气缓存没有用户和地块归属，不能展示给其他用户。
+        disease_risks = _scoped_disease_risks(username)
 
         return {
             "progress": progresses,
@@ -583,14 +688,19 @@ def register_routes(app: FastAPI):
     def get_progress(username: str = "default"):
         from core.planting_tracker import PlantingTracker
         tracker = PlantingTracker(_storage_dir(username))
-        cards = tracker.get_progress_cards()
+        cards = tracker.get_progress_cards(limit=None)
         return cards
 
     @app.post("/api/progress")
     def create_progress(data: ProgressData, username: str = "default"):
         from core.planting_tracker import PlantingTracker
         tracker = PlantingTracker(_storage_dir(username))
+        try:
+            plot_id = tracker.validate_plot_id(data.plot_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         tracker.create_progress({
+            "plot_id": plot_id,
             "crop": data.crop, "stage": data.stage or "准备期",
             "stage_number": data.stage_number, "total_stages": data.total_stages,
             "start_date": data.start_date or datetime.now().strftime("%Y-%m-%d"),
@@ -598,6 +708,20 @@ def register_routes(app: FastAPI):
             "progress_percent": data.progress_percent, "status": data.status,
             "tasks": [], "notes": data.notes,
         })
+        return {"success": True}
+
+    @app.put("/api/progress/{pid}/plot")
+    def bind_progress_plot(pid: str, data: Dict, username: str = "default"):
+        from core.planting_tracker import PlantingTracker
+        tracker = PlantingTracker(_storage_dir(username))
+        if set(data) != {"plot_id"}:
+            raise HTTPException(status_code=422, detail="请仅提交地块编号")
+        try:
+            updated = tracker.update_progress(pid, {"plot_id": data["plot_id"]})
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not updated:
+            raise HTTPException(status_code=404, detail="种植计划不存在")
         return {"success": True}
 
     @app.post("/api/progress/{pid}/advance")
@@ -633,6 +757,7 @@ def register_routes(app: FastAPI):
             "crop": data.crop, "task_type": data.task_type,
             "title": data.title, "description": data.description,
             "status": data.status, "priority": data.priority,
+            "start_date": data.start_date or datetime.now().strftime("%Y-%m-%d"),
             "end_date": data.end_date or datetime.now().strftime("%Y-%m-%d"),
             "progress_percent": data.progress_percent,
             "device_id": data.device_id,
@@ -641,13 +766,36 @@ def register_routes(app: FastAPI):
         })
         return {"success": True}
 
+    from app.task_execution_guard import guard_device_task
+
+    @app.put("/api/tasks/{tid}")
+    @guard_device_task
+    def update_task(tid: str, data: TaskUpdateData, username: str = "default"):
+        from core.planting_tracker import PlantingTracker
+        tracker = PlantingTracker(_storage_dir(username))
+        try:
+            updated = tracker.update_task(tid, data.model_dump(exclude_unset=True))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not updated:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        return {"success": True}
+
     @app.post("/api/tasks/{tid}/complete")
+    @guard_device_task
     def complete_task(tid: str, username: str = "default"):
         from core.planting_tracker import PlantingTracker
-        PlantingTracker(_storage_dir(username)).update_task_status(tid, "已完成", 100)
+        tracker = PlantingTracker(_storage_dir(username))
+        task = tracker.get_task_by_id(tid)
+        if task is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if task.device_command == "start" and task.status in {"进行中", "运行中"}:
+            raise HTTPException(status_code=409, detail="设备作业仍在执行，请先停止设备或等待实际结束")
+        tracker.update_task_status(tid, "已完成", 100)
         return {"success": True}
 
     @app.post("/api/tasks/{tid}/execute")
+    @guard_device_task
     def execute_task(tid: str, username: str = "default"):
         """执行任务关联的设备操作 — 对话→任务→硬件 联动核心"""
         from core.planting_tracker import PlantingTracker
@@ -664,24 +812,42 @@ def register_routes(app: FastAPI):
         if task.status == "已完成":
             return {"success": False, "error": "任务已完成，无需再次执行"}
 
-        # 更新状态为"进行中"
-        tracker.update_task_status(tid, "进行中", progress=10)
-
         try:
             with RegistrySession(username) as (registry, loop):
                 loop.run_until_complete(registry.discover_all())
+                tracker.recover_unrecorded_device_task(tid, registry, loop)
+                if not tracker.claim_device_task(tid):
+                    return {
+                        "success": False, "decision": "executing",
+                        "error": "任务正在运行或结果尚未确认，请刷新设备状态",
+                        "task_id": tid, "device_id": task.device_id,
+                    }
                 cmd = DeviceCommand(
                     command=task.device_command,
                     params=task.device_params or {},
                 )
                 executor = DeviceExecutor(registry, username=username)
+                # 哥哥，重复点击等待确认的任务时，继续使用原来的操作。
+                pending = next((
+                    action for action in executor.list_pending()
+                    if str((action.get("policy_context") or {}).get("task_id")) == tid
+                ), None)
+                if pending:
+                    tracker.update_task_status(tid, "待办", progress=0)
+                    return {
+                        "success": False, "decision": "need_confirm",
+                        "pending_id": pending["id"], "task_id": tid,
+                        "device_id": task.device_id,
+                        "message": "任务等待确认，请在设备中心处理设备操作",
+                    }
                 result = executor.execute_sync(
                     task.device_id, cmd,
                     trigger="task", rule_id=None, loop=loop,
+                    policy_context={"task_id": tid},
                 )
 
                 if result["success"]:
-                    tracker.update_task_status(tid, "已完成", progress=100)
+                    tracker.record_device_task_result(tid, result, registry, loop)
                     msg = result.get("result")
                     msg_text = msg.message if msg and hasattr(msg, 'message') else "执行成功"
                     return {
@@ -689,24 +855,40 @@ def register_routes(app: FastAPI):
                         "message": f"任务执行成功: {msg_text}",
                         "device_id": task.device_id,
                         "task_id": tid,
+                        "status": "运行中" if task.device_command == "start" else "已完成",
                     }
                 else:
-                    tracker.update_task_status(tid, "待办", progress=0)
+                    tracker.record_device_task_result(tid, result, registry, loop)
+                    if result.get("decision") == "need_confirm":
+                        return {
+                            "success": False, "decision": "need_confirm",
+                            "pending_id": result.get("pending_id"),
+                            "task_id": tid, "device_id": task.device_id,
+                            "message": "任务等待确认，请在设备中心处理设备操作",
+                        }
                     msg = result.get("result")
                     err_text = msg.message if msg and hasattr(msg, 'message') else str(msg or "未知错误")
                     return {
                         "success": False,
+                        "decision": result.get("decision", "auto_execute"),
                         "error": f"设备执行失败: {err_text}",
                     }
         except Exception as e:
             logger.exception("任务执行失败")
-            tracker.update_task_status(tid, "待办", progress=0)
+            tracker.update_task_status(tid, "失败", progress=0)
             return {"success": False, "error": f"执行异常: {str(e)}"}
 
     @app.delete("/api/tasks/{tid}")
+    @guard_device_task
     def delete_task(tid: str, username: str = "default"):
         from core.planting_tracker import PlantingTracker
-        PlantingTracker(_storage_dir(username)).delete_task(tid)
+        tracker = PlantingTracker(_storage_dir(username))
+        task = tracker.get_task_by_id(tid)
+        if task is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if task.device_id and task.status in {"进行中", "运行中"}:
+            raise HTTPException(status_code=409, detail="设备任务仍在执行，请结束作业后再删除")
+        tracker.delete_task(tid)
         return {"success": True}
 
     # ── 地块管理 ──────────────────────────────────────
@@ -859,11 +1041,16 @@ def register_routes(app: FastAPI):
     @app.post("/api/finance/costs")
     def add_cost(data: CostData, username: str = "default"):
         from core.finance_manager import FinanceManager
-        FinanceManager(_storage_dir(username)).add_cost({
-            "crop": data.crop, "cost_type": data.cost_type,
-            "item_name": data.item_name, "quantity": data.quantity,
-            "unit": data.unit, "unit_price": data.unit_price,
-        })
+        try:
+            FinanceManager(_storage_dir(username)).add_cost({
+                "crop": data.crop, "cost_type": data.cost_type,
+                "item_name": data.item_name, "quantity": data.quantity,
+                "unit": data.unit, "unit_price": data.unit_price,
+            })
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409 if "重复" in str(exc) else 400, detail=str(exc),
+            ) from exc
         return {"success": True}
 
     @app.get("/api/finance/income")
@@ -874,10 +1061,15 @@ def register_routes(app: FastAPI):
     @app.post("/api/finance/income")
     def add_income(data: IncomeData, username: str = "default"):
         from core.finance_manager import FinanceManager
-        FinanceManager(_storage_dir(username)).add_income({
-            "crop": data.crop, "quantity": data.quantity,
-            "unit_price": data.unit_price,
-        })
+        try:
+            FinanceManager(_storage_dir(username)).add_income({
+                "crop": data.crop, "quantity": data.quantity,
+                "unit_price": data.unit_price,
+            })
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409 if "重复" in str(exc) else 400, detail=str(exc),
+            ) from exc
         return {"success": True}
 
     @app.get("/api/finance/export")
@@ -902,11 +1094,12 @@ def register_routes(app: FastAPI):
 
     @app.get("/api/profile")
     def get_profile(username: str = "default"):
+        from app.agent.config import get_autonomy_level
         from core.database.repository.users import UserProfileRepository
         user = _get_or_create_user(username)
         profile = UserProfileRepository().get_by_user_id(user.id)
         if not profile:
-            return {}
+            return {"autonomy_level": get_autonomy_level(username)}
         try:
             goals = json.loads(profile.goals) if profile.goals else []
         except (TypeError, json.JSONDecodeError):
@@ -918,6 +1111,7 @@ def register_routes(app: FastAPI):
             "user_experience": profile.experience_level or "",
             "user_goals": goals,
             "user_phone": profile.phone or "",
+            "autonomy_level": get_autonomy_level(username),
         }
 
     @app.post("/api/profile")
@@ -933,6 +1127,8 @@ def register_routes(app: FastAPI):
             "goals": json.dumps(data.user_goals, ensure_ascii=False),
             "phone": data.user_phone,
         }
+        if data.autonomy_level is not None:
+            values["autonomy_level"] = data.autonomy_level
         existing = repo.get_by_user_id(user.id)
         if existing:
             repo.update(existing.id, **values)
@@ -982,26 +1178,9 @@ def register_routes(app: FastAPI):
         return check_weather_alert_for_region(region)
 
     @app.get("/api/alerts/proactive")
-    def proactive_alerts():
-        """集中读取调度器生成的主动预警，前端不再依赖共享磁盘。"""
-        alerts = []
-        try:
-            with open(os.path.join(DEFAULT_DATA_DIR, "weather_alerts_cache.json"), encoding="utf-8") as f:
-                weather = json.load(f)
-            if weather.get("has_alert"):
-                for item in weather.get("alerts", []):
-                    alerts.append({"kind": "weather", **item})
-        except (OSError, json.JSONDecodeError):
-            pass
-        try:
-            with open(os.path.join(DEFAULT_DATA_DIR, "disease_risks.json"), encoding="utf-8") as f:
-                disease = json.load(f)
-            for item in disease.get("risks", [])[:3]:
-                if item.get("risk") in ("高", "中"):
-                    alerts.append({"kind": "disease", **item})
-        except (OSError, json.JSONDecodeError):
-            pass
-        return {"alerts": alerts[:5]}
+    def proactive_alerts(username: str = "default"):
+        return {"alerts": [{"kind": "disease", **risk} for risk in _scoped_disease_risks(username)
+                           if risk.get("risk") in ("高", "中")][:5]}
 
     # ── 农历节气 ──────────────────────────────────────
 
@@ -1116,59 +1295,67 @@ def register_routes(app: FastAPI):
         from core.reminder_system import ReminderSystem
 
         sd = _storage_dir(username)
+        tracker = PlantingTracker(sd)
+        try:
+            plot_id = tracker.validate_plot_id(req.plot_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         planner = PlantingPlanner()
         plan = planner.generate_plan({
             "region": req.region, "soil_type": req.soil_type,
             "farm_size": req.farm_size, "goals": req.goals,
             "experience": req.experience, "crop": req.crop,
+            "start_date": req.start_date or datetime.now().strftime("%Y-%m-%d"),
         })
 
         tracker = PlantingTracker(sd)
         stage_name = plan.schedule.get("stages", [{}])[0].get("stage", "准备期") if plan.schedule else "准备期"
         total_stages = len(plan.schedule.get("stages", [])) if plan.schedule else 1
 
-        tracker.create_progress({
+        progress = tracker.create_progress({
+            "plot_id": plot_id,
             "crop": plan.crop, "stage": stage_name,
             "stage_number": 1, "total_stages": total_stages,
-            "start_date": datetime.now().strftime("%Y-%m-%d"),
+            "start_date": req.start_date or datetime.now().strftime("%Y-%m-%d"),
             "expected_end_date": plan.schedule.get("harvest_time", ""),
             "progress_percent": 0, "status": "进行中",
             "tasks": [], "notes": f"面积: {plan.farm_size}亩",
         })
 
         task_count = 0
+        rem_count = 0
+        rem_sys = ReminderSystem(sd, username=username)
         if plan.tasks:
             for si in plan.tasks:
-                for ti in si.get("tasks", [])[:2]:
-                    tracker.create_task({
+                for index, ti in enumerate(si.get("tasks", [])[:2]):
+                    task = tracker.create_task({
                         "crop": plan.crop,
                         "task_type": ti.get("task", "")[:4],
                         "title": f"{si.get('stage', '')} - {ti.get('task', '')}",
                         "description": f"{plan.crop}的{si.get('stage', '')}阶段",
                         "status": "待办", "priority": "high",
+                        "start_date": ti.get("date", req.start_date or datetime.now().strftime("%Y-%m-%d")),
                         "end_date": ti.get("date", ""),
                         "progress_percent": 0,
                     })
                     task_count += 1
-
-        rem_count = 0
-        rem_sys = ReminderSystem(sd, username=username)
-        if plan.tasks:
-            for si in plan.tasks:
-                for ti in si.get("tasks", [])[:1]:
-                    rem_sys.create_reminder({
-                        "crop": plan.crop, "reminder_type": ti.get("task", "其他"),
-                        "task_description": f"{si.get('stage', '')} - {ti.get('task', '')}",
-                        "growth_stage": si.get("stage", ""),
-                        "start_date": ti.get("date", datetime.now().strftime("%Y-%m-%d")),
-                        "frequency": "单次", "time_of_day": "09:00", "channels": ["app"],
-                    })
-                    rem_count += 1
+                    if index == 0:
+                        rem_sys.create_reminder({
+                            "crop": plan.crop, "reminder_type": ti.get("task", "其他"),
+                            "task_description": f"{si.get('stage', '')} - {ti.get('task', '')}",
+                            "growth_stage": si.get("stage", ""),
+                            "start_date": ti.get("date", datetime.now().strftime("%Y-%m-%d")),
+                            "frequency": "单次", "time_of_day": "09:00", "channels": ["app"],
+                            "task_id": task.id, "progress_id": progress.id,
+                        })
+                        rem_count += 1
 
         return {
             "plan_text": planner.format_plan_as_text(plan),
             "crop": plan.crop, "task_count": task_count, "reminder_count": rem_count,
             "stage_name": stage_name, "total_stages": total_stages,
+            "start_date": progress.start_date, "status": progress.status,
+            "progress_id": progress.id,
         }
 
     # ── Vision 诊断 ────────────────────────────────────
@@ -1306,6 +1493,33 @@ def register_routes(app: FastAPI):
         except Exception as e:
             return {"error": str(e)}
 
+    @app.get("/api/autonomous/jobs")
+    def get_autonomous_jobs(username: str = "default"):
+        from core.autonomy_runtime import list_jobs
+        return list_jobs(_safe_username(username))
+
+    @app.get("/api/autonomous/alerts")
+    def get_autonomous_alerts(username: str = "default"):
+        from core.autonomy_runtime import list_alerts
+        return list_alerts(_safe_username(username))
+
+    @app.post("/api/autonomous/jobs/{job_id}/schedule")
+    def arrange_autonomous_job(job_id: int, data: AutonomyScheduleData, username: str = "default"):
+        from core.autonomy_runtime import arrange_job
+        try:
+            return {"success": True, "job": arrange_job(_safe_username(username), job_id, data.due_at)}
+        except LookupError as exc:
+            raise HTTPException(404, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/autonomous/alerts/{alert_id}/ack")
+    def acknowledge_autonomous_alert(alert_id: int, username: str = "default"):
+        from core.autonomy_runtime import acknowledge_alert
+        if not acknowledge_alert(_safe_username(username), alert_id):
+            raise HTTPException(status_code=404, detail="告警不存在")
+        return {"success": True}
+
     @app.get("/api/autonomous/status")
     def get_autonomous_status():
         """当前自主决策运行状态"""
@@ -1314,8 +1528,14 @@ def register_routes(app: FastAPI):
                 AUTO_DECISION_INTERVAL, AUTO_DECISION_MODEL,
                 AUTO_DECISION_NIGHT_MODE, AUTO_DECISION_REGIONS,
             )
+            from core.scheduler_service import scheduler_enabled
+            from core.autonomy_runtime import runtime_status
+            configured = scheduler_enabled()
+            runtime = runtime_status()
             return {
-                "enabled": True,
+                **runtime,
+                "configured": configured,
+                "enabled": configured and runtime.get("running") is True,
                 "interval_minutes": AUTO_DECISION_INTERVAL,
                 "model": AUTO_DECISION_MODEL,
                 "night_mode": AUTO_DECISION_NIGHT_MODE,
@@ -1828,7 +2048,7 @@ def register_routes(app: FastAPI):
     def test_rule(rule_id: str, username: str = "default"):
         """测试规则 — 仅评估不执行"""
         try:
-            from core.device_rule_engine import RuleEngine
+            from core.device_rule_engine import RuleEngine, build_device_context
             from core.device_registry_factory import setup_registry, close_registry
 
             engine = RuleEngine(username=username)
@@ -1839,7 +2059,7 @@ def register_routes(app: FastAPI):
             registry, loop = setup_registry(username)
             try:
                 devices = loop.run_until_complete(registry.discover_all())
-                sensor_data = {}
+                device_states = {}
                 for device in devices:
                     try:
                         state = loop.run_until_complete(
@@ -1849,18 +2069,17 @@ def register_routes(app: FastAPI):
                         continue
                     if not state or state.get("error"):
                         continue
-                    for key, value in state.items():
-                        if isinstance(value, (int, float)) and not key.startswith("_"):
-                            sensor_data.setdefault(key, value)
-                            sensor_data[f"{device.device_id}.{key}"] = value
-
-                context = {"sensor_data": sensor_data, "weather": {}}
+                    device_states[device.device_id] = state
+                context = build_device_context(
+                    rule.get("action", {}).get("device_id", ""),
+                    load_custom_devices(username), device_states,
+                )
                 matched = engine.find_matching_rules(context)
 
                 return {
                     "success": True,
                     "rule_matched": rule["id"] in [r["id"] for r in matched],
-                    "sensor_snapshot": {k: v for k, v in sensor_data.items() if not k.startswith("_")},
+                    "sensor_snapshot": context["sensor_data"],
                 }
             finally:
                 close_registry(loop, registry)

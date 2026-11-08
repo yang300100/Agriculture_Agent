@@ -66,34 +66,36 @@ class MapManager:
                 coords = []
                 history = []
             self.fields.append(FieldBoundary(
-                name=f.name, coordinates=coords,
+                id=str(f.id), name=f.name, coordinates=coords,
                 center_lat=f.center_lat or 0, center_lon=f.center_lon or 0,
                 area_mu=f.area_mu or 0, area_m2=f.area_m2 or 0,
                 soil_type=f.soil_type or "", current_crop=f.current_crop or "",
-                planting_history=history,
+                history=history,
+                created_at=str(f.created_at) if f.created_at else "",
+                updated_at=str(f.updated_at) if f.updated_at else "",
             ))
 
-    def _save_data(self):
-        """保存地块数据到DB"""
+    def _save_data(self, field: FieldBoundary, *, create: bool = False):
+        """只保存正在编辑的地块，帮哥哥保留其他地块和关联记录。"""
         from core.database.repository.fields import FieldRepository
         repo = FieldRepository()
-        items = []
-        for f in self.fields:
-            try:
-                coords = f.coordinates
-                history = getattr(f, 'planting_history', [])
-            except Exception:
-                coords = []
-                history = []
-            items.append({
-                "name": f.name,
-                "coordinates": json.dumps(coords, ensure_ascii=False),
-                "center_lat": f.center_lat, "center_lon": f.center_lon,
-                "area_mu": f.area_mu, "area_m2": f.area_m2,
-                "soil_type": f.soil_type, "current_crop": f.current_crop,
-                "planting_history": json.dumps(history, ensure_ascii=False),
-            })
-        repo.replace_all_for_user(self._uid, items)
+        item = {
+            "name": field.name,
+            "coordinates": json.dumps(field.coordinates, ensure_ascii=False),
+            "center_lat": field.center_lat, "center_lon": field.center_lon,
+            "area_mu": field.area_mu, "area_m2": field.area_m2,
+            "soil_type": field.soil_type, "current_crop": field.current_crop,
+            "planting_history": json.dumps(field.history, ensure_ascii=False),
+            "updated_at": field.updated_at,
+        }
+        if create:
+            saved = repo.create(user_id=self._uid, created_at=field.created_at, **item)
+            field.id = str(saved.id)
+        else:
+            saved = repo.find_one(user_id=self._uid, id=int(field.id))
+            if saved is None:
+                raise ValueError("地块不存在或无权修改")
+            repo.update(saved.id, **item)
 
     @staticmethod
     def calculate_area(coordinates: List[List[float]]) -> Tuple[float, float]:
@@ -198,8 +200,8 @@ class MapManager:
             current_crop=current_crop
         )
 
+        self._save_data(field, create=True)
         self.fields.append(field)
-        self._save_data()
         return field
 
     def update_field(self, field_id: str, **kwargs) -> Optional[FieldBoundary]:
@@ -229,7 +231,7 @@ class MapManager:
                     if hasattr(field, key):
                         setattr(field, key, value)
 
-                self._save_data()
+                self._save_data(field)
                 return field
         return None
 
@@ -245,8 +247,13 @@ class MapManager:
         """
         for i, field in enumerate(self.fields):
             if field.id == field_id:
+                from core.database.repository.fields import FieldRepository
+                repo = FieldRepository()
+                saved = repo.find_one(user_id=self._uid, id=int(field.id))
+                if saved is None:
+                    return False
+                repo.delete(saved.id)
                 del self.fields[i]
-                self._save_data()
                 return True
         return False
 
@@ -324,7 +331,7 @@ class MapManager:
         field.history = field.history or []
         field.history.append(entry)
         field.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._save_data()
+        self._save_data(field)
         return True
 
     def get_field_history(self, field_id: str) -> List[Dict]:

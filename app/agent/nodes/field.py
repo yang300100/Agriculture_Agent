@@ -17,6 +17,10 @@ def field_management_node(state: AgentState) -> AgentState:
     """
     if state.intent_type == "field_management":
         user_question = state.user_question or ""
+        if "地块" not in user_question and any(word in user_question for word in ("地区", "档案", "所在地")):
+            from .llm_response import llm_response_node
+            state.skip_task_extraction = True
+            return llm_response_node(state)
 
         try:
             # 初始化地图管理器

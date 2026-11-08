@@ -123,6 +123,73 @@ def _safe_parse_capabilities(cap_strs: List[str]) -> list:
     return caps
 
 
+def _load_simulator_states(username: str) -> Dict[str, Dict]:
+    """哥哥，只恢复当前用户显式注册的模拟设备，不接触真实硬件。"""
+    from core.database.engine import get_session
+    from core.database.models import DeviceConfig, User
+
+    with get_session() as session:
+        rows = (
+            session.query(DeviceConfig)
+            .join(User, DeviceConfig.user_id == User.id)
+            .filter(User.username == username, DeviceConfig.driver == "simulator")
+            .all()
+        )
+        return {
+            row.device_id: json.loads(row.initial_state) if row.initial_state else {}
+            for row in rows
+        }
+
+
+def _save_simulator_state(username: str, device_id: str, changes: Dict,
+                          expected_run_until: float = None) -> bool:
+    """哥哥，原子合并变化字段，跨进程并发也不能互相覆盖其他字段。"""
+    from core.database.engine import get_session
+    from core.database.models import DeviceConfig, User
+
+    if not changes:
+        return True
+    for _attempt in range(10):
+        with get_session() as session:
+            row = (
+                session.query(DeviceConfig.id, DeviceConfig.user_id, DeviceConfig.initial_state)
+                .join(User, DeviceConfig.user_id == User.id)
+                .filter(
+                    User.username == username,
+                    DeviceConfig.device_id == device_id,
+                    DeviceConfig.driver == "simulator",
+                )
+                .first()
+            )
+            if row is None:
+                return False
+            current = json.loads(row.initial_state) if row.initial_state else {}
+            if expected_run_until is not None and (
+                current.get("status") != "running"
+                or current.get("run_until") != expected_run_until
+            ):
+                return False
+            current.update(changes)
+            updated = (
+                session.query(DeviceConfig)
+                .filter(
+                    DeviceConfig.id == row.id,
+                    DeviceConfig.user_id == row.user_id,
+                    DeviceConfig.device_id == device_id,
+                    DeviceConfig.driver == "simulator",
+                    DeviceConfig.initial_state == row.initial_state,
+                )
+                .update(
+                    {"initial_state": json.dumps(current, ensure_ascii=False)},
+                    synchronize_session=False,
+                )
+            )
+            session.commit()
+            if updated:
+                return True
+    raise RuntimeError("模拟设备状态并发更新频繁，请稍后重试")
+
+
 def setup_registry(username: str = "default", loop=None):
     """初始化设备注册中心，按驱动类型加载设备。"""
     _validate_username(username)
@@ -162,7 +229,16 @@ def setup_registry(username: str = "default", loop=None):
 
     if sim_configs:
         from devices.simulator_driver import SimulatorDriver
-        sim = SimulatorDriver(simulated_latency_ms=50)
+        sim = SimulatorDriver(
+            simulated_latency_ms=50,
+            state_loader=lambda username=username: _load_simulator_states(username),
+            state_saver=lambda device_id, changes, username=username: _save_simulator_state(
+                username, device_id, changes
+            ),
+            state_expirer=lambda device_id, changes, deadline, username=username: _save_simulator_state(
+                username, device_id, changes, expected_run_until=deadline
+            ),
+        )
         registry.register("simulator", sim)
         loop.run_until_complete(sim.connect())
         for cd in sim_configs:
@@ -172,6 +248,7 @@ def setup_registry(username: str = "default", loop=None):
                 capabilities=caps, sensors=cd.get("sensors", []),
                 location=cd.get("location", ""),
                 initial_state=cd.get("initial_state", {"power": False, "status": "powered_off"}),
+                metadata={"plot_id": cd.get("plot_id"), "zone_id": cd.get("zone_id")},
             )
         logger.info("SimulatorDriver: 已加载 %d 个用户模拟设备", len(sim_configs))
 
@@ -216,6 +293,7 @@ def setup_registry(username: str = "default", loop=None):
                         control_topic=conn.get("control_topic", f"devices/{cd['device_id']}/control"),
                         state_topic=conn.get("state_topic"),
                         qos=conn.get("qos", 0),
+                        ack_topic=(conn.get("autonomy", {}).get("ack", {}) or {}).get("topic") if isinstance(conn.get("autonomy"), dict) and isinstance(conn["autonomy"].get("ack"), dict) else None,
                     )
                 registry.register(f"mqtt_{index}", mqtt_drv)
                 connected = loop.run_until_complete(mqtt_drv.connect())
@@ -347,6 +425,7 @@ def setup_registry(username: str = "default", loop=None):
                     state_nodes=conn.get("state_nodes", {}),
                     username=conn.get("username"), password=conn.get("password"),
                     security_string=conn.get("security_string"),
+                    duration_node=conn.get("duration_node"),
                 )
             registry.register("opcua", opcua_drv)
             connected = loop.run_until_complete(opcua_drv.connect())

@@ -15,11 +15,24 @@
 要求 Node.js `>=22.13.0`。
 
 ```powershell
-npm install
+npm ci
 npm run dev
 ```
 
 前端默认访问 `http://localhost:18001`，也可在登录页的“后端连接设置”中填写已部署的 HTTPS API 地址。
+
+## 独立构建配置
+
+项目使用仓库内的 `vite.config.ts` 和 `wrangler.jsonc` 构建，不需要 `.openai/hosting.json` 或 Sites 专用插件。本地开发、构建和测试不需要 Cloudflare 账号或云端密钥。
+
+`wrangler.jsonc` 配置 Worker 入口、静态资源和图片处理绑定。业务数据由 FastAPI 管理，默认不绑定 D1 数据库或 R2 存储。若启用 `examples/d1` 示例，需要在 `wrangler.jsonc` 的 `d1_databases` 中添加名为 `DB` 的真实绑定。
+
+```powershell
+npm run build
+npm start
+```
+
+构建结果写入 `dist/client` 和 `dist/server`。`npm start` 使用 Cloudflare Workers 本地运行时预览构建结果，并提供字体、地图图片等静态资源。正式部署时另行配置自己的 Cloudflare 账号与所需资源；不要使用占位数据库 ID。
 
 ## 验证
 

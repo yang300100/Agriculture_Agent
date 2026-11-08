@@ -125,6 +125,8 @@ class CoAPDriver(BaseDeviceDriver):
             "params": command.params,
             "timestamp": datetime.now().isoformat(),
         }
+        if command.execution_id:
+            payload["execution_id"] = command.execution_id
         if info.get("auth_token"):
             payload["auth_token"] = info["auth_token"]
         timeout = max(float(command.timeout_ms) / 1000.0, 0.001)
@@ -150,7 +152,9 @@ class CoAPDriver(BaseDeviceDriver):
                     "CoAP 响应必须是 JSON 对象", "INVALID_RESPONSE",
                 )
             dev["reachable"] = True
-            success = bool(body.get("success", True))
+            if command.execution_id and body.get("execution_id") != command.execution_id:
+                return DeviceResult(False, device_id, command.command, message="设备回执编号不匹配", error_code="ACK_UNCONFIRMED", execution_id=command.execution_id)
+            success = body.get("success") is True if command.execution_id else bool(body.get("success", True))
             if success and isinstance(body.get("state"), dict):
                 dev["state"].update(body["state"])
             return DeviceResult(
@@ -160,7 +164,8 @@ class CoAPDriver(BaseDeviceDriver):
                 actual_params=command.params,
                 message=body.get("message", "CoAP 指令已执行"),
                 error_code=None if success else body.get("error_code", "DEVICE_REJECTED"),
-                raw_response=body,
+                raw_response=body, execution_id=command.execution_id,
+                acknowledged=bool(success and command.execution_id),
             )
         except asyncio.TimeoutError:
             dev["reachable"] = False
@@ -188,11 +193,13 @@ class CoAPDriver(BaseDeviceDriver):
             if not isinstance(state, dict):
                 raise ValueError("CoAP 状态响应必须是 JSON 对象")
             dev["state"].update(state)
+            dev["state"].update({"_observed_at": datetime.now().isoformat(), "_quality": "good"})
+            dev["state"].pop("_error", None)
             dev["reachable"] = True
             return self._state_view(dev)
         except Exception as exc:
             dev["reachable"] = False
-            return {**self._state_view(dev), "_error": str(exc)}
+            return {**self._state_view(dev), "_quality": "error", "_error": str(exc)}
 
     async def _probe(self, device_id: str) -> bool:
         state = await self.read_state(device_id)

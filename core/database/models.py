@@ -34,6 +34,7 @@ class UserProfile(Base):
     experience_level = Column(String(20))
     goals = Column(Text)  # JSON array
     phone = Column(String(20))
+    autonomy_level = Column(String(10), nullable=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
@@ -71,6 +72,7 @@ class PlantingPlan(Base):
     actual_end_date = Column(Date)
     progress_percent = Column(Float, default=0)
     status = Column(String(20), default="active")
+    notes = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -86,12 +88,14 @@ class PlantingTask(Base):
     description = Column(Text)
     status = Column(String(20), default="pending")
     priority = Column(String(10), default="normal")
+    progress_percent = Column(Integer, default=0)
     start_date = Column(Date)
     end_date = Column(Date)
     completed_date = Column(Date)
     device_id = Column(String(100))
     device_command = Column(String(100))
     device_params = Column(Text)  # JSON
+    execution_state = Column(Text)  # 哥哥，保存本轮设备运行标识和真实起止信息。
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -105,6 +109,9 @@ class Reminder(Base):
     reminder_type = Column(String(50), nullable=False)
     task_description = Column(Text)
     growth_stage = Column(String(50))
+    start_date = Column(Date, nullable=True)
+    task_id = Column(Integer, nullable=True)
+    progress_id = Column(Integer, nullable=True)
     frequency = Column(String(20), default="once")
     interval_days = Column(Integer)
     time_of_day = Column(String(10))
@@ -286,3 +293,53 @@ class InspectionReport(Base):
     actions_taken = Column(Text)    # JSON
     duration_ms = Column(Integer)
     created_at = Column(DateTime, default=datetime.now)
+
+
+class AutonomyJob(Base):
+    """哥哥，延后动作和效果复查使用同一份可恢复任务账本。"""
+    __tablename__ = "autonomy_jobs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(100), nullable=False, index=True)
+    region = Column(String(200), nullable=False)
+    kind = Column(String(50), nullable=False)
+    dedup_key = Column(String(128), nullable=False)
+    payload = Column(Text, nullable=False)
+    status = Column(String(30), nullable=False, default="pending", index=True)
+    due_at = Column(DateTime, nullable=True, index=True)
+    lease_until = Column(DateTime, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, default="")
+    result = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now)
+    __table_args__ = (UniqueConstraint("username", "dedup_key", name="uq_autonomy_job_key"),)
+
+
+class AutonomyAlert(Base):
+    """送达和人工确认分开记录，发送失败不能变成成功。"""
+    __tablename__ = "autonomy_alerts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(100), nullable=False, index=True)
+    region = Column(String(200), nullable=False)
+    message = Column(Text, nullable=False)
+    severity = Column(String(20), default="warning")
+    dedup_key = Column(String(128), nullable=False)
+    status = Column(String(30), default="pending", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime, nullable=True)
+    lease_until = Column(DateTime, nullable=True)
+    last_error = Column(Text, default="")
+    delivered_at = Column(DateTime, nullable=True)
+    acknowledged_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now)
+    __table_args__ = (UniqueConstraint("username", "dedup_key", name="uq_autonomy_alert_key"),)
+
+
+class SchedulerHeartbeat(Base):
+    __tablename__ = "scheduler_heartbeats"
+    id = Column(String(100), primary_key=True)
+    status = Column(String(30), nullable=False)
+    detail = Column(Text, default="")
+    process_id = Column(Integer)
+    last_seen_at = Column(DateTime, nullable=False)

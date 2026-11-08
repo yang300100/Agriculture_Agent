@@ -170,7 +170,7 @@ class TestDeviceExecutor:
             if item["id"] == action_id
         )
 
-        assert recovered["status"] == "failed"
+        assert recovered["status"] == "uncertain"
         assert "执行被中断" in recovered["last_error"]
 
     def test_audit_log(self):
@@ -268,3 +268,178 @@ class TestDeviceExecutor:
 
         assert not result["success"]
         assert result["decision"] == REJECTED
+
+
+@pytest.fixture
+def pending_devices(tmp_path, monkeypatch):
+    import asyncio
+    import core.device_executor as executor_module
+
+    monkeypatch.setattr(executor_module, "DEFAULT_DATA_DIR", str(tmp_path))
+    registry = DeviceDriverRegistry()
+    simulator = SimulatorDriver(simulated_latency_ms=0)
+    simulator.add_virtual_device(
+        "pump", "灌溉器", [DeviceCapability.IRRIGATE], [], "麦田"
+    )
+    registry.register("simulator", simulator)
+    asyncio.run(simulator.connect())
+    asyncio.run(registry.discover_all())
+    return registry, simulator
+
+
+def test_多个执行器确认同一操作只下发一次(pending_devices):
+    registry, simulator = pending_devices
+    first = DeviceExecutor(registry, username="confirm_once")
+    action_id = first.add_pending({
+        "device_id": "pump", "command": "stop", "capability": "irrigate"
+    })
+    second = DeviceExecutor(registry, username="confirm_once")
+
+    assert first.confirm_pending(action_id)["success"] is True
+    assert second.confirm_pending(action_id)["success"] is False
+    assert len(simulator.get_history()) == 1
+
+
+def test_多个执行器追加操作不会覆盖其他请求(pending_devices):
+    registry, _ = pending_devices
+    first = DeviceExecutor(registry, username="append_pending")
+    second = DeviceExecutor(registry, username="append_pending")
+
+    first_id = first.add_pending({"device_id": "pump", "command": "stop"})
+    second_id = second.add_pending({"device_id": "pump", "command": "stop"})
+
+    assert {action["id"] for action in first.list_pending()} == {
+        first_id, second_id
+    }
+
+
+def test_读取队列不打断正在执行的确认(pending_devices, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    registry, simulator = pending_devices
+    first = DeviceExecutor(registry, username="running_confirm")
+    action_id = first.add_pending({
+        "device_id": "pump", "command": "stop", "capability": "irrigate"
+    })
+    entered = threading.Event()
+    resume = threading.Event()
+    original_execute = simulator.execute
+
+    async def delayed_execute(device_id, command):
+        entered.set()
+        assert resume.wait(timeout=10)
+        return await original_execute(device_id, command)
+
+    monkeypatch.setattr(simulator, "execute", delayed_execute)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        result = pool.submit(first.confirm_pending, action_id)
+        assert entered.wait(timeout=10)
+        try:
+            second = DeviceExecutor(registry, username="running_confirm")
+            assert second.list_pending() == []
+            assert second.confirm_pending(action_id)["success"] is False
+        finally:
+            resume.set()
+        assert result.result(timeout=10)["success"] is True
+    assert len(simulator.get_history()) == 1
+
+
+@pytest.mark.parametrize("command", ["stop", "power_off", "shutdown"])
+def test_低自主模式仍立即执行停止命令(pending_devices, monkeypatch, command):
+    import asyncio
+
+    registry, simulator = pending_devices
+    monkeypatch.setenv("AUTONOMY_LEVEL", "low")
+    executor = DeviceExecutor(registry, username="stop_immediately")
+
+    result = asyncio.run(executor.execute(
+        "pump", DeviceCommand(command=command), trigger="agent",
+        capability="irrigate",
+    ))
+
+    assert result["success"] is True
+    assert executor.list_pending() == []
+    assert simulator.get_history()[-1]["command"] == command
+
+
+def test_跨进程同时确认只允许一个进程下发(pending_devices, tmp_path):
+    import json
+    import subprocess
+
+    registry, _ = pending_devices
+    executor = DeviceExecutor(registry, username="process_confirm")
+    action_id = executor.add_pending({
+        "device_id": "pump", "command": "stop", "capability": "irrigate"
+    })
+    script = """
+import json
+import sys
+import time
+import core.device_executor as executor_module
+from devices.registry import DeviceDriverRegistry
+
+executor_module.DEFAULT_DATA_DIR = sys.argv[1]
+executor = executor_module.DeviceExecutor(
+    DeviceDriverRegistry(), username="process_confirm"
+)
+def execute_hardware(*args, **kwargs):
+    with open(sys.argv[3], "a", encoding="utf-8") as output:
+        output.write("stop\\n")
+    time.sleep(0.1)
+    return {"success": True}
+executor.execute_sync = execute_hardware
+print(json.dumps(executor.confirm_pending(sys.argv[2])))
+"""
+    output_path = tmp_path / "hardware.txt"
+    command = [sys.executable, "-c", script, str(tmp_path), action_id, str(output_path)]
+    processes = [subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8",
+    ) for _ in range(2)]
+    results = []
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=15)
+        assert process.returncode == 0, stderr
+        results.append(json.loads(stdout))
+
+    assert sum(bool(result["success"]) for result in results) == 1
+    assert output_path.read_text(encoding="utf-8").splitlines() == ["stop"]
+
+
+def test_确认进程中断后释放执行锁并允许人工重试(pending_devices, tmp_path):
+    import subprocess
+
+    registry, simulator = pending_devices
+    executor = DeviceExecutor(registry, username="process_crash")
+    action_id = executor.add_pending({
+        "device_id": "pump", "command": "stop", "capability": "irrigate"
+    })
+    script = """
+import os
+import sys
+import core.device_executor as executor_module
+from devices.registry import DeviceDriverRegistry
+
+executor_module.DEFAULT_DATA_DIR = sys.argv[1]
+executor = executor_module.DeviceExecutor(
+    DeviceDriverRegistry(), username="process_crash"
+)
+def interrupted_hardware(*args, **kwargs):
+    os._exit(7)
+executor.execute_sync = interrupted_hardware
+executor.confirm_pending(sys.argv[2])
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path), action_id],
+        capture_output=True, timeout=15,
+    )
+    assert crashed.returncode == 7
+
+    recovered = DeviceExecutor(registry, username="process_crash")
+    action = recovered.list_pending()[0]
+    assert action["status"] == "uncertain"
+    assert "执行被中断" in action["last_error"]
+    assert simulator.get_history() == []
+    assert recovered.confirm_pending(action_id)["success"] is False
+    assert simulator.get_history() == []

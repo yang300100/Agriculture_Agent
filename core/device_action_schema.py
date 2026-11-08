@@ -5,6 +5,7 @@
 """
 
 from copy import deepcopy
+import math
 from typing import Any, Dict
 
 
@@ -102,6 +103,8 @@ def normalize_action(capability: str, command: str, params: Dict[str, Any]) -> D
             number = float(value)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"参数 {key} 必须是数字") from exc
+        if not math.isfinite(number):
+            raise ValueError(f"参数 {key} 必须是有限数字")
         spec = allowed[key]
         if number < spec["min"] or number > spec["max"]:
             raise ValueError(

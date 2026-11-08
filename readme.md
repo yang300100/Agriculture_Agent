@@ -534,6 +534,18 @@ Agriculture_Agent/
 
 ---
 
+## 农场资料初始化与回归
+
+为已有账号补齐地块、分区、种植计划、农事任务、最近六个月收支和虚拟设备：
+
+```powershell
+python scripts/seed_farm_data.py --username 123
+```
+
+账号必须已存在；记录使用正常业务名称。重复执行只补缺失项，不覆盖原记录、账号密码或已有档案。工具读取应用的数据库配置，支持本地 SQLite，先在线备份再执行迁移和单事务写入。备份保存在运行时数据目录的 `backups/farm_seed/`，导入清单保存在 `seeded_farms/`。新增提醒初始暂停，设备规则初始禁用，可在确认业务设置后启用。
+
+后端回归直接执行 `python -m pytest -q`：测试会使用临时数据库与文件目录、替代密钥，并阻断外部网络；前端在 `frontend_next/` 下执行 `npm test` 和 `npm run lint`。
+
 ## 开发
 
 ```bash

@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 from datetime import datetime
 from langchain_core.messages import AIMessage
 from ..state import AgentState
@@ -16,7 +17,7 @@ def progress_tracking_node(state: AgentState) -> AgentState:
         from core.planting_tracker import PlantingTracker
         username = getattr(state, 'username', 'default')
         tracker = PlantingTracker(os.path.join(DEFAULT_DATA_DIR, username))
-        progresses = tracker.get_progress()
+        progresses = tracker.get_progress_cards(limit=None)
         tasks = tracker.get_tasks()
     except Exception as e:
         logger.warning("读取种植进度失败: %s", e)
@@ -28,10 +29,17 @@ def progress_tracking_node(state: AgentState) -> AgentState:
 
     # 如果用户指定了作物，筛选相关记录
     if crop:
-        progresses = [p for p in progresses if crop in p.crop]
+        progresses = [p for p in progresses if crop in p["crop"]]
         tasks = [t for t in tasks if crop in t.crop]
 
+    requested_date = ""
+    if re.search(r"今天|明天|后天|\d{4}[-年/]\d{1,2}[-月/]\d{1,2}", state.user_question or ""):
+        from .extract_tasks import calculate_end_date
+        requested_date = calculate_end_date(state.user_question, default_days=0)
+        tasks = [task for task in tasks if task.end_date == requested_date]
     answer = _format_progress_answer(progresses, tasks, crop)
+    if requested_date:
+        answer = f"查询日期 {requested_date}\n\n" + answer
     state.messages.append(AIMessage(content=answer))
     state.final_answer = answer
     return state
@@ -50,10 +58,11 @@ def _format_progress_answer(progresses, tasks, crop: str) -> str:
     if progresses:
         lines.append("**当前种植进度：**\n")
         for p in progresses[:5]:
-            status_icon = {"进行中": "🌱", "已完成": "✅", "待开始": "⚪"}.get(p.status, "📋")
+            status_icon = {"进行中": "🌱", "已完成": "✅", "待开始": "⚪"}.get(p["status"], "📋")
             lines.append(
-                f"- {status_icon} **{p.crop}** — {p.stage} "
-                f"({p.stage_number}/{p.total_stages} 阶段, {p.progress_percent}%)"
+                f"- {status_icon} **{p['crop']}** — {p['stage']} "
+                f"({p['stage_number']}/{p['total_stages']} 阶段，"
+                f"整季 {p['overall_progress']}%，阶段 {p['stage_progress']}%)"
             )
     else:
         if crop:

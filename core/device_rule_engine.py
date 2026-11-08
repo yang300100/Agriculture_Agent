@@ -10,7 +10,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from core.device_safety_policy import ABSOLUTE_CEILINGS, SafetyPolicyService
+from core.device_safety_policy import ABSOLUTE_CEILINGS, SafetyPolicyService, _duration
 from core.storage_paths import DEFAULT_DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,38 @@ class RuleDecision:
     AUTO_EXECUTE = "auto_execute"
     NEED_CONFIRM = "need_confirm"
     REJECTED = "rejected"
+
+
+def build_device_context(device_id: str, device_configs: List[Dict],
+                         device_states: Dict[str, Dict],
+                         weather: Optional[Dict] = None) -> Dict:
+    """哥哥，短字段按分区隔离，显式传感器只允许同地块选源。"""
+    configs = {item.get("device_id"): item for item in device_configs}
+    target = configs.get(device_id, {})
+    plot_id = target.get("plot_id")
+    zone_id = target.get("zone_id")
+    sensor_data = {}
+    for source_id, state in device_states.items():
+        config = configs.get(source_id, {})
+        if plot_id not in (None, "") and str(config.get("plot_id")) != str(plot_id):
+            continue
+        same_zone = not zone_id or config.get("zone_id") == zone_id
+        if not same_zone and plot_id in (None, ""):
+            continue
+        if not isinstance(state, dict) or state.get("error"):
+            continue
+        for key, value in state.items():
+            if isinstance(value, (int, float)) and not key.startswith("_"):
+                if same_zone:
+                    sensor_data.setdefault(key, value)
+                sensor_data[f"{source_id}.{key}"] = value
+    return {
+        "device_id": device_id,
+        "plot_id": plot_id,
+        "zone_id": zone_id,
+        "sensor_data": sensor_data,
+        "weather": weather or {},
+    }
 
 
 def apply_autonomy(decision: str, autonomy_level: str = "medium") -> str:
@@ -260,9 +292,25 @@ class RuleEngine:
         for rule in self.rules:
             if not rule.get("enabled", True):
                 continue
-            if self._evaluate_trigger(rule.get("trigger", {}), context):
+            rule_context = self.context_for_device(
+                rule.get("action", {}).get("device_id", ""), context
+            )
+            if self._evaluate_trigger(rule.get("trigger", {}), rule_context):
                 matched.append(deepcopy(rule))
         return matched
+
+    def context_for_device(self, device_id: str, context: Dict) -> Dict:
+        """哥哥，保留旧调用结构，也支持按设备隔离完整采集结果。"""
+        context = dict(context or {})
+        if "device_configs" in context and "device_states" in context:
+            target = next((item for item in context["device_configs"] if item.get("device_id") == device_id), {})
+            weather_by_plot = context.get("weather_by_plot")
+            weather = (weather_by_plot.get(str(target.get("plot_id")), weather_by_plot.get(target.get("plot_id"), {}))
+                       if isinstance(weather_by_plot, dict) else context.get("weather"))
+            return {**context, **build_device_context(
+                device_id, context["device_configs"], context["device_states"], weather,
+            )}
+        return {**self._device_scope_context(device_id), **context}
 
     def evaluate_action(self, rule: Dict, proposed_params: Dict,
                         context: Dict) -> Tuple[str, str, Dict]:
@@ -271,7 +319,7 @@ class RuleEngine:
         device_id = action.get("device_id", "")
         capability = self._infer_capability(action)
 
-        context = {**self._device_scope_context(device_id), **(context or {})}
+        context = self.context_for_device(device_id, context)
 
         # 1. 统一安全策略：先检查物理绝对上限，再检查用户可配置边界。
         policy_result = SafetyPolicyService(self.username).evaluate(
@@ -283,6 +331,9 @@ class RuleEngine:
         )
         if policy_result.decision != RuleDecision.AUTO_EXECUTE:
             return policy_result.decision, policy_result.reason, policy_result.params
+
+        if action.get("command", "start") in {"stop", "power_off", "shutdown"}:
+            return RuleDecision.AUTO_EXECUTE, "停止操作直接放行", policy_result.params
 
         # 兼容原有进程级最小秒级间隔，防止同一周期瞬时重复触发。
         hard_ok, hard_reason = self._check_hard_limits(
@@ -380,6 +431,9 @@ class RuleEngine:
         expected = cond.get("value")
 
         if cond_type == "sensor":
+            source_id = cond.get("device_id")
+            if source_id and not field.startswith(f"{source_id}."):
+                field = f"{source_id}.{field}"
             actual = context.get("sensor_data", {}).get(field)
         elif cond_type == "weather":
             actual = context.get("weather", {}).get(field)
@@ -521,22 +575,28 @@ class RuleEngine:
             return False, f"单次时长 {params['duration']} 分钟超过设定上限 {max_dur} 分钟，需要确认"
 
         max_daily = constraints.get("max_duration_per_day")
+        min_interval = constraints.get("min_interval_minutes")
+        persisted_used, persisted_last = (0.0, None)
+        if max_daily is not None or min_interval:
+            persisted_used, persisted_last = self._persisted_start_usage(device_id)
         if max_daily is not None:
             date_str = datetime.now().strftime("%Y-%m-%d")
             with _history_lock:
                 today_used = self._daily_duration.get(device_id, {}).get(date_str, 0)
+            # 哥哥，人工确认和重启后的成功操作由持久日志补齐；旧调用仍保留内存兜底。
+            # 自动路径也会调用 record_execution，同一批执行不能把两份记录相加。
+            today_used = max(today_used, persisted_used)
             if today_used + (params.get("duration") or 0) > max_daily:
                 return False, f"今日累计超过每日上限，需要确认"
 
         # 最小间隔检查
-        min_interval = constraints.get("min_interval_minutes")
         if min_interval:
             with _history_lock:
-                if device_id in self._execution_history and self._execution_history[device_id]:
-                    last = self._execution_history[device_id][-1]
-                    elapsed = (datetime.now() - last).total_seconds() / 60
-                else:
-                    elapsed = float('inf')
+                history = self._execution_history.get(device_id, [])
+                last = history[-1] if history else None
+            if persisted_last and (last is None or persisted_last > last):
+                last = persisted_last
+            elapsed = (datetime.now() - last).total_seconds() / 60 if last else float('inf')
             if elapsed < min_interval - 0.001:
                 return False, f"距上次操作 {elapsed:.1f} 分钟，不足最小间隔 {min_interval} 分钟，需要确认"
 
@@ -552,6 +612,43 @@ class RuleEngine:
                 return False, f"触发确认条件: {expr}"
 
         return True, ""
+
+    def _persisted_start_usage(self, device_id: str) -> Tuple[float, Optional[datetime]]:
+        """哥哥，规则只累计成功启动；停止和设置参数不会重新启动设备。"""
+        from core.database.engine import get_session
+        from core.database.models import DeviceActionLog, User
+
+        try:
+            with get_session() as session:
+                query = (
+                    session.query(DeviceActionLog)
+                    .join(User, User.id == DeviceActionLog.user_id)
+                    .filter(
+                        User.username == self.username,
+                        DeviceActionLog.device_id == device_id,
+                        DeviceActionLog.success == 1,
+                        DeviceActionLog.command == "start",
+                    )
+                )
+                latest = query.order_by(DeviceActionLog.created_at.desc()).first()
+                last_success = latest.created_at if latest else None
+                start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                rows = query.filter(
+                    DeviceActionLog.created_at >= start,
+                    DeviceActionLog.created_at < start + timedelta(days=1),
+                ).all()
+                duration = 0.0
+                for row in rows:
+                    try:
+                        params = json.loads(row.params) if row.params else {}
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if isinstance(params, dict):
+                        duration += _duration(params)
+                return duration, last_success
+        except Exception as exc:
+            logger.warning("读取规则启动用量失败，使用进程内历史: %s", exc)
+            return 0.0, None
 
     def _eval_confirm_expr(self, expr: str, params: Dict, context: Dict) -> bool:
         try:

@@ -26,6 +26,8 @@ class AgentState(BaseModel):
     need_clarification: bool = False
     refuse_answer: bool = False
     final_answer: Optional[str] = None
+    error_code: str = ""
+    skip_task_extraction: bool = False
 
     planting_plan: Dict[str, Any] = Field(default_factory=lambda: {
         "crops": [],

@@ -73,6 +73,8 @@ class MQTTDriver(BaseDeviceDriver):
         self._connect_event: Optional[threading.Event] = None
         self._connect_rc: Optional[int] = None
         self._devices: Dict[str, Dict] = {}  # device_id → {info, state}
+        self._ack_cache = {}
+        self._ack_topics = {}
         self._state_cache: Dict[str, Dict] = {}  # device_id → latest state from state_topic
         self._topic_to_device: Dict[str, str] = {}  # topic → device_id 反向映射，O(1) 查找
         self._event_loop = None
@@ -86,7 +88,7 @@ class MQTTDriver(BaseDeviceDriver):
                         location: str = "",
                         control_topic: str = None,
                         state_topic: str = None,
-                        qos: int = 0) -> None:
+                        qos: int = 0, ack_topic: str = None) -> None:
         """注册一个 MQTT 设备
 
         Args:
@@ -127,7 +129,11 @@ class MQTTDriver(BaseDeviceDriver):
             },
             "state": {"power": False, "status": "powered_off"},
         }
-        self._state_cache[device_id] = {"power": False, "status": "powered_off"}
+        if ack_topic:
+            if ack_topic in self._ack_topics or ack_topic in self._topic_to_device or "+" in ack_topic or "#" in ack_topic:
+                raise ValueError("MQTT 回执主题必须唯一且不能使用通配符")
+            self._ack_topics[ack_topic] = device_id
+        self._state_cache[device_id] = {"power": False, "status": "powered_off", "_quality": "unknown"}
         # 建立 topic → device_id 反向映射，用于 O(1) 消息分发
         self._topic_to_device[state_topic] = device_id
         logger.info("MQTT 设备已注册: %s → %s", device_id, control_topic)
@@ -136,6 +142,8 @@ class MQTTDriver(BaseDeviceDriver):
         if self._connected and self._client is not None:
             try:
                 self._client.subscribe(state_topic, qos=qos)
+                if ack_topic:
+                    self._client.subscribe(ack_topic, qos=1)
                 logger.info("MQTT 自动订阅新设备状态: %s → %s", device_id, state_topic)
             except Exception as e:
                 logger.warning("MQTT 自动订阅失败 %s: %s", device_id, e)
@@ -289,8 +297,13 @@ class MQTTDriver(BaseDeviceDriver):
                 "device_id": device_id,
             }
 
+            if command.execution_id:
+                payload["execution_id"] = command.execution_id
+
             # 默认 QoS 0 兼容内嵌 Broker，真实 Broker 可按设备配置 1/2。
             qos = dev["info"].get("qos", 0)
+            with self._state_lock:
+                self._ack_cache.pop((device_id, command.execution_id), None)
             msg_info = self._client.publish(
                 topic, json.dumps(payload, ensure_ascii=False), qos=qos
             )
@@ -303,44 +316,21 @@ class MQTTDriver(BaseDeviceDriver):
                 if qos > 0:
                     raise
 
-            # 乐观状态更新：最佳努力，仅反映"已下发指令"，实际状态由 state_topic 异步回传确认
-            # 注意：如果设备离线，此乐观更新可能会与实际状态不一致，state_topic 消息会覆盖它
-            with self._state_lock:
-                current = dev["state"].get("status", "powered_off")
-                if command.command in ("power_on", "boot"):
-                    if current == "powered_off":
-                        dev["state"]["power"] = True
-                        dev["state"]["status"] = "standby"
-                elif command.command in ("power_off", "shutdown"):
-                    if current in ("standby", "running"):
-                        dev["state"]["power"] = False
-                        dev["state"]["status"] = "powered_off"
-                    elif current == "error":
-                        dev["state"]["power"] = False
-                        dev["state"]["status"] = "powered_off"
-                elif command.command == "start":
-                    if current == "powered_off":
-                        dev["state"]["power"] = True
-                        dev["state"]["status"] = "running"
-                    elif current == "standby":
-                        dev["state"]["status"] = "running"
-                elif command.command == "stop":
-                    if current == "running":
-                        dev["state"]["status"] = "standby"
-                        # power 保持 True，不断电！
-                elif command.command == "reset":
-                    if current == "error":
-                        dev["state"]["power"] = True
-                        dev["state"]["status"] = "standby"
-
-            return DeviceResult(
-                success=True,
-                device_id=device_id,
-                executed_command=command.command,
-                actual_params=command.params,
-                message=f"[MQTT] 指令已发布到 {topic}: {command.command}",
-                raw_response={"topic": topic, "qos": qos},
-            )
+            ack_topic = next((t for t, d in self._ack_topics.items() if d == device_id), None)
+            if ack_topic and command.execution_id:
+                deadline = asyncio.get_running_loop().time() + max(command.timeout_ms / 1000, .001)
+                while asyncio.get_running_loop().time() < deadline:
+                    with self._state_lock:
+                        ack = self._ack_cache.pop((device_id, command.execution_id), None)
+                    if ack is not None:
+                        success = ack.get("success") is True
+                        return DeviceResult(success, device_id, command.command, actual_params=command.params,
+                            message=ack.get("message", "设备回执已收到"),
+                            error_code=None if success else "DEVICE_REJECTED", raw_response=ack,
+                            execution_id=command.execution_id, acknowledged=success)
+                    await asyncio.sleep(min(.02, max(deadline - asyncio.get_running_loop().time(), .001)))
+            return DeviceResult(False, device_id, command.command, message="已发布但未收到匹配设备回执",
+                                error_code="ACK_UNCONFIRMED", execution_id=command.execution_id, raw_response={"topic": topic, "qos": qos})
 
         except Exception as e:
             logger.error("MQTT 发布失败: %s → %s", device_id, e)
@@ -365,6 +355,9 @@ class MQTTDriver(BaseDeviceDriver):
         merged = {**local, **cached}
         merged["_read_at"] = datetime.now().isoformat()
         merged["_driver"] = "mqtt"
+        if not self._connected:
+            merged["_quality"] = "error"
+            merged["_error"] = "MQTT Broker 未连接"
         return merged
 
     # ── MQTT 回调 ──────────────────────────────
@@ -374,6 +367,8 @@ class MQTTDriver(BaseDeviceDriver):
         if rc == 0:
             self._connected = True
             logger.info("MQTT 连接成功: %s:%d", self._broker_host, self._broker_port)
+            for ack_topic in self._ack_topics:
+                client.subscribe(ack_topic, qos=1)
             # clean_session=True 时重连会丢失订阅，所以每次连接成功都重订阅。
             for dev_id, dev in self._devices.items():
                 state_topic = dev["info"].get("state_topic")
@@ -398,11 +393,18 @@ class MQTTDriver(BaseDeviceDriver):
                 logger.warning("MQTT 状态消息必须是 JSON 对象: %s", topic)
                 return
 
+            ack_device = self._ack_topics.get(topic)
+            if ack_device:
+                execution_id = payload.get("execution_id")
+                if isinstance(execution_id, str) and payload.get("device_id", ack_device) == ack_device:
+                    with self._state_lock:
+                        self._ack_cache[(ack_device, execution_id)] = payload
+                return
             # O(1) 反向映射：直接用 topic 找到 device_id
             dev_id = self._topic_to_device.get(topic)
             if dev_id:
                 with self._state_lock:
-                    self._state_cache[dev_id] = payload
+                    self._state_cache[dev_id] = {**payload, "_observed_at": datetime.now().isoformat(), "_quality": "good"}
                 logger.debug("MQTT 状态更新: %s ← %s", dev_id, topic)
             else:
                 logger.debug("MQTT 收到未注册 topic: %s", topic)

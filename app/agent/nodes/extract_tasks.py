@@ -19,12 +19,46 @@ from core.storage_paths import DEFAULT_DATA_DIR
 logger = logging.getLogger(__name__)
 
 
+def task_device_fields(device_action: Dict[str, Any], username: str) -> Dict[str, Any]:
+    """哥哥，只发现并关联设备，创建任务时不会执行任何设备指令。"""
+    if not isinstance(device_action, dict):
+        return {}
+    from ..agents.device_agent import ACTION_TO_CAPABILITY, _discover_device_for_capability
+
+    action = device_action.get("action", "")
+    capability = device_action.get("capability") or ACTION_TO_CAPABILITY.get(action)
+    if not capability:
+        return {}
+    try:
+        hint = device_action.get("device_id") or device_action.get("device_hint", "")
+        if hint:
+            device_id = _discover_device_for_capability(capability, username, hint)
+        else:
+            device_id = _discover_device_for_capability(capability, username)
+    except Exception as exc:
+        logger.warning("任务设备发现失败，保留普通任务: %s", exc)
+        return {}
+    if not device_id:
+        return {}
+    command = device_action.get("command") or ("stop" if action in ("stop", "cool", "shade") else "start")
+    return {
+        "device_id": device_id,
+        "device_command": command,
+        "device_params": device_action.get("params") or {},
+    }
+
+
 def extract_and_create_tasks_node(state: AgentState) -> AgentState:
     """
     从LLM回答中提取建议并自动创建农事任务
     针对所有会产生可操作建议的意图类型（与 graph.py 路由保持一致）
     """
     state.progress_message = "正在提取待办任务..."
+    if state.error_code or state.skip_task_extraction or state.intent_type == "device_control":
+        return state
+    # 哥哥，提醒节点已经直接建好了任务，这里再提取会生成重复卡片。
+    if state.intent_type == "reminder_setup" and state.reminders:
+        return state
     # 与 graph.py route_after_agent 的 task_intents 保持同步
     actionable_intents = [
         "crop_selection",       # 作物选择 → 创建种植计划任务
@@ -83,17 +117,8 @@ def extract_and_create_tasks_node(state: AgentState) -> AgentState:
 
                     # 处理设备操作字段：将 LLM 提取的 device_action 解析为设备参数
                     device_action = suggestion.get("device_action")
-                    if device_action and isinstance(device_action, dict):
-                        action_type = device_action.get("action", "")
-                        params = device_action.get("params", {})
-                        from ..agents.device_agent import ACTION_TO_DEFAULT_DEVICE
-                        device_id = ACTION_TO_DEFAULT_DEVICE.get(action_type)
-                        if device_id:
-                            task_data["device_id"] = device_id
-                            task_data["device_command"] = "start"
-                            task_data["device_params"] = params
-                            logger.info("extract_tasks 设备操作: action=%s → device=%s params=%s",
-                                        action_type, device_id, params)
+                    if device_action:
+                        task_data.update(task_device_fields(device_action, username))
 
                     task = tracker.create_task(task_data)
                     created_tasks.append(task)
@@ -113,7 +138,7 @@ def extract_and_create_tasks_node(state: AgentState) -> AgentState:
                     task_notice += f"{i}. {task.title}\n"
                 if len(created_tasks) > 3:
                     task_notice += f"... 还有 {len(created_tasks) - 3} 个任务已添加到任务列表\n"
-                task_notice += "\n💡 您可以在侧边栏查看和管理所有任务"
+                task_notice += "\n💡 哥哥，可以在「农事日历」里查看和管理任务。"
 
                 # 追加到回答中
                 state.final_answer += task_notice
@@ -237,7 +262,7 @@ def extract_suggestions_from_answer(answer: str, crop: str = "",
         for suggestion in suggestions:
             if not isinstance(suggestion, dict):
                 continue
-            timeframe = suggestion.get("timeframe", "")
+            timeframe = suggestion.get("end_date") or suggestion.get("timeframe", "")
             end_date = calculate_end_date(timeframe)
             suggestion["end_date"] = end_date
             processed_suggestions.append(suggestion)
@@ -292,13 +317,22 @@ def _parse_json_response(content: str) -> list:
     return []
 
 
-def calculate_end_date(timeframe: str) -> str:
+def calculate_end_date(timeframe: str, default_days: int = 3) -> str:
     """
     根据时间描述计算具体的截止日期。
     支持：立即/马上/N天内/N周内/N月内 等格式
     """
     timeframe = timeframe.strip() if timeframe else ""
     now = datetime.now()
+
+    # 哥哥，明确的日历日期优先保留，不能被默认天数覆盖。
+    date_match = re.search(r'(\d{4})[-年/](\d{1,2})[-月/](\d{1,2})日?', timeframe)
+    if date_match:
+        return datetime(*(int(part) for part in date_match.groups())).strftime("%Y-%m-%d")
+
+    for word, days in [("大后天", 3), ("后天", 2), ("明天", 1)]:
+        if word in timeframe:
+            return (now + timedelta(days=days)).strftime("%Y-%m-%d")
 
     # 立即/马上/今天
     if any(word in timeframe for word in ["立即", "马上", "即刻", "今天"]):
@@ -311,7 +345,7 @@ def calculate_end_date(timeframe: str) -> str:
         return (now + timedelta(days=days)).strftime("%Y-%m-%d")
 
     # 小时转换: "24小时", "48小时" 等
-    hour_match = re.search(r'(\d+)\s*小时', timeframe)
+    hour_match = re.search(r'(\d+)\s*小时(?:内|后)', timeframe) or re.fullmatch(r'(\d+)\s*小时', timeframe)
     if hour_match:
         hours = int(hour_match.group(1))
         days = max(1, hours // 24)
@@ -343,13 +377,11 @@ def calculate_end_date(timeframe: str) -> str:
     if "本月" in timeframe:
         return (now + timedelta(days=20)).strftime("%Y-%m-%d")
 
-    # 中文数字天数: "三天"=3天, "两天"=2天，模糊描述默认3天
-    if "三天" in timeframe:
-        return (now + timedelta(days=3)).strftime("%Y-%m-%d")
-    if "两天" in timeframe:
-        return (now + timedelta(days=2)).strftime("%Y-%m-%d")
+    # 哥哥，日常口语中的中文天数也要按约定日期落库。
+    for word, days in {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}.items():
+        if f"{word}天" in timeframe:
+            return (now + timedelta(days=days)).strftime("%Y-%m-%d")
     if any(word in timeframe for word in ["几天内", "近日"]):
         return (now + timedelta(days=3)).strftime("%Y-%m-%d")
 
-    # 默认3天后
-    return (now + timedelta(days=3)).strftime("%Y-%m-%d")
+    return (now + timedelta(days=default_days)).strftime("%Y-%m-%d")

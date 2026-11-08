@@ -42,6 +42,16 @@ def _stream_invoke(llm, messages, state: AgentState = None):
 logger = logging.getLogger(__name__)
 
 
+def _set_llm_error(state: AgentState, error: Exception) -> None:
+    """哥哥，把服务故障反馈给界面，保留第三方错误细节在服务端。"""
+    if getattr(error, "status_code", None) == 401:
+        state.error_code = "LLM_AUTH_FAILED"
+        state.final_answer = "模型服务鉴权失败，请检查后端的 LLM_API_KEY 配置。"
+    else:
+        state.error_code = "LLM_REQUEST_FAILED"
+        state.final_answer = "模型服务暂时不可用，请稍后重试。"
+
+
 def llm_response_node(state: AgentState) -> AgentState:
     """
     统一 LLM 回答节点 - 所有回复都通过 LLM 生成
@@ -183,7 +193,7 @@ def llm_response_node(state: AgentState) -> AgentState:
         state.final_answer = response.content
     except Exception as e:
         logger.error(f"LLM 调用失败: {e}", exc_info=True)
-        state.final_answer = "抱歉，我暂时无法回答，请稍后再试。"
+        _set_llm_error(state, e)
 
     state.messages.append(AIMessage(content=state.final_answer))
     return state
@@ -259,8 +269,8 @@ def clarification_node(state: AgentState) -> AgentState:
         clarify_msg = response.content.strip()
     except Exception as e:
         logger.error(f"LLM 追问生成失败: {e}", exc_info=True)
-        # 降级到简单追问
-        clarify_msg = "为了更好地帮助您，能否告诉我更多信息？比如您所在的地区和想种植的作物？"
+        _set_llm_error(state, e)
+        clarify_msg = state.final_answer
 
     state.final_answer = clarify_msg
     state.messages.append(AIMessage(content=clarify_msg))
@@ -346,7 +356,7 @@ def llm_expert_answer(state: AgentState) -> AgentState:
         state.final_answer = response.content
     except Exception as e:
         logger.error(f"专家回答 LLM 调用失败: {e}", exc_info=True)
-        state.final_answer = "抱歉，暂时无法提供专家建议，请稍后再试。"
+        _set_llm_error(state, e)
 
     state.messages.append(AIMessage(content=state.final_answer))
     return state

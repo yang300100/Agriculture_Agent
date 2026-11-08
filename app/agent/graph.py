@@ -38,6 +38,7 @@ def _agent_dispatch_node(state: AgentState) -> AgentState:
         orch.dispatch(state)
     except Exception as e:
         logger.exception("Agent 调度失败")
+        state.error_code = "AGENT_EXECUTION_FAILED"
         state.final_answer = (
             f"抱歉，处理您的请求时遇到了问题。请稍后重试或换个方式描述您的需求～"
         )

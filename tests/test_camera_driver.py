@@ -75,18 +75,18 @@ class FakeCv2Module:
 
 
 @pytest.fixture(autouse=True)
-def _mock_cv2():
-    """全局注入 mock cv2 + numpy 模块"""
-    fake_cv2 = FakeCv2Module()
-    sys.modules["cv2"] = fake_cv2
-    sys.modules["numpy"] = MagicMock()
-    # 直接修改已导入的 camera_driver 模块的属性
+def _mock_cv2(monkeypatch):
+    """哥哥，只在当前用例替换摄像头依赖，别污染后续 NumPy 测试。"""
     import devices.camera_driver as cd
-    cd.cv2 = fake_cv2
-    cd.np = MagicMock()
-    cd.HAS_OPENCV = True
+
+    fake_cv2 = FakeCv2Module()
+    fake_numpy = MagicMock()
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+    monkeypatch.setitem(sys.modules, "numpy", fake_numpy)
+    monkeypatch.setattr(cd, "cv2", fake_cv2)
+    monkeypatch.setattr(cd, "np", fake_numpy)
+    monkeypatch.setattr(cd, "HAS_OPENCV", True)
     yield
-    # 恢复（可选）
 
 
 # ── 测试用例 ──────────────────────────────────

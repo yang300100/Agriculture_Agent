@@ -27,6 +27,7 @@ def planting_plan_node(state: AgentState) -> AgentState:
             "experience": state.user_profile.get("experience", ""),
             "crop": state.short_term_facts.get("crop", "")
         }
+        user_info["start_date"] = state.short_term_facts.get("start_date") or datetime.now().strftime("%Y-%m-%d")
 
         try:
             # 生成种植计划
@@ -69,7 +70,7 @@ def planting_plan_node(state: AgentState) -> AgentState:
                     "stage": current_stage,
                     "stage_number": stage_number,
                     "total_stages": total_stages,
-                    "start_date": datetime.now().strftime("%Y-%m-%d"),
+                    "start_date": user_info["start_date"],
                     "expected_end_date": plan.schedule.get("harvest_time", ""),
                     "progress_percent": 0,
                     "status": "进行中",
@@ -86,15 +87,23 @@ def planting_plan_node(state: AgentState) -> AgentState:
                             task_name = task_info.get("task", "")
                             priority = task_info.get("priority", "中")
 
-                            tracker.create_task({
+                            task = tracker.create_task({
                                 "crop": plan.crop,
                                 "task_type": task_name[:4] if len(task_name) >= 4 else task_name,
                                 "title": f"{stage_name} - {task_name}",
                                 "description": f"{plan.crop}的{stage_name}阶段任务",
                                 "status": "待办",
                                 "priority": "high" if priority == "高" else "medium",
+                                "start_date": task_date or user_info["start_date"],
                                 "end_date": task_date,
                                 "progress_percent": 0
+                            })
+                            from core.reminder_system import ReminderSystem
+                            ReminderSystem(username=username).create_reminder({
+                                "crop": plan.crop, "reminder_type": task_name or "其他",
+                                "task_description": task.title, "growth_stage": stage_name,
+                                "frequency": "单次", "start_date": task_date or user_info["start_date"],
+                                "time_of_day": "09:00", "task_id": task.id, "progress_id": progress.id,
                             })
 
                 # 3. 添加资源准备任务（种子、肥料等）

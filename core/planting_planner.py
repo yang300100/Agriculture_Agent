@@ -245,6 +245,16 @@ class PlantingPlanner:
 
         # 生成时间表
         schedule = self._generate_schedule(crop_info, region_info)
+        if user_input.get("start_date"):
+            # 哥哥，用户确认的起点统一用于阶段、任务和收获日期。
+            start = datetime.strptime(user_input["start_date"], "%Y-%m-%d")
+            current = start
+            for stage in schedule.get("stages", []):
+                stage["start_date"] = current.strftime("%Y-%m-%d")
+                current += timedelta(days=stage.get("duration_days", 30))
+                stage["end_date"] = current.strftime("%Y-%m-%d")
+            schedule["sowing_time"] = start.strftime("%Y-%m-%d")
+            schedule["harvest_time"] = current.strftime("%Y-%m-%d")
 
         # 生成阶段性任务
         tasks = self._generate_stage_tasks(crop_info, schedule.get("sowing_time"))

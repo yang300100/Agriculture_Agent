@@ -8,12 +8,13 @@
 """
 
 import logging
+import math
 import os
 import json
 import requests
 
 logger = logging.getLogger(__name__)
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -285,7 +286,7 @@ class WeatherService:
         if self._aborted:
             return None
 
-        cache_key = f"grid_{lon:.1f}_{lat:.1f}"
+        cache_key = f"grid_{float(lon)!r}_{float(lat)!r}"
         cached = self._get_cached(cache_key)
         if cached:
             return cached
@@ -353,6 +354,7 @@ class WeatherService:
             "pressure": float(now.get("pressure", 0)),
             "dew": now.get("dew", ""),
             "obsTime": now.get("obsTime", ""),
+            "source": "qweather",
         }
 
     def _geocode(self, location: str) -> tuple:
@@ -465,6 +467,16 @@ class WeatherService:
         main = data.get("main", {})
         weather = data.get("weather", [{}])[0]
         wind = data.get("wind", {})
+        # 哥哥，服务商未提供可靠采样时间时保持未知，不能拿请求时间冒充。
+        observed = None
+        raw_time = data.get("dt")
+        try:
+            if not isinstance(raw_time, bool):
+                seconds = float(raw_time)
+                if math.isfinite(seconds) and 0 < seconds <= datetime.now(timezone.utc).timestamp():
+                    observed = datetime.fromtimestamp(seconds, timezone.utc).isoformat()
+        except (TypeError, ValueError, OverflowError, OSError):
+            pass
         return {
             "temp": main.get("temp", 0),
             "text": weather.get("description", ""),
@@ -475,7 +487,8 @@ class WeatherService:
             "windScale": "",
             "cloud": str(data.get("clouds", {}).get("all", "")),
             "pressure": main.get("pressure", 0),
-            "obsTime": datetime.now().isoformat(),
+            "obsTime": observed,
+            "source": "openweathermap",
         }
 
     def get_forecast(self, location: str, days: int = 7) -> List[WeatherInfo]:

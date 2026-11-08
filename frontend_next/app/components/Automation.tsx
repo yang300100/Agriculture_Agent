@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   Bot,
@@ -29,7 +29,7 @@ import {
   Wifi,
   X,
 } from "lucide-react";
-import { ApiError, get, post, remove } from "../api";
+import { ApiError, get, post, put, remove } from "../api";
 import type { Device, Field, JsonMap, Rule } from "../types";
 import {
   Card,
@@ -41,8 +41,34 @@ import {
   StatusPill,
 } from "./Common";
 import { PendingActionEditor } from "./PendingActionEditor";
+import { localDateKey } from "../local-date";
+import {
+  parseConditions,
+  ruleToDraft,
+  saveRuleDraft,
+  updateCondition,
+} from "../rule-editor";
+import { statusLabel, alertLabel, actionAllowed, jobKindLabel, jobStatusLabel } from "../autonomy-status";
+import type { RuleDraft } from "../rule-editor";
 
 type DeviceSummaryKind = "all" | "online" | "pending" | "today";
+
+function ActionStatusPill({ log }: { log: JsonMap }) {
+  const decisions = {
+    need_confirm: { label: "待确认", tone: "warning" },
+    rejected: { label: "已拦截", tone: "danger" },
+    notify: { label: "已通知", tone: "info" },
+  } as const;
+  const decision = decisions[log.decision as keyof typeof decisions];
+  if (decision)
+    return <StatusPill tone={decision.tone}>{decision.label}</StatusPill>;
+  const failed = log.success === false || log.status === "failed";
+  return (
+    <StatusPill tone={failed ? "danger" : "success"}>
+      {failed ? "失败" : "完成"}
+    </StatusPill>
+  );
+}
 
 function useEscapeClose(onClose: () => void) {
   useEffect(() => {
@@ -67,40 +93,100 @@ export function DevicesPage() {
   const [editingDevice, setEditingDevice] = useState<Device | null>(null);
   const [editingAction, setEditingAction] = useState<JsonMap | null>(null);
   const [busy, setBusy] = useState("");
-  const load = useCallback(async () => {
-    setError("");
-    try {
-      const [deviceRows, fieldRows, pendingRows, logRows] = await Promise.all([
+  const [message, setMessage] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const refreshRequest = useRef<Promise<void> | null>(null);
+  const mounted = useRef(false);
+  const fieldsLoaded = useRef(false);
+  const load = useCallback(() => {
+    if (refreshRequest.current) return refreshRequest.current;
+    if (!mounted.current) return Promise.resolve();
+    setRefreshing(true);
+    const request = (async () => {
+      const requests = [
         get<Device[]>("/api/devices"),
-        get<Field[]>("/api/fields"),
+        fieldsLoaded.current
+          ? Promise.resolve(null)
+          : get<Field[]>("/api/fields"),
         get<JsonMap[]>("/api/actions/pending"),
         get<JsonMap[]>("/api/actions/log?limit=30"),
-      ]);
-      setDevices(deviceRows);
-      setFields(fieldRows);
-      setPending(
-        pendingRows.filter((item) =>
-          ["pending", "failed"].includes(String(item.status || "pending")),
-        ),
-      );
-      setLogs(logRows);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "设备读取失败");
-    } finally {
-      setLoading(false);
-    }
+      ] as const;
+      try {
+        const [deviceRows, fieldRows, pendingRows, logRows] =
+          await Promise.all(requests);
+        if (!mounted.current) return;
+        setDevices(deviceRows);
+        if (fieldRows) {
+          setFields(fieldRows);
+          fieldsLoaded.current = true;
+        }
+        setPending(
+          pendingRows.filter((item) =>
+            ["pending", "failed", "uncertain"].includes(String(item.status || "pending")),
+          ),
+        );
+        setLogs(logRows);
+        setUpdatedAt(new Date());
+        setRefreshError("");
+      } catch (reason) {
+        // 哥哥，一项失败后也要等其它读取结束，避免下轮请求重叠。
+        await Promise.allSettled(requests);
+        if (mounted.current)
+          setRefreshError(
+            reason instanceof Error ? reason.message : "设备读取失败",
+          );
+      } finally {
+        refreshRequest.current = null;
+        if (mounted.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
+    })();
+    refreshRequest.current = request;
+    return request;
   }, []);
   useEffect(() => {
+    mounted.current = true;
     load();
+    const refreshVisible = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    const timer = window.setInterval(refreshVisible, 5000);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => {
+      mounted.current = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshVisible);
+    };
   }, [load]);
   async function command(device: Device, name: string, params: JsonMap = {}) {
+    if (busy) return;
     setBusy(device.device_id);
+    setError("");
+    setMessage("");
     try {
-      await post(`/api/devices/${device.device_id}/command`, {
-        command: name,
-        params: JSON.stringify(params),
-      });
+      const result = await post<JsonMap>(
+        `/api/devices/${device.device_id}/command`,
+        {
+          command: name,
+          params: JSON.stringify(params),
+        },
+      );
+      if (result.decision === "need_confirm") {
+        setMessage(
+          `操作已加入待确认列表，请核对后执行。${result.message || ""}`,
+        );
+      } else if (!result.success) {
+        throw new Error(result.message || result.error || "设备指令执行失败");
+      } else {
+        setMessage(result.message || "设备指令已执行");
+      }
       await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "设备指令执行失败");
     } finally {
       setBusy("");
     }
@@ -116,6 +202,8 @@ export function DevicesPage() {
           `data:${result.mime_type || "image/jpeg"};base64,${result.image_base64}`,
         );
       else setError(result.error || "拍照失败");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "拍照失败");
     } finally {
       setBusy("");
     }
@@ -123,6 +211,7 @@ export function DevicesPage() {
   async function decide(id: string, accept: boolean) {
     setBusy(`action:${id}`);
     setError("");
+    setMessage("");
     try {
       const result = await post<JsonMap>(
         `/api/actions/${id}/${accept ? "confirm" : "reject"}`,
@@ -137,14 +226,18 @@ export function DevicesPage() {
       setBusy("");
     }
   }
+  async function reconcile(item: JsonMap) {
+    setBusy(`action:${item.id}`); setError("");
+    try { const result = await post<JsonMap>(`/api/devices/${encodeURIComponent(item.device_id)}/reconcile`); setMessage(result.message || "设备状态已核对"); await load(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "设备状态核对失败"); }
+    finally { setBusy(""); }
+  }
   if (loading) return <Loading label="正在连接设备中心" />;
   const onlineDevices = devices.filter(
     (device) => !["offline", "error", "disconnected"].includes(device.status),
   );
   const todayLogs = logs.filter((log) =>
-    String(log.timestamp || "").startsWith(
-      new Date().toISOString().slice(0, 10),
-    ),
+    String(log.timestamp || "").startsWith(localDateKey()),
   );
   return (
     <>
@@ -156,10 +249,32 @@ export function DevicesPage() {
           <>
             <button
               className="secondary-button"
+              onClick={() => load()}
+              disabled={refreshing}
+            >
+              <RefreshCw />
+              {refreshing ? "正在刷新" : "刷新状态"}
+            </button>
+            <button
+              className="secondary-button"
               onClick={async () => {
-                await post("/api/devices/refresh");
-                await load();
+                if (busy) return;
+                setBusy("reconnect");
+                setError("");
+                try {
+                  await post("/api/devices/refresh");
+                  await load();
+                } catch (reason) {
+                  setError(
+                    reason instanceof Error
+                      ? reason.message
+                      : "设备重新连接失败",
+                  );
+                } finally {
+                  setBusy("");
+                }
               }}
+              disabled={Boolean(busy)}
             >
               <RefreshCw />
               重新连接
@@ -174,7 +289,16 @@ export function DevicesPage() {
           </>
         }
       />
+      <p aria-live="polite">
+        状态更新时间：
+        {updatedAt
+          ? updatedAt.toLocaleTimeString("zh-CN", { hour12: false })
+          : "尚未更新"}{" "}
+        · 页面可见时每 5 秒刷新
+      </p>
       {error && <ErrorState message={error} retry={load} />}
+      {refreshError && <ErrorState message={refreshError} retry={load} />}
+      {message && <Notice>{message}</Notice>}
       <div className="metric-grid four">
         <button
           type="button"
@@ -254,12 +378,18 @@ export function DevicesPage() {
                     {item.device_id} ·{" "}
                     {item.created_at || item.timestamp || "刚刚"}
                   </small>
+                  <small>参数 {JSON.stringify(item.params || {})}</small>
+                  <small>{item.reason || "请核对设备和参数后执行"}</small>
                   {item.status === "failed" && (
                     <small className="pending-error">
                       {item.last_error || "上次执行失败，请确认设备状态后重试"}
                     </small>
                   )}
                 </div>
+                {!actionAllowed(String(item.status)) ? (
+                  <div><small className="pending-error">执行结果不确定，请先核对设备；不会重复下发。</small>
+                    <button className="secondary-button" disabled={!!busy} onClick={() => reconcile(item)}>只读核对</button></div>
+                ) : (<>
                 <button
                   className="secondary-button"
                   onClick={() => setEditingAction(item)}
@@ -284,6 +414,7 @@ export function DevicesPage() {
                   <Check />
                   {item.status === "failed" ? "重试执行" : "确认执行"}
                 </button>
+                </>)}
               </div>
             ))}
           </div>
@@ -332,15 +463,7 @@ export function DevicesPage() {
                 <span>
                   {log.command || log.action || log.description || "—"}
                 </span>
-                <StatusPill
-                  tone={
-                    log.success === false || log.status === "failed"
-                      ? "danger"
-                      : "success"
-                  }
-                >
-                  {log.status || (log.success === false ? "失败" : "完成")}
-                </StatusPill>
+                <ActionStatusPill log={log} />
               </div>
             ))
           ) : (
@@ -571,6 +694,7 @@ function DeviceSummaryModal({
                       )}
                     </div>
                     <div className="summary-action-buttons">
+                      {!actionAllowed(String(item.status)) ? <small>执行结果不确定，请在设备中心只读核对。</small> : <>
                       <button
                         className="secondary-button"
                         onClick={() => onEdit(item)}
@@ -599,6 +723,7 @@ function DeviceSummaryModal({
                             ? "重试执行"
                             : "确认执行"}
                       </button>
+                      </>}
                     </div>
                   </article>
                 );
@@ -628,15 +753,7 @@ function DeviceSummaryModal({
                         "设备动作"}
                     </small>
                   </div>
-                  <StatusPill
-                    tone={
-                      log.success === false || log.status === "failed"
-                        ? "danger"
-                        : "success"
-                    }
-                  >
-                    {log.status || (log.success === false ? "失败" : "完成")}
-                  </StatusPill>
+                  <ActionStatusPill log={log} />
                 </article>
               ))}
             </div>
@@ -842,7 +959,9 @@ function CameraLiveView({
           aria-label="刷新摄像头画面"
         >
           <RefreshCw className={refreshing ? "spinning" : ""} />
-          {frameTime ? `${String(frameTime).slice(11, 19)} 更新` : "每 5 秒刷新"}
+          {frameTime
+            ? `${String(frameTime).slice(11, 19)} 更新`
+            : "每 5 秒刷新"}
         </button>
       </div>
       <div className="camera-live-frame">
@@ -892,8 +1011,16 @@ function isControllableDevice(device: Device) {
 }
 
 function deviceParameterEntries(device: Device): [string, unknown][] {
-  const entries = Object.entries(device.state || {}).filter(([, value]) =>
-    ["string", "number", "boolean"].includes(typeof value),
+  const internalKeys = new Set([
+    "run_id",
+    "run_started_at",
+    "last_ended_run_id",
+    "execution_id",
+  ]);
+  const entries = Object.entries(device.state || {}).filter(
+    ([key, value]) =>
+      !internalKeys.has(key) &&
+      ["string", "number", "boolean"].includes(typeof value),
   );
   const known = new Set(entries.map(([key]) => key));
   for (const sensor of device.sensors || []) {
@@ -904,7 +1031,24 @@ function deviceParameterEntries(device: Device): [string, unknown][] {
 
 function formatDeviceValue(key: string, value: unknown) {
   if (value === null || value === undefined || value === "") return "暂无数据";
+  if (key === "run_until" && typeof value === "number") {
+    return new Date(value * 1000).toLocaleTimeString("zh-CN", {
+      hour12: false,
+    });
+  }
   if (key === "status") return deviceStatusLabel(String(value));
+  if (key === "last_run_end_reason")
+    return (
+      (
+        {
+          completed: "按计划结束",
+          interrupted: "提前停止",
+          failed: "设备故障",
+        } as Record<string, string>
+      )[String(value)] || String(value)
+    );
+  if (key === "last_run_ended_at")
+    return new Date(String(value)).toLocaleString("zh-CN", { hour12: false });
   if (key === "power" && typeof value === "boolean")
     return value ? "开启" : "关闭";
   const units: Record<string, string> = {
@@ -1003,6 +1147,7 @@ function DeviceRunControls({
   onStart: (params: JsonMap) => void;
 }) {
   const definitions = commandParameterDefinitions(device);
+  const [parameterError, setParameterError] = useState("");
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       definitions.map((definition) => [
@@ -1014,14 +1159,27 @@ function DeviceRunControls({
   if (!definitions.length) return null;
 
   function startWithParameters() {
+    const invalid = definitions.find((definition) => {
+      const value = Number(values[definition.key]);
+      return (
+        !values[definition.key]?.trim() ||
+        !Number.isFinite(value) ||
+        value < definition.min ||
+        value > definition.max
+      );
+    });
+    if (invalid) {
+      setParameterError(
+        `${invalid.label}须在 ${invalid.min}～${invalid.max}${invalid.unit} 之间`,
+      );
+      return;
+    }
+    setParameterError("");
     const params = Object.fromEntries(
-      definitions.map((definition) => {
-        const parsed = Number(values[definition.key]);
-        const safeValue = Number.isFinite(parsed)
-          ? Math.min(definition.max, Math.max(definition.min, parsed))
-          : definition.defaultValue;
-        return [definition.key, safeValue];
-      }),
+      definitions.map((definition) => [
+        definition.key,
+        Number(values[definition.key]),
+      ]),
     );
     onStart(params);
   }
@@ -1040,13 +1198,16 @@ function DeviceRunControls({
               <input
                 type="number"
                 step="any"
+                min={definition.min}
+                max={definition.max}
                 value={values[definition.key] || ""}
-                onChange={(event) =>
+                onChange={(event) => {
+                  setParameterError("");
                   setValues((current) => ({
                     ...current,
                     [definition.key]: event.target.value,
-                  }))
-                }
+                  }));
+                }}
                 aria-label={`${device.name}${definition.label}`}
               />
               <small>{definition.unit}</small>
@@ -1054,6 +1215,7 @@ function DeviceRunControls({
           </label>
         ))}
       </div>
+      {parameterError && <ErrorState message={parameterError} />}
       <button
         type="button"
         className="device-start-button"
@@ -1074,6 +1236,8 @@ function deviceStatusLabel(status: string) {
     ready: "在线",
     running: "运行中",
     active: "运行中",
+    standby: "待机",
+    powered_off: "已关机",
     offline: "离线",
     disconnected: "离线",
     error: "异常",
@@ -1106,24 +1270,13 @@ function deviceConnectionPlaceholder(driver: string) {
     simulator: "{}",
     http: '{"base_url":"http://192.168.1.10"}',
     mqtt: '{"host":"localhost","port":1883}',
-    modbus:
-      '{"mode":"tcp","host":"192.168.1.20","port":502,"slave_id":1}',
+    modbus: '{"mode":"tcp","host":"192.168.1.20","port":502,"slave_id":1}',
     coap: '{"base_uri":"coap://192.168.1.30"}',
     opcua:
       '{"endpoint":"opc.tcp://192.168.1.40:4840","command_nodes":{},"state_nodes":{}}',
     camera: '{"source":"rtsp://192.168.1.50/stream"}',
   };
   return examples[driver] || "{}";
-}
-
-function parseRuleParameterValue(value: string): unknown {
-  const text = value.trim();
-  if (!text) return "";
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
 }
 
 function DeviceIcon({ capabilities }: { capabilities: string[] }) {
@@ -1148,6 +1301,10 @@ function sensorLabel(key: string) {
         wind_speed: "风速",
         brightness_percent: "亮度",
         last_duration: "上次时长",
+        run_until: "计划停止时间",
+        last_run_end_reason: "上次结束原因",
+        last_run_ended_at: "上次停止时间",
+        rpm: "转速",
         last_amount_kg: "上次施肥量",
         ph: "土壤 pH",
       } as Record<string, string>
@@ -1573,37 +1730,41 @@ function DeviceEditor({
 
 export function RulesPage() {
   const [rules, setRules] = useState<Rule[]>([]);
+  const [alerts, setAlerts] = useState<JsonMap[]>([]);
+  const [jobs, setJobs] = useState<JsonMap[]>([]);
+  const [jobTimes, setJobTimes] = useState<Record<string, string>>({});
+  const [arrangingJob, setArrangingJob] = useState<number | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(true);
   const [selected, setSelected] = useState<Rule | null>(null);
-  const [form, setForm] = useState<JsonMap>({
-    name: "",
-    enabled: true,
-    logic: "AND",
-    conditions:
-      '[{"type":"sensor","field":"soil_moisture","op":"<","value":30}]',
-    device_id: "",
-    command: "start",
-    parameterName: "duration",
-    parameterValue: "30",
-    maxUse: 60,
-    maxDay: 180,
-    ai: false,
-  });
+  const [form, setForm] = useState<RuleDraft>(() => ruleToDraft(null));
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const savingRef = useRef(false);
+  const [automationStatus, setAutomationStatus] = useState<JsonMap | null>(
+    null,
+  );
   const load = useCallback(async () => {
     setDevicesLoading(true);
     try {
-      const [ruleRows, deviceRows] = await Promise.all([
+      const [ruleRows, deviceRows, status, alertRows, jobRows] = await Promise.all([
         get<Rule[]>("/api/rules"),
         get<Device[]>("/api/devices"),
+        get<JsonMap>("/api/autonomous/status"),
+        get<JsonMap[]>("/api/autonomous/alerts"),
+        get<JsonMap[]>("/api/autonomous/jobs"),
       ]);
       setRules(ruleRows);
-      setDevices(deviceRows);
+      setAlerts(alertRows);
+      setJobs(jobRows);
+      const actionDevices = deviceRows.filter(isControllableDevice);
+      setDevices(actionDevices);
+      setAutomationStatus(status);
       setForm((current) =>
-        !current.device_id && deviceRows[0]
-          ? { ...current, device_id: deviceRows[0].device_id }
+        !current.device_id && actionDevices[0]
+          ? { ...current, device_id: actionDevices[0].device_id }
           : current,
       );
     } finally {
@@ -1614,109 +1775,94 @@ export function RulesPage() {
     load().catch((reason) => setError(reason.message));
   }, [load]);
   function edit(rule: Rule) {
+    if (savingRef.current) return;
     setSelected(rule);
-    setForm({
-      name: rule.name,
-      enabled: rule.enabled,
-      logic: rule.trigger?.logic || "AND",
-      conditions: JSON.stringify(rule.trigger?.conditions || [], null, 2),
-      device_id: rule.action?.device_id || devices[0]?.device_id || "",
-      command: rule.action?.command || "start",
-      parameterName: Object.keys(rule.action?.params || {})[0] || "duration",
-      parameterValue: String(
-        Object.values(rule.action?.params || {})[0] ?? 30,
-      ),
-      maxUse: rule.constraints?.max_duration_per_use || 60,
-      maxDay: rule.constraints?.max_duration_per_day || 180,
-      ai: rule.ai_enhance?.enabled || false,
-    });
+    setForm(ruleToDraft(rule, devices[0]?.device_id));
+    setMessage("");
+    setError("");
   }
   function reset() {
+    if (savingRef.current) return;
     setSelected(null);
-    setForm({
-      name: "",
-      enabled: true,
-      logic: "AND",
-      conditions:
-        '[{"type":"sensor","field":"soil_moisture","op":"<","value":30}]',
-      device_id: devices[0]?.device_id || "",
-      command: "start",
-      parameterName: "duration",
-      parameterValue: "30",
-      maxUse: 60,
-      maxDay: 180,
-      ai: false,
-    });
-  }
-  async function save(event: FormEvent) {
-    event.preventDefault();
+    setForm(ruleToDraft(null, devices[0]?.device_id));
+    setMessage("");
     setError("");
-    if (!String(form.name || "").trim()) {
-      setError("请输入规则名称");
-      return;
-    }
-    if (!devices.length || !form.device_id) {
-      setError("请先在设备中心注册一个设备");
-      return;
-    }
-    if (form.command === "set_param" && !String(form.parameterName).trim()) {
-      setError("请输入要设置的参数名");
-      return;
-    }
+  }
+  async function save(event?: FormEvent, testAfterSave = false) {
+    event?.preventDefault();
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    setTesting(testAfterSave);
+    setError("");
+    setMessage("");
     try {
-      const actionParams =
-        form.command === "set_param"
-          ? {
-              [String(form.parameterName).trim()]: parseRuleParameterValue(
-                String(form.parameterValue),
-              ),
-            }
-          : form.command === "start"
-            ? { duration: 30 }
-            : {};
-      const payload = {
-        name: form.name || "未命名规则",
-        enabled: form.enabled,
-        trigger: { logic: form.logic, conditions: JSON.parse(form.conditions) },
-        action: {
-          device_id: form.device_id,
-          command: form.command,
-          params: actionParams,
+      if (!devices.length) throw new Error("请先在设备中心注册一个设备");
+      const result = await saveRuleDraft(
+        form,
+        selected,
+        {
+          persist: (id, payload) =>
+            id
+              ? put<JsonMap>(`/api/rules/${id}`, payload)
+              : post<JsonMap>("/api/rules", payload),
+          test: (id) => post<JsonMap>(`/api/rules/${id}/test`),
         },
-        constraints: {
-          max_duration_per_use: Number(form.maxUse),
-          max_duration_per_day: Number(form.maxDay),
-          min_interval_minutes: 120,
-          forbidden_hours: [22, 23, 0, 1, 2, 3, 4, 5],
-        },
-        ai_enhance: {
-          enabled: form.ai,
-          can_adjust: ["duration"],
-          adjust_range: { duration: [-10, 10] },
-        },
-      };
-      const result = selected
-        ? await put<JsonMap>(`/api/rules/${selected.id}`, payload)
-        : await post<JsonMap>("/api/rules", payload);
-      if (!result.success) throw new Error(result.error || "保存失败");
-      setMessage("自动规则已保存");
-      reset();
-      await load();
-    } catch (reason) {
-      setError(
-        reason instanceof Error ? reason.message : "触发条件 JSON 格式错误",
+        testAfterSave,
       );
+      const savedRule = { ...result.payload, id: result.id } as Rule;
+      setSelected(savedRule);
+      setForm(ruleToDraft(savedRule));
+      setRules((current) => {
+        const existing = current.some((rule) => String(rule.id) === result.id);
+        return existing
+          ? current.map((rule) =>
+              String(rule.id) === result.id ? savedRule : rule,
+            )
+          : [...current, savedRule];
+      });
+      if (result.testError) {
+        setError(`规则已保存，但条件测试失败：${result.testError}`);
+      } else if (testAfterSave) {
+        const outcome = !savedRule.enabled
+          ? "规则已停用，本次不参与匹配"
+          : `当前条件${result.testResult?.rule_matched ? "匹配" : "不匹配"}`;
+        setMessage(
+          `规则“${savedRule.name}”已保存，${outcome}。此测试仅检查条件，未执行设备，也未验证硬件联动。`,
+        );
+      } else {
+        setMessage("自动规则已保存");
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "规则保存失败");
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+      setTesting(false);
     }
   }
-  async function testRule(rule: Rule) {
-    const result = await post<JsonMap>(`/api/rules/${rule.id}/test`);
-    setMessage(
-      result.rule_matched
-        ? `规则“${rule.name}”当前条件匹配`
-        : `规则“${rule.name}”当前条件不匹配`,
-    );
+  let conditionRows: JsonMap[] | null = null;
+  try {
+    conditionRows = parseConditions(form.conditions);
+  } catch {
+    /* 哥哥，JSON 未写完时先保留草稿。 */
+  }
+  function changeCondition(index: number, changes: JsonMap) {
+    try {
+      setForm({
+        ...form,
+        conditions: updateCondition(form.conditions, index, changes),
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "条件修改失败");
+    }
   }
   async function deleteRule(rule: Rule) {
+    if (
+      savingRef.current ||
+      !window.confirm(`确定删除规则“${rule.name}”？删除后无法恢复。`)
+    )
+      return;
     setError("");
     const result = await remove<JsonMap>(`/api/rules/${rule.id}`);
     if (!result.success) {
@@ -1744,6 +1890,46 @@ export function RulesPage() {
       />
       {message && <Notice>{message}</Notice>}
       {error && <ErrorState message={error} />}
+      {automationStatus && <Notice>{statusLabel(automationStatus)}。最近心跳：{automationStatus.last_heartbeat || "尚无"}</Notice>}
+      {automationStatus?.running && <Notice>
+        {automationStatus.maintenance_healthy ? "维护队列近期处理正常" : "维护队列尚无近期成功记录，请检查调度服务"}
+        {automationStatus.last_maintenance_success && `。最近处理成功：${new Date(automationStatus.last_maintenance_success).toLocaleString("zh-CN")}`}
+        {!automationStatus.maintenance_healthy && automationStatus.maintenance_error && `。异常：${automationStatus.maintenance_error}`}
+      </Notice>}
+      <Card title="自主巡检告警与任务">
+        {alerts.length === 0 && jobs.length === 0 && <p>暂无告警或任务</p>}
+        {alerts.map((alert) => <div key={`alert-${alert.id}`}>
+          <b>{alert.message}</b> · {alertLabel(String(alert.status))}
+          {alert.last_error && <small> · {alert.last_error}</small>}
+          {alert.status !== "acknowledged" && <button className="secondary-button" onClick={async () => {
+            try { await post(`/api/autonomous/alerts/${alert.id}/ack`); await load(); }
+            catch (reason) { setError(reason instanceof Error ? reason.message : "确认告警失败"); }
+          }}>人工确认</button>}
+        </div>)}
+        {jobs.map((job) => <div key={`job-${job.id}`}>
+          {jobKindLabel(String(job.kind))} · {jobStatusLabel(String(job.status))}
+          {job.payload?.action?.device_id && <span> · 设备 {job.payload.action.device_id}</span>}
+          {job.payload?.action?.reason && <small> · {job.payload.action.reason}</small>}
+          {job.due_at && <small> · {new Date(job.due_at).toLocaleString("zh-CN")}</small>}
+          {job.last_error && <small> · {job.last_error}</small>}
+          {job.status === "awaiting_schedule" && job.kind === "planned_action" && job.payload?.action?.action !== "review" && <div className="editor-actions">
+            <input type="datetime-local" aria-label={`任务 ${job.id} 执行时间`} value={jobTimes[job.id] || ""}
+              onChange={(event) => setJobTimes((current) => ({ ...current, [job.id]: event.target.value }))} disabled={arrangingJob !== null} />
+            <button className="secondary-button" disabled={arrangingJob !== null || !jobTimes[job.id]} onClick={async () => {
+              setArrangingJob(job.id); setError("");
+              try {
+                const date = new Date(jobTimes[job.id]);
+                if (!Number.isFinite(date.getTime()) || date.getTime() <= Date.now()) throw new Error("请选择未来的执行时间");
+                await post(`/api/autonomous/jobs/${job.id}/schedule`, { due_at: date.toISOString() });
+                setMessage("执行时间已保存；调度运行时会重新校验条件再执行"); await load();
+              } catch (reason) { setError(reason instanceof Error ? reason.message : "安排任务失败"); }
+              finally { setArrangingJob(null); }
+            }}>{arrangingJob === job.id ? "正在保存" : "安排执行"}</button>
+          </div>}
+          {job.status === "awaiting_schedule" && job.payload?.action?.action === "review" && <small> · 请先为复查建议制定明确操作和判据</small>}
+        </div>)}
+      </Card>
+
       <div className="rules-layout">
         <Card className="rule-list-card" title={`我的规则 · ${rules.length}`}>
           {rules.length ? (
@@ -1780,207 +1966,448 @@ export function RulesPage() {
           title={selected ? `编辑 · ${selected.name}` : "新建自动规则"}
         >
           <form onSubmit={save} noValidate>
-            <div className="form-grid two">
-              <label>
-                规则名称
-                <input
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="小麦自动灌溉"
-                  required
-                />
-              </label>
-              <label className="switch-label">
-                启用规则
-                <button
-                  type="button"
-                  className={`switch ${form.enabled ? "on" : ""}`}
-                  onClick={() => setForm({ ...form, enabled: !form.enabled })}
-                >
-                  <i />
-                </button>
-              </label>
-            </div>
-            <div className="rule-section">
-              <span>
-                <Activity />
-                触发条件
-              </span>
-              <div className="segmented logic-tabs">
-                <button
-                  type="button"
-                  className={form.logic === "AND" ? "active" : ""}
-                  onClick={() => setForm({ ...form, logic: "AND" })}
-                >
-                  全部满足 AND
-                </button>
-                <button
-                  type="button"
-                  className={form.logic === "OR" ? "active" : ""}
-                  onClick={() => setForm({ ...form, logic: "OR" })}
-                >
-                  任一满足 OR
-                </button>
-              </div>
-              <label>
-                条件 JSON
-                <textarea
-                  rows={7}
-                  value={form.conditions}
-                  onChange={(e) =>
-                    setForm({ ...form, conditions: e.target.value })
-                  }
-                />
-              </label>
-            </div>
-            <div className="rule-section">
-              <span>
-                <Cpu />
-                执行动作
-              </span>
-              {devicesLoading ? (
-                <Loading label="正在读取已注册设备" />
-              ) : devices.length ? (
-                <div className="form-grid two">
-                  <label>
-                    目标设备
-                    <select
-                      value={form.device_id}
-                      onChange={(e) =>
-                        setForm({ ...form, device_id: e.target.value })
-                      }
-                    >
-                      {devices.map((device) => (
-                        <option value={device.device_id} key={device.device_id}>
-                          {device.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    指令
-                    <select
-                      value={form.command}
-                      onChange={(e) =>
-                        setForm({ ...form, command: e.target.value })
-                      }
-                    >
-                      <option value="start">启动</option>
-                      <option value="stop">停止</option>
-                      <option value="set_param">设置参数</option>
-                    </select>
-                  </label>
-                </div>
-              ) : (
-                <Notice tone="danger">请先在设备中心注册一个设备。</Notice>
-              )}
-              {devices.length > 0 && form.command === "set_param" && (
-                <div className="form-grid two rule-parameter-fields">
-                  <label>
-                    参数名
-                    <input
-                      value={form.parameterName}
-                      onChange={(event) =>
-                        setForm({ ...form, parameterName: event.target.value })
-                      }
-                      placeholder="如：target_temp"
-                      required
-                    />
-                  </label>
-                  <label>
-                    参数值
-                    <input
-                      value={form.parameterValue}
-                      onChange={(event) =>
-                        setForm({ ...form, parameterValue: event.target.value })
-                      }
-                      placeholder="如：24 或 true"
-                      required
-                    />
-                  </label>
-                  <small>
-                    数字、true、false 和 JSON 会自动转换，其余内容按文本保存。
-                  </small>
-                </div>
-              )}
-            </div>
-            <div className="rule-section">
-              <span>
-                <ShieldCheck />
-                安全边界
-              </span>
+            <fieldset
+              disabled={saving}
+              style={{
+                border: 0,
+                padding: 0,
+                margin: 0,
+                minWidth: 0,
+                display: "grid",
+                gap: 17,
+              }}
+            >
               <div className="form-grid two">
                 <label>
-                  单次最长（分钟）
+                  规则名称
                   <input
-                    type="number"
-                    min="1"
-                    max="120"
-                    value={form.maxUse}
-                    onChange={(e) =>
-                      setForm({ ...form, maxUse: e.target.value })
-                    }
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    placeholder="小麦自动灌溉"
+                    required
                   />
                 </label>
-                <label>
-                  每日上限（分钟）
-                  <input
-                    type="number"
-                    min="1"
-                    max="600"
-                    value={form.maxDay}
-                    onChange={(e) =>
-                      setForm({ ...form, maxDay: e.target.value })
-                    }
-                  />
+                <label className="switch-label">
+                  启用规则
+                  <button
+                    type="button"
+                    className={`switch ${form.enabled ? "on" : ""}`}
+                    onClick={() => setForm({ ...form, enabled: !form.enabled })}
+                  >
+                    <i />
+                  </button>
                 </label>
               </div>
-              <label className="check-line">
-                <input
-                  type="checkbox"
-                  checked={form.ai}
-                  onChange={(e) => setForm({ ...form, ai: e.target.checked })}
-                />
+              <div className="rule-section">
                 <span>
-                  <b>启用 AI 微调</b>
-                  <small>允许智能体在安全范围内微调执行时长</small>
+                  <Activity />
+                  触发条件
                 </span>
-              </label>
-            </div>
-            <div className="editor-actions">
-              {selected && (
-                <>
+                <div className="segmented logic-tabs">
                   <button
                     type="button"
-                    className="danger-button"
-                    onClick={() =>
-                      deleteRule(selected).catch((reason) =>
-                        setError(
-                          reason instanceof Error
-                            ? reason.message
-                            : "规则删除失败",
-                        ),
-                      )
+                    className={form.logic === "AND" ? "active" : ""}
+                    onClick={() => setForm({ ...form, logic: "AND" })}
+                  >
+                    全部满足 AND
+                  </button>
+                  <button
+                    type="button"
+                    className={form.logic === "OR" ? "active" : ""}
+                    onClick={() => setForm({ ...form, logic: "OR" })}
+                  >
+                    任一满足 OR
+                  </button>
+                </div>
+                <p>
+                  选择指标、比较符和阈值；传感器来源等高级字段会保留在 JSON 中。
+                </p>
+                {conditionRows === null ? (
+                  <Notice tone="danger">
+                    高级 JSON 尚未有效，请先修正后使用可视编辑。
+                  </Notice>
+                ) : (
+                  conditionRows.map((condition, index) => (
+                    <div className="form-grid two" key={index}>
+                      <label>
+                        条件 {index + 1} · 来源
+                        <select
+                          value={condition.type || "sensor"}
+                          onChange={(event) =>
+                            changeCondition(index, { type: event.target.value })
+                          }
+                        >
+                          <option value="sensor">传感器</option>
+                          <option value="weather">天气</option>
+                          <option value="time">时间（HH:MM）</option>
+                          {!["sensor", "weather", "time"].includes(
+                            condition.type,
+                          ) &&
+                            condition.type && (
+                              <option value={condition.type}>
+                                {condition.type}
+                              </option>
+                            )}
+                        </select>
+                      </label>
+                      <label>
+                        指标
+                        <input
+                          list="rule-condition-metrics"
+                          value={condition.field || ""}
+                          onChange={(event) =>
+                            changeCondition(index, {
+                              field: event.target.value,
+                            })
+                          }
+                          placeholder="如 soil_moisture"
+                        />
+                      </label>
+                      <label>
+                        比较符
+                        <select
+                          value={condition.op || "=="}
+                          onChange={(event) =>
+                            changeCondition(index, { op: event.target.value })
+                          }
+                        >
+                          {[
+                            "<",
+                            "<=",
+                            ">",
+                            ">=",
+                            "==",
+                            "!=",
+                            "in",
+                            "between",
+                          ].map((op) => (
+                            <option value={op} key={op}>
+                              {op}
+                            </option>
+                          ))}
+                          {condition.op &&
+                            ![
+                              "<",
+                              "<=",
+                              ">",
+                              ">=",
+                              "==",
+                              "!=",
+                              "in",
+                              "between",
+                            ].includes(condition.op) && (
+                              <option value={condition.op}>
+                                {condition.op}
+                              </option>
+                            )}
+                        </select>
+                      </label>
+                      <label>
+                        阈值 / 条件值
+                        <input
+                          value={
+                            typeof condition.value === "string"
+                              ? condition.value
+                              : JSON.stringify(condition.value ?? "")
+                          }
+                          onChange={(event) =>
+                            changeCondition(index, {
+                              value: event.target.value,
+                            })
+                          }
+                          placeholder="如 30、06:00 或 [10,20]"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            conditions: JSON.stringify(
+                              conditionRows.filter((_, row) => row !== index),
+                              null,
+                              2,
+                            ),
+                          })
+                        }
+                      >
+                        <Trash2 />
+                        移除此条件
+                      </button>
+                    </div>
+                  ))
+                )}
+                <datalist id="rule-condition-metrics">
+                  <option value="soil_moisture">土壤湿度</option>
+                  <option value="temperature">温度</option>
+                  <option value="humidity">空气湿度</option>
+                  <option value="light_lux">光照</option>
+                  <option value="rainfall">降雨量</option>
+                </datalist>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={conditionRows === null}
+                  onClick={() =>
+                    setForm({
+                      ...form,
+                      conditions: JSON.stringify(
+                        [
+                          ...(conditionRows || []),
+                          {
+                            type: "sensor",
+                            field: "soil_moisture",
+                            op: "<",
+                            value: 30,
+                          },
+                        ],
+                        null,
+                        2,
+                      ),
+                    })
+                  }
+                >
+                  <Plus />
+                  添加条件
+                </button>
+                <details>
+                  <summary>高级条件 JSON</summary>
+                  <label>
+                    条件 JSON
+                    <textarea
+                      rows={7}
+                      value={form.conditions}
+                      onChange={(e) =>
+                        setForm({ ...form, conditions: e.target.value })
+                      }
+                    />
+                  </label>
+                </details>
+              </div>
+              <div className="rule-section">
+                <span>
+                  <Cpu />
+                  执行动作
+                </span>
+                {devicesLoading ? (
+                  <Loading label="正在读取已注册设备" />
+                ) : devices.length ? (
+                  <div className="form-grid two">
+                    <label>
+                      目标设备
+                      <select
+                        value={form.device_id}
+                        onChange={(e) =>
+                          setForm({ ...form, device_id: e.target.value })
+                        }
+                      >
+                        {devices.map((device) => (
+                          <option
+                            value={device.device_id}
+                            key={device.device_id}
+                          >
+                            {device.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      指令
+                      <select
+                        value={form.command}
+                        onChange={(e) =>
+                          setForm({ ...form, command: e.target.value })
+                        }
+                      >
+                        <option value="start">启动</option>
+                        <option value="stop">停止</option>
+                        <option value="set_param">设置参数</option>
+                      </select>
+                    </label>
+                  </div>
+                ) : (
+                  <Notice tone="danger">请先在设备中心注册一个设备。</Notice>
+                )}
+                {devices.length > 0 && form.command === "start" && (
+                  <label>
+                    启动时长（分钟）
+                    <input
+                      type="number"
+                      min="0.1"
+                      step="any"
+                      value={form.duration}
+                      onChange={(event) =>
+                        setForm({ ...form, duration: event.target.value })
+                      }
+                    />
+                    <small>
+                      这是本次启动的实际持续时长，须不超过单次最长时长。
+                    </small>
+                  </label>
+                )}
+                <label>
+                  执行模式
+                  <select
+                    value={form.executionMode}
+                    onChange={(event) =>
+                      setForm({ ...form, executionMode: event.target.value })
                     }
                   >
-                    <Trash2 />
-                    删除
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => testRule(selected)}
-                  >
-                    <TestTube2 />
-                    测试规则
-                  </button>
-                </>
-              )}
-              <button className="primary-button">
-                <Save />
-                保存规则
-              </button>
-            </div>
+                    <option value="auto">
+                      auto · 条件满足后自动执行（受自主权与安全策略约束）
+                    </option>
+                    <option value="confirm">
+                      confirm · 条件满足后等待确认
+                    </option>
+                    <option value="notify">notify · 仅通知，不执行设备</option>
+                  </select>
+                </label>
+                {devices.length > 0 && form.command === "set_param" && (
+                  <div className="form-grid two rule-parameter-fields">
+                    <label>
+                      参数名
+                      <input
+                        value={form.parameterName}
+                        onChange={(event) =>
+                          setForm({
+                            ...form,
+                            parameterName: event.target.value,
+                          })
+                        }
+                        placeholder="如：target_temp"
+                        required
+                      />
+                    </label>
+                    <label>
+                      参数值
+                      <input
+                        value={form.parameterValue}
+                        onChange={(event) =>
+                          setForm({
+                            ...form,
+                            parameterValue: event.target.value,
+                          })
+                        }
+                        placeholder="如：24 或 true"
+                        required
+                      />
+                    </label>
+                    <small>
+                      数字、true、false 和 JSON 会自动转换，其余内容按文本保存。
+                    </small>
+                  </div>
+                )}
+              </div>
+              <div className="rule-section">
+                <span>
+                  <ShieldCheck />
+                  安全边界
+                </span>
+                <div className="form-grid two">
+                  <label>
+                    单次最长（分钟）
+                    <input
+                      type="number"
+                      min="1"
+                      max="120"
+                      value={form.maxUse}
+                      onChange={(e) =>
+                        setForm({ ...form, maxUse: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    每日上限（分钟）
+                    <input
+                      type="number"
+                      min="1"
+                      max="600"
+                      value={form.maxDay}
+                      onChange={(e) =>
+                        setForm({ ...form, maxDay: e.target.value })
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="form-grid two">
+                  <label>
+                    最小执行间隔（分钟）
+                    <input
+                      type="number"
+                      min="0"
+                      value={form.minInterval}
+                      onChange={(event) =>
+                        setForm({ ...form, minInterval: event.target.value })
+                      }
+                    />
+                    <small>
+                      同一设备两次执行之间的冷却时间；0 表示不额外设置规则冷却。
+                    </small>
+                  </label>
+                  <label>
+                    禁止执行时段（小时）
+                    <input
+                      value={form.forbiddenHours}
+                      onChange={(event) =>
+                        setForm({ ...form, forbiddenHours: event.target.value })
+                      }
+                      placeholder="如 22,23,0,1；留空表示不限制"
+                    />
+                    <small>
+                      使用服务端本地时间。填写 0–23 的整点小时，以逗号分隔；如
+                      22 表示 22:00–22:59。
+                    </small>
+                  </label>
+                </div>
+                <label className="check-line">
+                  <input
+                    type="checkbox"
+                    checked={form.ai}
+                    onChange={(e) => setForm({ ...form, ai: e.target.checked })}
+                  />
+                  <span>
+                    <b>启用 AI 微调</b>
+                    <small>允许智能体在安全范围内微调执行时长</small>
+                  </span>
+                </label>
+              </div>
+              <div className="editor-actions">
+                {selected && (
+                  <>
+                    <button
+                      type="button"
+                      className="danger-button"
+                      onClick={() =>
+                        deleteRule(selected).catch((reason) =>
+                          setError(
+                            reason instanceof Error
+                              ? reason.message
+                              : "规则删除失败",
+                          ),
+                        )
+                      }
+                    >
+                      <Trash2 />
+                      删除
+                    </button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => save(undefined, true)}
+                  disabled={saving}
+                >
+                  <TestTube2 />
+                  {testing ? "正在保存并测试" : "保存并测试条件"}
+                </button>
+                <button className="primary-button" disabled={saving}>
+                  <Save />
+                  {saving && !testing ? "正在保存" : "保存规则"}
+                </button>
+              </div>
+            </fieldset>
           </form>
         </Card>
       </div>
@@ -2211,15 +2638,24 @@ export function DocsPage() {
                   <h3>更换驱动协议与连接参数</h3>
                   <p>
                     在设备卡片中点击“配置”，选择新的驱动协议，然后将旧的连接参数
-                    JSON 完整替换为对应格式。保存后设备会使用新配置重新连接；设备
-                    ID 不会改变。
+                    JSON
+                    完整替换为对应格式。保存后设备会使用新配置重新连接；设备 ID
+                    不会改变。
                   </p>
                 </div>
                 <div className="protocol-config-steps">
-                  <span><b>1</b> 选择驱动协议</span>
-                  <span><b>2</b> 替换连接参数 JSON</span>
-                  <span><b>3</b> 核对设备能力</span>
-                  <span><b>4</b> 保存并重新连接</span>
+                  <span>
+                    <b>1</b> 选择驱动协议
+                  </span>
+                  <span>
+                    <b>2</b> 替换连接参数 JSON
+                  </span>
+                  <span>
+                    <b>3</b> 核对设备能力
+                  </span>
+                  <span>
+                    <b>4</b> 保存并重新连接
+                  </span>
                 </div>
                 <div className="connection-example-grid">
                   {connectionExamples.map((example) => (
@@ -2228,7 +2664,9 @@ export function DocsPage() {
                         <b>{example.name}</b>
                         <p>{example.note}</p>
                       </div>
-                      <pre><code>{JSON.stringify(example.config, null, 2)}</code></pre>
+                      <pre>
+                        <code>{JSON.stringify(example.config, null, 2)}</code>
+                      </pre>
                     </article>
                   ))}
                 </div>
@@ -2237,7 +2675,8 @@ export function DocsPage() {
                   <div>
                     <b>连接安全</b>
                     <p>
-                      不要将 MQTT、Modbus、CoAP、OPC UA 或摄像头端口直接暴露到公网；
+                      不要将 MQTT、Modbus、CoAP、OPC UA
+                      或摄像头端口直接暴露到公网；
                       密码和证书仅填写在受控后端中，不要提交到 Git。
                     </p>
                   </div>

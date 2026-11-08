@@ -51,6 +51,7 @@ class OPCUADriver(BaseDeviceDriver):
         username: Optional[str] = None,
         password: Optional[str] = None,
         security_string: Optional[str] = None,
+        duration_node: Optional[str] = None,
     ) -> None:
         endpoint = str(endpoint).strip()
         if not endpoint.startswith("opc.tcp://"):
@@ -70,6 +71,7 @@ class OPCUADriver(BaseDeviceDriver):
                 "username": username,
                 "password": password,
                 "security_string": security_string,
+                "duration_node": duration_node,
             },
             "state": {"power": False, "status": "powered_off"},
             "reachable": False,
@@ -149,10 +151,14 @@ class OPCUADriver(BaseDeviceDriver):
                 device_id, command.command,
                 "OPC UA 指令节点缺少 node_id", "INVALID_CONFIG",
             )
+        if "duration" in command.params and not info.get("duration_node"):
+            return self._failure(device_id, command.command, "未配置时长节点", "INVALID_CONFIG")
         value = command.params.get("value", configured_value)
         client = await self._make_client(info)
         try:
             await asyncio.wait_for(client.connect(), timeout=self._command_timeout(command))
+            if "duration" in command.params:
+                await asyncio.wait_for(client.get_node(info["duration_node"]).write_value(command.params["duration"]), timeout=self._command_timeout(command))
             node = client.get_node(node_id)
             write_value = self._to_variant(value, variant_type)
             await asyncio.wait_for(
@@ -192,11 +198,13 @@ class OPCUADriver(BaseDeviceDriver):
                     node.read_value(), timeout=self._timeout
                 )
             dev["state"].update(state)
+            dev["state"].update({"_observed_at": datetime.now().isoformat(), "_quality": "good"})
+            dev["state"].pop("_error", None)
             dev["reachable"] = True
             return self._state_view(dev)
         except Exception as exc:
             dev["reachable"] = False
-            return {**self._state_view(dev), "_error": str(exc)}
+            return {**self._state_view(dev), "_quality": "error", "_error": str(exc)}
         finally:
             await self._safe_disconnect(client)
 

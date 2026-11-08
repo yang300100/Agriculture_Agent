@@ -15,6 +15,9 @@ import {
 } from "lucide-react";
 import { get, post } from "../api";
 import type { Device, JsonMap, Progress, Task } from "../types";
+import { summarizeWeather } from "../weather-state";
+import { isTaskRunning, overallProgress } from "../task-view";
+import { useVisiblePolling } from "../use-visible-polling";
 import {
   Card,
   Empty,
@@ -79,12 +82,28 @@ export function DashboardPage({
   useEffect(() => {
     load();
   }, [load]);
+  useVisiblePolling(load, 10000, !busy);
 
   async function completeTask(id: string) {
+    if (busy) return;
+    const task = tasks.find((item) => item.id === id);
+    if (!task || isTaskRunning(task)) return;
+    if (
+      task.device_id &&
+      !window.confirm(
+        `确认“${task.title}”已在现场完成吗？此操作仅登记完成，不会启动设备。`,
+      )
+    )
+      return;
     setBusy(id);
+    setError("");
     try {
-      await post(`/api/tasks/${id}/complete`);
+      const result = await post<JsonMap>(`/api/tasks/${id}/complete`);
+      if (result.success === false)
+        throw new Error(result.error || "任务更新失败");
       await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "任务更新失败");
     } finally {
       setBusy("");
     }
@@ -129,6 +148,7 @@ export function DashboardPage({
     );
 
   const finance = data.finance || {};
+  const weatherSummary = summarizeWeather(data.weather_alerts);
   const incomeTrend = Object.entries(financeReport?.monthly_data || {})
     .filter(([, value]) => Number((value as JsonMap).income || 0) > 0)
     .sort(([left], [right]) => left.localeCompare(right))
@@ -201,12 +221,23 @@ export function DashboardPage({
     day: "numeric",
     weekday: "long",
   }).format(now);
+  const hour = now.getHours();
+  const greeting =
+    hour < 6
+      ? "夜深了"
+      : hour < 12
+        ? "早上好"
+        : hour < 14
+          ? "中午好"
+          : hour < 18
+            ? "下午好"
+            : "晚上好";
 
   return (
     <>
       <PageHeader
         eyebrow={dateLabel}
-        title="早上好，田间一切就绪"
+        title={`${greeting}，看看今天的农场`}
         description="这是今天最值得关注的农场动态。"
         actions={
           <>
@@ -259,11 +290,7 @@ export function DashboardPage({
               </span>
               <div>
                 <b>{data.weather_alerts?.region || "我的农场"}</b>
-                <small>
-                  {data.weather_alerts?.has_alert
-                    ? `${data.weather_alerts.count} 条天气预警`
-                    : "天气条件总体稳定"}
-                </small>
+                <small>{weatherSummary.label}</small>
               </div>
             </div>
             <button
@@ -414,17 +441,17 @@ export function DashboardPage({
                       <div>
                         <b>{item.crop}</b>
                         <span>{item.stage || "准备期"}</span>
-                        <em>{item.progress_percent || item.progress || 0}%</em>
+                        <em title="整季预计进度">{overallProgress(item)}%</em>
                       </div>
                       <div className="progress-track">
                         <i
                           style={{
-                            width: `${item.progress_percent || item.progress || 0}%`,
+                            width: `${overallProgress(item)}%`,
                           }}
                         />
                       </div>
                     </div>
-                    {item.status !== "已完成" && (
+                    {item.status !== "已完成" && item.status !== "待开始" && (
                       <button
                         className="small-button"
                         disabled={busy === item.id}
@@ -447,16 +474,32 @@ export function DashboardPage({
         </div>
         <div className="dashboard-workspace-column dashboard-secondary-column">
           <Card className="risk-summary-card">
-            <span className={alerts.length ? "warning" : "clear"}>
+            <span
+              className={
+                alerts.length || !weatherSummary.available ? "warning" : "clear"
+              }
+            >
               <TriangleAlert />
             </span>
             <div>
               <b>风险提醒</b>
-              <small className={alerts.length ? "warning-text" : "positive"}>
-                {alerts.length ? "建议及时查看" : "暂无高风险"}
+              <small
+                className={
+                  alerts.length || !weatherSummary.available
+                    ? "warning-text"
+                    : "positive"
+                }
+              >
+                {alerts.length
+                  ? "建议及时查看"
+                  : weatherSummary.available
+                    ? "暂无已记录风险"
+                    : "天气数据缺失"}
               </small>
             </div>
-            <strong>{alerts.length}</strong>
+            <strong>
+              {alerts.length || (weatherSummary.available ? 0 : "—")}
+            </strong>
           </Card>
           <Card
             className="dashboard-task-card"
@@ -476,9 +519,16 @@ export function DashboardPage({
                   <div className="task-row" key={task.id}>
                     <button
                       className="task-check"
-                      aria-label="标记完成"
+                      aria-label={task.device_id ? "登记现场完成" : "标记完成"}
+                      title={
+                        isTaskRunning(task)
+                          ? "设备运行结束后自动更新"
+                          : task.device_id
+                            ? "登记现场完成"
+                            : "标记完成"
+                      }
                       onClick={() => completeTask(task.id)}
-                      disabled={busy === task.id}
+                      disabled={!!busy || isTaskRunning(task)}
                     >
                       <Check />
                     </button>
@@ -569,8 +619,16 @@ export function DashboardPage({
                 <Check />
               </span>
               <div>
-                <b>当前风险平稳</b>
-                <p>没有需要立即处理的天气或病虫害预警。</p>
+                <b>
+                  {weatherSummary.available
+                    ? "暂无已记录的风险提示"
+                    : "天气数据暂不可用"}
+                </b>
+                <p>
+                  {weatherSummary.available
+                    ? "当前没有新的预警记录，请继续关注田间变化。"
+                    : "尚未获取天气数据，暂时无法判断天气风险。"}
+                </p>
               </div>
             </div>
           )}

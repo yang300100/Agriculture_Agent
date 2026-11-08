@@ -93,6 +93,17 @@ class CropMonitorAgent(BaseAgent):
                     extra += f"\n拍摄位置: {loc}。"
 
             result = self._call_dl_model(image_base64, mime_type, extra)
+            if user_context and user_context.get("plot_id") is not None:
+                crop = str(user_context.get("crop") or "").strip().lower()
+                predictions = result.get("dl_predictions") or []
+                label = str(predictions[0].get("class_name", "")).lower() if predictions else ""
+                aliases = {"番茄": "tomato", "苹果": "apple", "玉米": "corn", "葡萄": "grape", "马铃薯": "potato", "土豆": "potato", "辣椒": "pepper", "水稻": "rice", "小麦": "wheat", "草莓": "strawberry", "大豆": "soybean"}
+                names = {crop, aliases.get(crop, crop)} if crop else set()
+                if not names or not any(name and name in label for name in names):
+                    result.update({"crop_type": "unknown", "growth_stage": "unknown",
+                                   "health_assessment": {"overall": "unknown", "disease_presence": "unknown", "pest_presence": "unknown"},
+                                   "issues_found": [], "recommended_actions": [],
+                                   "summary": "图片识别作物与当前地块无法确认一致，需要人工复核"})
             return {"success": True, "analysis": result}
 
         except Exception as e:
@@ -157,6 +168,23 @@ class CropMonitorAgent(BaseAgent):
 
         if not result.success:
             raise Exception(f"模型推理失败: {result.error_code}")
+
+        # 哥哥，低置信度的分类不能让语言模型补成确诊或下发建议。
+        import math
+        try:
+            threshold = float(os.getenv("CROP_MONITOR_MIN_CONFIDENCE", "0.7"))
+            if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+                threshold = 0.7
+        except ValueError:
+            threshold = 0.7
+        best = result.predictions[0].confidence if result.predictions else None
+        if not isinstance(best, (int, float)) or not math.isfinite(best) or best < threshold:
+            return {"crop_type": "unknown", "growth_stage": "unknown",
+                    "health_assessment": {"overall": "unknown", "disease_presence": "unknown", "pest_presence": "unknown"},
+                    "issues_found": [], "recommended_actions": [],
+                    "summary": "识别置信度不足，需要人工复核",
+                    "dl_predictions": [{"class_name": p.class_name, "confidence": p.confidence} for p in result.predictions],
+                    "inference_time_ms": result.inference_time_ms}
 
         # Step 2: LLM根据分类结果生成结构化健康评估
         dl_text = ", ".join(

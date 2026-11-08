@@ -19,7 +19,7 @@ import {
   seedData,
   soils,
 } from "../data";
-import type { JsonMap, Profile } from "../types";
+import type { Field, JsonMap, Profile } from "../types";
 import {
   Card,
   Empty,
@@ -30,6 +30,7 @@ import {
   StatusPill,
 } from "./Common";
 import { MarkdownContent } from "./MarkdownContent";
+import { localDateKey } from "../local-date";
 
 export function PolicyPage() {
   const [query, setQuery] = useState("");
@@ -124,7 +125,9 @@ export function PolicyPage() {
                   item.text ||
                   "该政策条目未提供摘要，请打开原文查看详细内容。"}
               </p>
-              {item.published_at && <small>发布时间：{item.published_at}</small>}
+              {item.published_at && (
+                <small>发布时间：{item.published_at}</small>
+              )}
               {item.url && (
                 <a href={item.url} target="_blank">
                   查看原文 <ArrowRight />
@@ -850,11 +853,15 @@ export function WizardPage({
 }) {
   const [crops, setCrops] = useState<Record<string, JsonMap>>({});
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [fields, setFields] = useState<Field[]>([]);
+  const [plotId, setPlotId] = useState("");
+  const [cropEdited, setCropEdited] = useState(false);
   const [crop, setCrop] = useState("");
   const [region, setRegion] = useState("");
   const [soil, setSoil] = useState("壤土");
   const [area, setArea] = useState(1);
   const [selectedGoals, setSelectedGoals] = useState<string[]>([]);
+  const [startDate, setStartDate] = useState(localDateKey());
   const [result, setResult] = useState<JsonMap | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -862,8 +869,10 @@ export function WizardPage({
     Promise.all([
       get<Record<string, JsonMap>>("/api/encyclopedia"),
       get<Profile>("/api/profile"),
+      get<Field[]>("/api/fields"),
     ])
-      .then(([cropData, user]) => {
+      .then(([cropData, user, fieldRows]) => {
+        setFields(fieldRows);
         setCrops(cropData);
         setProfile(user);
         setCrop(Object.keys(cropData)[0] || "");
@@ -875,17 +884,24 @@ export function WizardPage({
       .catch((reason) => setError(reason.message));
   }, []);
   async function generate() {
+    if (loading) return;
+    if (!startDate) {
+      setError("请选择计划开始日期");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
       setResult(
         await post("/api/plan", {
           crop,
+          plot_id: plotId ? Number(plotId) : null,
           region,
           soil_type: soil,
           farm_size: area,
           goals: selectedGoals,
           experience: profile?.user_experience || "",
+          start_date: startDate,
         }),
       );
     } catch (reason) {
@@ -929,7 +945,7 @@ export function WizardPage({
                 <input
                   list="wizard-crop-options"
                   value={crop}
-                  onChange={(event) => setCrop(event.target.value)}
+                  onChange={(event) => { setCropEdited(true); setCrop(event.target.value); }}
                   placeholder="可搜索知识库，也可直接输入其他作物"
                 />
                 <datalist id="wizard-crop-options">
@@ -947,7 +963,7 @@ export function WizardPage({
                     type="button"
                     className={crop === name ? "selected" : ""}
                     key={name}
-                    onClick={() => setCrop(name)}
+                    onClick={() => { setCropEdited(true); setCrop(name); }}
                     aria-pressed={crop === name}
                   >
                     <Sprout />
@@ -957,6 +973,31 @@ export function WizardPage({
               </div>
             </Card>
             <Card title="第二步 · 确认农场条件">
+              <label>
+                关联地块（可选）
+                <select value={plotId} onChange={(event) => {
+                  const next = event.target.value;
+                  setPlotId(next);
+                  const field = fields.find((item) => String(item.id) === next);
+                  if (!cropEdited && field?.current_crop) setCrop(field.current_crop);
+                }}>
+                  <option value="">未绑定（个人计划）</option>
+                  {fields.map((field) => <option key={field.id} value={field.id}>{field.name}</option>)}
+                </select>
+              </label>
+              <p className="section-hint">绑定后才能按地块分析生长阶段；未绑定仍可作为个人计划。</p>
+              <label>
+                计划播种／开始日期
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(event) => setStartDate(event.target.value)}
+                  required
+                />
+              </label>
+              <p className="section-hint">
+                请填写实际播种或计划开始日期。未来日期会保存为待开始，阶段按此日期估算。
+              </p>
               <div className="form-grid three">
                 <label>
                   所在地区

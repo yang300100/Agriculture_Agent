@@ -103,7 +103,7 @@ def test_mqtt_ignores_non_object_state_and_reports_real_qos():
     assert driver._state_cache["mqtt_01"]["status"] == "powered_off"
 
     result = asyncio.run(driver.execute("mqtt_01", DeviceCommand("start")))
-    assert result.success
+    assert not result.success and result.error_code == "ACK_UNCONFIRMED"
     assert result.raw_response["qos"] == 1
     assert driver._client.published[2] == 1
 

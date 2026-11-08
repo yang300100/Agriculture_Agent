@@ -147,21 +147,25 @@ class FinanceStorage:
         db_records = repo.find_by(user_id=self._get_user_id(), record_type=record_type)
         if not db_records:
             return []
-        return [{
-            "id": r.id,
-            "date": r.date.isoformat() if r.date else "",
-            "crop": r.crop,
-            "plot": r.plot,
-            "cost_type" if record_type == "cost" else "income_type": r.category,
-            "item_name": r.item_name,
-            "quantity": r.quantity,
-            "unit": r.unit,
-            "unit_price": r.unit_price,
-            "total_amount": r.total_amount,
-            "buyer": r.buyer,
-            "notes": r.notes,
-            "created_at": r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else "",
-        } for r in db_records]
+        records = []
+        for r in db_records:
+            record = {
+                "id": r.id,
+                "date": r.date.isoformat() if r.date else "",
+                "crop": r.crop,
+                "plot": r.plot,
+                "quantity": r.quantity,
+                "unit_price": r.unit_price,
+                "total_amount": r.total_amount,
+                "notes": r.notes,
+                "created_at": r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else "",
+            }
+            if record_type == "cost":
+                record.update(cost_type=r.category, item_name=r.item_name, unit=r.unit)
+            else:
+                record.update(income_type=r.category, buyer=r.buyer)
+            records.append(record)
+        return records
 
 
 class FinanceManager:

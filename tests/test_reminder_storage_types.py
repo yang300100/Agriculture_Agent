@@ -1,6 +1,4 @@
 import datetime
-from types import SimpleNamespace
-from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -19,28 +17,18 @@ def test_datetime_columns_accept_reminder_strings():
 
 
 def test_reminder_channels_are_serialized_before_database_write():
-    storage = object.__new__(ReminderStorage)
-    storage._user = SimpleNamespace(id=7)
-
-    with patch.object(
-        ReminderRepository,
-        "replace_all_for_user",
-    ) as replace_all:
-        storage.save_reminders(
-            [
-                {
-                    "crop": "玉米",
-                    "reminder_type": "浇水",
-                    "channels": ["app", "sms"],
-                    "next_trigger": "2026-08-02 09:00",
-                }
-            ]
-        )
-
-    user_id, items = replace_all.call_args.args
-    assert user_id == 7
-    assert items[0]["channels"] == '["app", "sms"]'
-    assert items[0]["next_trigger"] == "2026-08-02 09:00"
+    storage = ReminderStorage(username="reminder_channel_types")
+    storage.save_reminders([
+        {
+            "crop": "玉米",
+            "reminder_type": "浇水",
+            "channels": ["app", "sms"],
+            "next_trigger": "2026-08-02 09:00",
+        }
+    ])
+    saved = ReminderRepository().find_one(user_id=storage._uid)
+    assert saved.channels == '["app", "sms"]'
+    assert saved.next_trigger == datetime.datetime(2026, 8, 2, 9, 0)
 
 
 def test_reminder_repository_writes_datetime_to_sqlite():

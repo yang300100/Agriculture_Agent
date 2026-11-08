@@ -1,5 +1,6 @@
 """自主决策编排器 单元测试"""
 import os, sys, json, pytest
+from datetime import datetime
 from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -303,9 +304,10 @@ class TestDecisionEngine:
 class TestExecutionAndCycle:
     """执行和编排测试"""
 
-    def test_run_cycle_returns_report_even_on_failure(self):
+    def test_run_cycle_returns_report_even_on_failure(self, monkeypatch):
         """即使采集失败，run_cycle 也应返回报告"""
         mgr = AutonomousFarmManager()
+        monkeypatch.setattr(mgr, "_collect_weather", lambda *args, **kwargs: (None, []))
         report = mgr.run_cycle("nonexistent_user", "不存在的区域")
         assert report is not None
         assert report.cycle_id != ""
@@ -317,8 +319,9 @@ class TestExecutionAndCycle:
         )
         assert report_path.is_file()
 
-    def test_cycle_report_has_duration(self):
+    def test_cycle_report_has_duration(self, monkeypatch):
         mgr = AutonomousFarmManager()
+        monkeypatch.setattr(mgr, "_collect_weather", lambda *args, **kwargs: (None, []))
         report = mgr.run_cycle("test_user", "test_region")
         assert report.duration_ms > 0
         report_path = (
@@ -327,6 +330,63 @@ class TestExecutionAndCycle:
             / f"{report.cycle_id}.json"
         )
         assert report_path.is_file()
+        persisted = json.loads(report_path.read_text(encoding="utf-8"))
+        assert persisted["duration_ms"] == report.duration_ms
+
+    @pytest.mark.parametrize("outcome, summary_fragment", [
+        ("success", "巡检完成"),
+        ("decision_unavailable", "LLM 和规则引擎均不可用"),
+        ("collection_failure", "周期异常"),
+    ])
+    def test_cycle_always_persists_final_report_with_elapsed_duration(
+            self, monkeypatch, outcome, summary_fragment):
+        """哥哥，无论正常、兜底失败还是异常，报告都要完整落盘。"""
+        import core.autonomous_farm_manager as manager_module
+
+        times = iter([
+            datetime(2026, 11, 5, 12, 0, 0),
+            datetime(2026, 11, 5, 12, 0, 0, 250000),
+        ])
+
+        class CycleClock:
+            @staticmethod
+            def now():
+                return next(times)
+
+        monkeypatch.setattr(manager_module, "datetime", CycleClock)
+        mgr = AutonomousFarmManager()
+        username = f"cycle_report_{outcome}"
+        state = FarmState(
+            region="报告区", username=username,
+            sensor_readings={"soil_moisture": 30},
+        )
+
+        def collect_state(*args, **kwargs):
+            if outcome == "collection_failure":
+                raise RuntimeError("采集失败")
+            return state
+
+        monkeypatch.setattr(mgr, "collect_farm_state", collect_state)
+        monkeypatch.setattr(
+            mgr, "request_decision",
+            lambda prompt: DecisionPlan(region="报告区", actions=[])
+            if outcome == "success" else None,
+        )
+        monkeypatch.setattr(mgr, "_fallback_rule_engine", lambda *args: None)
+
+        report = mgr.run_cycle(username, "报告区")
+
+        assert summary_fragment in report.summary
+        assert report.duration_ms == 250
+        report_path = (
+            Path(os.environ["DATA_STORAGE_DIR"])
+            / username / "autonomous_reports" / f"{report.cycle_id}.json"
+        )
+        assert report_path.is_file()
+        persisted = json.loads(report_path.read_text(encoding="utf-8"))
+        assert persisted["summary"] == report.summary
+        assert persisted["duration_ms"] == 250
+        assert persisted["cycle_id"] == report.cycle_id
 
     def test_weather_only_state_still_runs_decision(self, monkeypatch):
         mgr = AutonomousFarmManager()
@@ -453,3 +513,128 @@ class TestExecutionAndCycle:
         )
         summary = mgr._summarize(report)
         assert "irrigate" in summary or "大棚A" in summary
+
+    @pytest.mark.parametrize(
+        "command,mode,constraints,initial_status,expected_status,pending_count,night_blocked",
+        [
+            ("stop", "auto", {}, "running", "standby", 0, False),
+            ("stop", "auto", {}, "running", "standby", 0, True),
+            ("set_param", "auto", {}, "standby", "standby", 0, False),
+            ("start", "notify", {}, "standby", "standby", 0, False),
+            ("start", "confirm", {}, "standby", "standby", 1, False),
+            ("start", "auto", {"max_duration_per_use": 1}, "standby", "standby", 1, False),
+        ],
+        ids=["stop", "night-stop", "set-param", "notify", "confirm", "constraint-confirm"],
+    )
+    def test_fallback_rule_keeps_command_and_execution_mode(
+            self, monkeypatch, command, mode, constraints, initial_status,
+            expected_status, pending_count, night_blocked):
+        """哥哥，模型离线时也要按原规则停止、改参数、提醒或等待确认。"""
+        import uuid
+        from core.device_executor import DeviceExecutor
+        from core.device_registry_factory import load_custom_devices, save_custom_devices
+        from core.device_rule_engine import RuleDecision, RuleEngine
+        from devices.registry import DeviceDriverRegistry
+
+        username = f"fallback_{uuid.uuid4().hex}"
+        monkeypatch.setenv("AUTONOMY_LEVEL", "medium")
+        save_custom_devices(username, [{
+            "device_id": "fallback_pump", "name": "兜底测试水泵",
+            "driver": "simulator", "capabilities": ["irrigate"],
+            "initial_state": {"power": True, "status": initial_status, "flow_rate": 3},
+        }])
+        params = {"flow_rate": 5} if command == "set_param" else {"duration": 2}
+        rule_id = RuleEngine(username).add_rule({
+            "name": "离线兜底规则", "enabled": True, "execution_mode": mode,
+            "trigger": {"conditions": [{
+                "type": "sensor", "field": "soil_moisture", "op": ">", "value": 70,
+            }]},
+            "action": {"device_id": "fallback_pump", "capability": "irrigate",
+                       "command": command, "params": params},
+            "constraints": constraints,
+        })
+        state = FarmState(
+            region="测试区", username=username,
+            sensor_readings={"sensor.soil_moisture": 90},
+            available_devices=[{
+                "device_id": "fallback_pump", "capabilities": ["irrigate"], "status": "online",
+            }],
+        )
+        mgr = AutonomousFarmManager()
+        monkeypatch.setattr(
+            mgr, "_check_night_constraint",
+            lambda *args: RuleDecision.REJECTED if night_blocked else None,
+        )
+
+        plan = mgr._fallback_rule_engine(state, username)
+        assert plan is not None
+        plan = mgr.validate_plan(plan, available_devices=state.available_devices)
+        results = mgr.execute_plan(plan, username)
+
+        persisted = load_custom_devices(username)[0]["initial_state"]
+        assert persisted["status"] == expected_status
+        if command == "set_param":
+            assert persisted["flow_rate"] == 5
+        executor = DeviceExecutor(DeviceDriverRegistry(), username)
+        pending = executor.list_pending()
+        assert len(pending) == pending_count
+        if pending_count:
+            assert pending[0]["command"] == "start"
+            assert str(pending[0]["rule_id"]) == str(rule_id)
+        elif mode == "notify":
+            assert results[0].action == "alert"
+            assert "离线兜底规则" in results[0].message
+        else:
+            assert results[0].success is True
+
+    def test_offline_cycle_fallback_keeps_sensor_readings_in_target_plot(self, monkeypatch):
+        """哥哥，完整离线巡检只给缺水地块浇水，湿润地块要保持待机。"""
+        import uuid
+        from core.device_registry_factory import load_custom_devices, save_custom_devices
+        from core.device_rule_engine import RuleEngine
+
+        username = f"fallback_scope_{uuid.uuid4().hex}"
+        monkeypatch.setenv("AUTONOMY_LEVEL", "medium")
+        configs = []
+        for suffix, plot_id in [("a", 1), ("b", 2)]:
+            configs.extend([
+                {"device_id": f"pump_{suffix}", "name": f"水泵{suffix}",
+                 "driver": "simulator", "capabilities": ["irrigate"], "plot_id": plot_id,
+                 "initial_state": {"power": True, "status": "standby"}},
+                {"device_id": f"sensor_{suffix}", "name": f"土壤传感器{suffix}",
+                 "driver": "simulator", "capabilities": ["read_sensor"], "plot_id": plot_id,
+                 "initial_state": {"soil_moisture": 22 if suffix == "a" else 70}},
+            ])
+        save_custom_devices(username, configs)
+        engine = RuleEngine(username)
+        for suffix in ["a", "b"]:
+            engine.add_rule({
+                "name": f"地块{suffix}缺水灌溉", "enabled": True,
+                "trigger": {"conditions": [{
+                    "type": "sensor", "field": "soil_moisture", "op": "<", "value": 30,
+                }]},
+                "action": {"device_id": f"pump_{suffix}", "capability": "irrigate",
+                           "command": "start", "params": {"duration": 2}},
+            })
+        state = FarmState(
+            region="测试区", username=username,
+            sensor_readings={"sensor_a.soil_moisture": 22, "sensor_b.soil_moisture": 70},
+            available_devices=[
+                {"device_id": f"pump_{suffix}", "name": f"水泵{suffix}",
+                 "capabilities": ["irrigate"], "status": "online"}
+                for suffix in ["a", "b"]
+            ],
+        )
+        mgr = AutonomousFarmManager()
+        monkeypatch.setattr(mgr, "collect_farm_state", lambda *args, **kwargs: state)
+        monkeypatch.setattr(mgr, "request_decision", lambda prompt: None)
+        monkeypatch.setattr(mgr, "_check_night_constraint", lambda *args: None)
+
+        report = mgr.run_cycle(username, "测试区")
+
+        states = {device["device_id"]: device["initial_state"]
+                  for device in load_custom_devices(username)}
+        assert report.fallback_used is True
+        assert states["pump_a"]["status"] == "running"
+        assert states["pump_b"]["status"] == "standby"
+        assert [result.device_id for result in report.execution_results] == ["pump_a"]

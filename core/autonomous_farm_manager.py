@@ -7,7 +7,7 @@
 每区域使用地块的精确坐标获取天气，避免 location 字符串 geocode。
 """
 
-import os, json, logging, asyncio, base64, re, copy
+import os, json, logging, asyncio, base64, re, copy, math, uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
@@ -36,12 +36,15 @@ class FarmState:
     timestamp: str = ""
     camera_views: List[CameraView] = field(default_factory=list)
     sensor_readings: Dict[str, Any] = field(default_factory=dict)
+    sensor_quality: Dict[str, Any] = field(default_factory=dict)
     current_weather: Optional[Dict] = None
+    weather_quality: Dict[str, Any] = field(default_factory=dict)
     weather_forecast: List[Dict] = field(default_factory=list)
     weather_persistence: List[Dict] = field(default_factory=list)
     available_devices: List[Dict] = field(default_factory=list)
     active_crops: List[Dict] = field(default_factory=list)
     disease_risks: List[Dict] = field(default_factory=list)
+    disease_risk_quality: Dict[str, Any] = field(default_factory=dict)
     recent_actions: List[Dict] = field(default_factory=list)
 
 
@@ -64,6 +67,8 @@ class ActionResult:
     message: str
     rule_matched: Optional[str] = None
     executed_params: Dict = field(default_factory=dict)
+    execution_id: Optional[str] = None
+    acknowledged: bool = False
 
 
 @dataclass
@@ -169,6 +174,8 @@ class AutonomousFarmManager:
             timestamp=datetime.now().isoformat(),
         )
 
+        state.active_crops, state.disease_risks = self._collect_crop_info(username, region, state.disease_risk_quality)
+
         # ── 设备数据（async 域内）──
         registry, loop = setup_registry(username)
         try:
@@ -183,21 +190,31 @@ class AutonomousFarmManager:
                       if "capture" in [c.value for c in d.capabilities]
                       and d.status.value in ("online", "offline")]
             state.camera_views = self._capture_and_analyze(
-                registry, loop, cameras, username)
+                registry, loop, cameras, username, region, state.active_crops)
 
             # 传感器读数
             state.sensor_readings = self._collect_sensors(
-                registry, loop, region_devices)
+                registry, loop, region_devices, state.sensor_quality)
         finally:
             close_registry(loop, registry)
 
         # ── 天气数据（使用地块精确坐标）──
+        # 哥哥，调用方给出的坐标不能替代当前用户的地块归属。
+        try:
+            from core.plot_manager import PlotManager
+            plot = PlotManager(username).get_plot(str(region))
+        except Exception as exc:
+            logger.debug("地块天气坐标读取失败: %s", exc)
+            plot = None
         state.current_weather, state.weather_forecast = self._collect_weather(
-            region, lat=plot_lat, lon=plot_lon)
+            region, lat=plot.get("lat") if plot else None, lon=plot.get("lon") if plot else None)
+        state.weather_quality = {
+            "current": "good" if state.current_weather else "unavailable",
+            "forecast": "unavailable", "persistence": "unavailable",
+        }
         state.weather_persistence = self._collect_persistence()
 
         # ── 作物与病害数据（同步）──
-        state.active_crops, state.disease_risks = self._collect_crop_info(username)
 
         # ── 近期操作（同步）──
         state.recent_actions = self._collect_recent_actions(username)
@@ -230,6 +247,11 @@ class AutonomousFarmManager:
         selected = []
         for device in devices:
             config = configs.get(device.device_id, {})
+            configured_plot = str(config.get("plot_id") or "")
+            if configured_plot:
+                if configured_plot in aliases:
+                    selected.append(device)
+                continue
             candidates = {
                 str(getattr(device, "location", "") or ""),
                 str(config.get("location", "") or ""),
@@ -260,7 +282,7 @@ class AutonomousFarmManager:
         return result
 
     def _capture_and_analyze(self, registry, loop, cameras: List,
-                              username: str) -> List[CameraView]:
+                              username: str, region: str = "", crops=None) -> List[CameraView]:
         """对每个摄像头拍照 + Vision 分析"""
         from devices.base import DeviceCommand
         from app.agent.agents.crop_monitor_agent import CropMonitorAgent
@@ -279,7 +301,15 @@ class AutonomousFarmManager:
                     views.append(view)
                     continue
 
-                image_bytes = result.raw_response.get("image_bytes")
+                raw = result.raw_response or {}
+                observed = raw.get("_observed_at") or (raw.get("metadata") or {}).get("timestamp")
+                from core.observation_quality import validate_sensor_state
+                _, image_issues = validate_sensor_state({"_observed_at": observed, "_quality": raw.get("_quality", "good"), "_error": raw.get("_error")})
+                if image_issues:
+                    view.error = "图片时间或质量无效: " + "; ".join(image_issues)
+                    views.append(view)
+                    continue
+                image_bytes = raw.get("image_bytes")
                 if not image_bytes:
                     view.error = "未获取到图片数据"
                     views.append(view)
@@ -292,6 +322,8 @@ class AutonomousFarmManager:
                     view.image_base64, "image/jpeg",
                     user_context={
                         "username": username,
+                        "plot_id": region,
+                        "crop": (crops or [{}])[0].get("crop", ""),
                         "device_id": cam.device_id,
                         "location": cam.location,
                     },
@@ -309,102 +341,109 @@ class AutonomousFarmManager:
 
         return views
 
-    def _collect_sensors(self, registry, loop, devices: List) -> Dict[str, Any]:
-        """收集所有传感器的读数"""
+    def _collect_sensors(self, registry, loop, devices: List, quality=None) -> Dict[str, Any]:
+        """哥哥，保留质量和采样时间，只有合格读数进入决策。"""
+        from core.observation_quality import validate_sensor_state
         readings = {}
-        for d in devices:
+        quality = quality if quality is not None else {}
+        for device in devices:
             try:
-                state = loop.run_until_complete(registry.read_state(d.device_id))
-                if state and not state.get("error"):
-                    for k, v in state.items():
-                        if isinstance(v, (int, float)) and not k.startswith("_"):
-                            key = f"{d.device_id}.{k}"
-                            readings[key] = v
-            except Exception as e:
-                logger.debug("传感器读取失败 %s: %s", d.device_id, e)
-                readings[d.device_id] = None
+                raw = loop.run_until_complete(registry.read_state(device.device_id))
+                valid, issues = validate_sensor_state(raw)
+                quality[device.device_id] = {"state": raw, "issues": issues}
+                readings.update({f"{device.device_id}.{key}": value for key, value in valid.items()})
+            except Exception as exc:
+                quality[device.device_id] = {"issues": [str(exc)]}
         return readings
 
     def _collect_weather(self, region: str, lat: float = None, lon: float = None) -> Tuple[Optional[Dict], List[Dict]]:
-        """获取当前天气 + 3天预报。
-
-        优先使用地块精确坐标，回退到 region 字符串 geocode。
-        """
+        """哥哥，只用地块坐标的真实、新鲜观测；预报缺少可信生成时间。"""
+        try:
+            if isinstance(lat, bool) or isinstance(lon, bool):
+                return None, []
+            lat, lon = float(lat), float(lon)
+            if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180) or (lat == 0 and lon == 0):
+                return None, []
+        except (TypeError, ValueError, OverflowError):
+            return None, []
         try:
             from core.weather_service import WeatherService
-            ws = WeatherService()
-            if lat is not None and lon is not None:
-                # 使用地块精确坐标，直接调格点API，跳过 geocode
-                current = ws.get_current_by_coords(lat, lon, region)
-                forecast = ws.get_forecast_by_coords(lat, lon, region, 3)
-            else:
-                current = ws.get_current_weather(region)
-                forecast = ws.get_forecast(region, 3)
-
-            cur_dict = None
-            if current:
-                cur_dict = {
-                    "temperature": current.temperature,
-                    "temperature_high": current.temperature_high,
-                    "temperature_low": current.temperature_low,
-                    "humidity": current.humidity,
-                    "weather_desc": current.weather_desc,
-                    "wind_speed": current.wind_speed,
-                    "precipitation": current.precipitation,
-                }
-
-            fore_list = []
-            if forecast:
-                for w in forecast:
-                    fore_list.append({
-                        "date": str(w.date),
-                        "weather_desc": w.weather_desc,
-                        "temperature_high": w.temperature_high,
-                        "temperature_low": w.temperature_low,
-                        "humidity": w.humidity,
-                    })
-
-            return cur_dict, fore_list
-        except Exception as e:
-            logger.warning("天气数据获取失败: %s", e)
-            return None, []
+            raw = WeatherService().get_grid_weather(lon, lat)
+            if not isinstance(raw, dict) or raw.get("error") or raw.get("_error"):
+                return None, []
+            if raw.get("_quality", "good") != "good":
+                return None, []
+            observed_text = raw.get("obsTime")
+            observed = datetime.fromisoformat(str(observed_text).replace("Z", "+00:00"))
+            if observed.tzinfo is None:
+                observed = observed.astimezone()
+            if not 0 <= (datetime.now().astimezone() - observed).total_seconds() <= 3600:
+                return None, []
+            values = {}
+            for key, source, bounds in (("temperature", "temp", (-60,100)),
+                                         ("humidity", "humidity", (0,100)),
+                                         ("precipitation", "precip", (0,1000))):
+                value = raw.get(source)
+                if value is None or isinstance(value, bool):
+                    continue
+                try:
+                    number = float(value)
+                    if math.isfinite(number) and bounds[0] <= number <= bounds[1]:
+                        values[key] = number
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            if not values:
+                return None, []
+            values.update({"_observed_at": observed_text, "_quality": "good"})
+            return values, []
+        except (TypeError, ValueError, OverflowError) as exc:
+            logger.debug("天气观测无效 %s: %s", region, exc)
+        except Exception as exc:
+            logger.warning("天气观测获取失败 %s: %s", region, exc)
+        return None, []
 
     def _collect_persistence(self) -> List[Dict]:
-        """获取持续异常天气检测结果"""
-        try:
-            from core.weather_history import check_persistence
-            return check_persistence()
-        except Exception as e:
-            logger.debug("天气持续异常检测失败: %s", e)
-            return []
+        """哥哥，共享历史没有地块归属，持续天气暂不评估。"""
+        return []
 
-    def _collect_crop_info(self, username: str) -> Tuple[List[Dict], List[Dict]]:
-        """获取活跃作物和病虫害风险"""
-        crops = []
-        risks = []
+    def _collect_crop_info(self, username: str, region: str = "", quality: Optional[Dict] = None) -> Tuple[List[Dict], List[Dict]]:
+        """哥哥，只读取明确绑定本地块的作物卡片和新鲜风险。"""
+        crops, risks = [], []
+        if quality is not None:
+            quality.update({"quality": "unavailable", "reason": "病害风险尚未评估或缓存不可用"})
         try:
+            from core.plot_manager import PlotManager
             from core.planting_tracker import PlantingTracker
-            sd = os.path.join(DEFAULT_DATA_DIR, username)
-            tracker = PlantingTracker(sd)
-            progresses = tracker.get_progress()
-            crops = [{
-                "crop": p.crop, "stage": p.stage,
-                "stage_number": p.stage_number, "total_stages": p.total_stages,
-                "status": p.status, "progress_percent": p.progress_percent,
-            } for p in progresses if p.status == "进行中"]
-        except Exception as e:
-            logger.debug("作物信息获取失败: %s", e)
-
-        # 病虫害风险（从缓存文件读）
-        try:
-            dpath = os.path.join(DEFAULT_DATA_DIR, "disease_risks.json")
-            if os.path.exists(dpath):
-                with open(dpath, encoding="utf-8") as f:
+            plot = PlotManager(username).get_plot(str(region))
+            if not plot:
+                return crops, risks
+            try:
+                cards = PlantingTracker(os.path.join(DEFAULT_DATA_DIR, username)).get_progress_cards(limit=None)
+            except Exception as exc:
+                logger.debug("地块进度读取失败: %s", exc)
+                cards = []
+            crops = [dict(card, progress_percent=card.get("progress", 0)) for card in cards
+                     if card.get("plot_id") is not None and str(card["plot_id"]) == str(region)
+                     and card.get("status") == "进行中"]
+            if not crops and plot.get("crop"):
+                crops = [{"crop": plot["crop"], "stage": "未知", "progress_percent": 0}]
+            path = os.path.join(DEFAULT_DATA_DIR, username, "disease_risks", f"{region}.json")
+            if os.path.isfile(path):
+                with open(path, encoding="utf-8") as f:
                     data = json.load(f)
-                    risks = data.get("risks", [])
-        except Exception as e:
-            logger.debug("病虫害风险读取失败: %s", e)
-
+                updated = datetime.fromisoformat(data["updated"].replace("Z", "+00:00"))
+                from datetime import timezone
+                now = datetime.now(timezone.utc) if updated.tzinfo else datetime.now()
+                age = (now - updated).total_seconds()
+                if str(data.get("plot_id")) == str(region) and 0 <= age <= 86400 and isinstance(data.get("risks"), list):
+                    risk_quality = data.get("quality", "unavailable")
+                    if quality is not None:
+                        quality.update({"quality": risk_quality if risk_quality == "good" else "unavailable", "updated": data["updated"],
+                                        "reason": "" if risk_quality == "good" else "病害风险未评估"})
+                    if risk_quality == "good":
+                        risks = data["risks"]
+        except Exception as exc:
+            logger.debug("地块作物或风险读取失败: %s", exc)
         return crops, risks
 
     def _collect_recent_actions(self, username: str) -> List[Dict]:
@@ -458,6 +497,10 @@ class AutonomousFarmManager:
             parts.append("\n当前作物: 无进行中的种植")
 
         # 天气
+        if not state.current_weather:
+            parts.append("\n当前天气: 未评估或观测不可用")
+        if state.weather_quality.get("forecast") == "unavailable":
+            parts.append("天气预报和持续异常: 暂未评估")
         if state.current_weather:
             w = state.current_weather
             parts.append(f"\n当前天气: {w.get('weather_desc','')} "
@@ -527,6 +570,8 @@ class AutonomousFarmManager:
                         parts.append(f"  总结: {summary}")
 
         # 病虫害风险
+        if state.disease_risk_quality.get("quality") != "good":
+            parts.append("\n病虫害风险: 尚未评估或数据不可用")
         if state.disease_risks:
             d_text = "\n".join(
                 f"- {r.get('crop','')} {r.get('disease','')} 风险{r.get('risk','')}"
@@ -547,7 +592,7 @@ class AutonomousFarmManager:
         parts.append("""
 [输出要求]
 严格按以下JSON格式输出，不要包含markdown代码块标记，直接输出纯JSON:
-{"region":"区域名","overall_assessment":"一段中文总结描述当前农场整体状态和关键发现","actions":[{"action":"irrigate|fertigate|ventilate|light|heat|cool|alert","device_id":"必须从可执行设备清单原样选择；alert时为空","params":{"duration":数字分钟},"urgency":"immediate|today|this_week|routine","reason":"为什么要执行这个操作"}],"follow_up":"后续建议或下次巡检需关注的点"}
+{"region":"区域名","overall_assessment":"一段中文总结描述当前农场整体状态和关键发现","actions":[{"action":"irrigate|fertigate|ventilate|light|heat|cool|alert","device_id":"必须从可执行设备清单原样选择；alert时为空","params":{"duration":数字分钟},"urgency":"immediate|today|this_week|routine","scheduled_at":"非立即动作的 ISO 8601 时间，未知则留空","id":"操作唯一标识","depends_on":"前置操作id（无则留空）","reason":"为什么要执行这个操作"}],"follow_up":"后续建议或下次巡检需关注的点"}
 
 注意:
 - actions 可以为空数组 []
@@ -657,6 +702,7 @@ class AutonomousFarmManager:
 
         valid_actions = []
         seen_devices = set()
+        temperature_action = None
 
         for action in plan.actions[:max_actions]:
             action_type = action.get("action", "")
@@ -666,6 +712,10 @@ class AutonomousFarmManager:
                                     "light", "heat", "cool", "alert"):
                 logger.info("跳过非法action: %s", action_type)
                 continue
+
+            if action_type in ("heat", "cool"):
+                if temperature_action and temperature_action != action_type:
+                    continue
 
             # alert 不需要设备
             if action_type != "alert":
@@ -726,6 +776,8 @@ class AutonomousFarmManager:
                     action["params"] = params
                     logger.info("通风时长裁剪至 %d 分钟", limit)
 
+            if action_type in ("heat", "cool"):
+                temperature_action = action_type
             valid_actions.append(action)
 
         plan.actions = valid_actions
@@ -743,10 +795,13 @@ class AutonomousFarmManager:
         from app.agent.config import get_autonomy_level, AUTO_DECISION_NIGHT_MODE
 
         results = []
+        from core.autonomy_runtime import schedule_action, queue_effect_check, raise_alert
+        if plan.follow_up:
+            schedule_action(username, plan.region, {"action": "review", "reason": plan.follow_up}, due_at=None)
         if not plan.actions:
             return results
 
-        autonomy = get_autonomy_level()
+        autonomy = get_autonomy_level(username)
         engine = RuleEngine(username=username)
         if policy_context is None:
             policy_context = getattr(self, "_execution_policy_context", {})
@@ -762,22 +817,101 @@ class AutonomousFarmManager:
 
             # 按 urgency 排序：immediate > today > this_week > routine
             urgency_order = {"immediate": 0, "today": 1, "this_week": 2, "routine": 3}
-            sorted_actions = sorted(
-                plan.actions,
-                key=lambda a: urgency_order.get(a.get("urgency", "routine"), 99)
-            )
-
+            # 哥哥，原计划顺序决定依赖，不能按紧急度重排。
+            sorted_actions = plan.actions
+            completed = {}
+            previous_actions = {}
+            previous_id = None
+            previous_action = None
             for action_item in sorted_actions:
+                if previous_id is not None:
+                    completed[str(previous_id)] = results[-1]
+                    previous_actions[str(previous_id)] = previous_action
+                previous_id = action_item.get("id")
+                previous_action = action_item
+                if action_item.get("action") != "alert" and not action_item.get("execution_id"):
+                    action_item["execution_id"] = uuid.uuid4().hex
+                dependency = action_item.get("depends_on")
+                dependencies = dependency if isinstance(dependency, list) else ([dependency] if dependency is not None else [])
+                if dependencies:
+                    # 哥哥，启动 ACK 不是作业完成；持久等待运行状态确认。
+                    runs, durations = [], []
+                    ready = True
+                    for dep in dependencies:
+                        key = str(dep)
+                        outcome = completed.get(key)
+                        prior = previous_actions.get(key) or {}
+                        execution_id = outcome.execution_id if outcome else None
+                        if not outcome or not outcome.success or not outcome.acknowledged or not execution_id or not prior.get("device_id"):
+                            ready = False
+                        else:
+                            runs.append({"device_id": prior["device_id"], "execution_id": execution_id})
+                        try:
+                            duration = float((outcome.executed_params if outcome else {}).get("duration", 0))
+                            if not math.isfinite(duration) or duration <= 0:
+                                ready = False
+                            else:
+                                durations.append(duration)
+                        except (TypeError, ValueError, OverflowError):
+                            ready = False
+                    delayed = dict(action_item, dependency_runs=runs)
+                    due_at = datetime.now() + timedelta(minutes=max(durations)) if ready and durations else None
+                    scheduled_at = action_item.get("scheduled_at")
+                    if action_item.get("urgency", "routine") != "immediate" and not scheduled_at:
+                        due_at = None
+                    elif scheduled_at and due_at:
+                        try:
+                            requested = datetime.fromisoformat(str(scheduled_at).replace("Z", "+00:00"))
+                            if requested.tzinfo is not None:
+                                requested = requested.astimezone().replace(tzinfo=None)
+                            due_at = max(due_at, requested)
+                        except (TypeError, ValueError, OverflowError):
+                            due_at = None
+                    schedule_action(username, plan.region, delayed, due_at=due_at)
+                    results.append(ActionResult(action=action_item.get("action", ""), device_id=action_item.get("device_id", ""),
+                                                success=False, message="等待依赖作业实际完成" if due_at else "依赖状态不明确，已持久保存待安排"))
+                    continue
                 action_type = action_item.get("action", "")
                 params = action_item.get("params", {})
                 reason = action_item.get("reason", "")
+                if action_type != "alert" and action_item.get("urgency", "routine") != "immediate":
+                    due_at = action_item.get("scheduled_at")
+                    try:
+                        if due_at:
+                            parsed = datetime.fromisoformat(str(due_at).replace("Z", "+00:00"))
+                            due_at = parsed
+                    except (TypeError, ValueError):
+                        due_at = None
+                    schedule_action(username, plan.region, action_item, due_at=due_at)
+                    results.append(ActionResult(action=action_type, device_id=action_item.get("device_id", ""),
+                                                success=False, message="已排期" if due_at else "已持久保存，待安排时间"))
+                    continue
+                rule_id = action_item.get("rule_id")
+                source_rule = engine.get_rule(rule_id) if rule_id is not None else None
+                if rule_id is not None and (
+                    not source_rule or not source_rule.get("enabled", True)
+                    or source_rule.get("action", {}).get("device_id") != action_item.get("device_id")
+                ):
+                    results.append(ActionResult(
+                        action=action_type, device_id=action_item.get("device_id", ""),
+                        success=False, message="原规则已删除、停用或变更目标设备",
+                    ))
+                    continue
+                source_action = source_rule.get("action", {}) if source_rule else {}
+                command = source_action.get("command", "start")
+                execution_mode = source_rule.get("execution_mode", "auto") if source_rule else "auto"
+                if source_rule:
+                    params = source_action.get("params", {})
+                if execution_mode == "notify":
+                    reason = f"规则提醒: {source_rule.get('name', rule_id)} — {reason}"
+                    action_type = "alert"
 
                 # alert 类型只记录不执行
                 if action_type == "alert":
-                    logger.info("📢 决策告警: %s", reason)
+                    raise_alert(username, plan.region, reason)
                     results.append(ActionResult(
                         action="alert", device_id="",
-                        success=True, message=f"告警已记录: {reason}",
+                        success=True, message=f"告警已进入待送达队列: {reason}",
                     ))
                     continue
 
@@ -817,7 +951,7 @@ class AutonomousFarmManager:
                 # 夜间约束检查
                 night_check = self._check_night_constraint(
                     action_type, AUTO_DECISION_NIGHT_MODE)
-                if night_check == RuleDecision.REJECTED:
+                if command == "start" and night_check == RuleDecision.REJECTED:
                     results.append(ActionResult(
                         action=action_type, device_id=device_id,
                         success=False, message=f"夜间模式({AUTO_DECISION_NIGHT_MODE})禁止执行",
@@ -826,29 +960,33 @@ class AutonomousFarmManager:
 
                 # 规则评估
                 try:
-                    temp_rule = {
+                    temp_rule = source_rule or {
                         "id": f"auto_{action_type}",
                         "name": f"自主决策-{action_type}",
                         "action": {
                             "device_id": device_id,
                             "capability": action_type,
-                            "command": "start",
+                            "command": command,
                             "params": params,
                         },
                         "constraints": {},
                     }
+                    action_context = engine.context_for_device(device_id, policy_context)
                     decision, eval_reason, final_params = engine.evaluate_action(
-                        temp_rule, params,
-                        {"device_id": device_id, **policy_context})
+                        temp_rule, params, action_context)
                     decision = apply_autonomy(decision, autonomy)
+                    if execution_mode == "confirm" and decision != RuleDecision.REJECTED:
+                        decision = RuleDecision.NEED_CONFIRM
+                        eval_reason = f"规则「{source_rule.get('name', rule_id)}」设置为执行前确认"
+                    execution_rule_id = rule_id if rule_id is not None else f"auto_{action_type}"
+                    cmd = DeviceCommand(command=command, params=final_params, execution_id=action_item.get("execution_id"))
 
                     if decision == RuleDecision.REJECTED:
-                        cmd = DeviceCommand(command="start", params=final_params)
                         executor.record_decision(
                             device_id, cmd, decision, eval_reason,
-                            trigger="autonomous", rule_id=f"auto_{action_type}",
+                            trigger="autonomous", rule_id=execution_rule_id,
                             capability=action_type,
-                            policy_context=policy_context,
+                            policy_context=action_context,
                         )
                         results.append(ActionResult(
                             action=action_type, device_id=device_id,
@@ -857,12 +995,11 @@ class AutonomousFarmManager:
                         continue
 
                     if decision == RuleDecision.NEED_CONFIRM:
-                        cmd = DeviceCommand(command="start", params=final_params)
                         pending = executor.record_decision(
                             device_id, cmd, decision, eval_reason,
-                            trigger="autonomous", rule_id=f"auto_{action_type}",
+                            trigger="autonomous", rule_id=execution_rule_id,
                             add_pending=True, capability=action_type,
-                            policy_context=policy_context,
+                            policy_context=action_context,
                         )
                         pending_note = (
                             f"，待确认ID={pending['pending_id']}"
@@ -876,27 +1013,33 @@ class AutonomousFarmManager:
                         continue
 
                     # 执行
-                    cmd = DeviceCommand(command="start", params=final_params)
                     result = executor.execute_sync(
                         device_id, cmd, trigger="autonomous",
-                        rule_id=f"auto_{action_type}",
+                        rule_id=execution_rule_id,
                         loop=loop, capability=action_type,
-                        policy_context=policy_context,
+                        policy_context=action_context,
                     )
 
                     if result["success"]:
-                        engine.record_execution(device_id, final_params)
+                        if command == "start":
+                            engine.record_execution(device_id, final_params)
                         res_obj = result.get("result")
                         msg = res_obj.message if res_obj and hasattr(res_obj, 'message') else "执行成功"
                     else:
                         res_obj = result.get("result")
                         msg = res_obj.message if res_obj and hasattr(res_obj, 'message') else "执行失败"
 
-                    results.append(ActionResult(
+                    action_result = ActionResult(
                         action=action_type, device_id=device_id,
                         success=result["success"], message=msg,
                         rule_matched=action_type, executed_params=final_params,
-                    ))
+                        execution_id=getattr(res_obj, "execution_id", None) or getattr(cmd, "execution_id", None),
+                        acknowledged=bool(getattr(res_obj, "acknowledged", False)),
+                    )
+                    results.append(action_result)
+                    if result["success"] and command == "start":
+                        queue_effect_check(username, plan.region, action_item, action_result,
+                                           getattr(self, "_cycle_baseline", None))
 
                 except Exception as e:
                     logger.warning("执行操作失败 %s/%s: %s", action_type, device_id, e)
@@ -912,31 +1055,38 @@ class AutonomousFarmManager:
 
     # ── Fallback ──────────────────────────────────
 
+    @staticmethod
+    def _build_rule_context(state: FarmState, username: str) -> Dict:
+        """哥哥，保留每个读数的设备归属，让规则按地块选择传感器。"""
+        from core.device_registry_factory import load_custom_devices
+
+        device_states = {}
+        sensor_data = {}
+        for key, value in state.sensor_readings.items():
+            source_id, _, field_name = key.rpartition(".")
+            device_states.setdefault(source_id, {})[field_name or key] = value
+            sensor_data[key] = value
+            sensor_data.setdefault(field_name or key, value)
+        return {
+            "device_configs": load_custom_devices(username),
+            "device_states": device_states,
+            "sensor_data": sensor_data,
+            "weather": state.current_weather or {},
+            "crop": next((crop["crop"] for crop in state.active_crops), ""),
+        }
+
     def _fallback_rule_engine(self, state: FarmState, username: str) -> Optional[DecisionPlan]:
         """LLM 不可用时的规则引擎兜底"""
         try:
-            from core.device_rule_engine import RuleEngine, RuleDecision, apply_autonomy
-            from app.agent.config import get_autonomy_level
+            from core.device_rule_engine import RuleEngine
 
             engine = RuleEngine(username=username)
-            sensor_context = {}
-            for key, value in state.sensor_readings.items():
-                sensor_context[key] = value
-                # 规则通常使用 soil_moisture 等短字段名；
-                # 巡检状态则保留 device_id.field，二者在这里兼容。
-                short_name = key.rsplit(".", 1)[-1]
-                sensor_context.setdefault(short_name, value)
-            context = {
-                "sensor_data": sensor_context,
-                "weather": state.current_weather or {},
-                "crop": next((c["crop"] for c in state.active_crops), ""),
-            }
+            context = self._build_rule_context(state, username)
             matched = engine.find_matching_rules(context)
 
             if not matched:
                 return None
 
-            autonomy = get_autonomy_level()
             actions = []
             for rule in matched[:3]:
                 rule_action = rule.get("action", {})
@@ -944,29 +1094,15 @@ class AutonomousFarmManager:
                 device_id = rule_action.get("device_id", "")
                 capability = engine._infer_capability(rule_action)
 
-                decision, reason, final_params = engine.evaluate_action(
-                    rule, params, {
-                        "device_id": device_id,
-                        "sensor_data": sensor_context,
-                        "weather": state.current_weather or {},
-                    })
-                decision = apply_autonomy(decision, autonomy)
-
-                if decision == RuleDecision.AUTO_EXECUTE:
-                    # 夜间约束检查（与 execute_plan 保持一致）
-                    night_check = self._check_night_constraint(
-                        capability, "silent")
-                    if night_check == RuleDecision.REJECTED:
-                        logger.info("规则引擎兜底: 跳过夜间操作 %s/%s",
-                                    device_id, capability)
-                        continue
-                    actions.append({
-                        "action": capability,
-                        "device_id": device_id,
-                        "params": final_params,
-                        "urgency": "today",
-                        "reason": f"规则引擎兜底: {rule.get('name', rule['id'])} — {reason}",
-                    })
+                # 哥哥，原规则由执行端重新读取并评估一次，避免丢指令或重复 AI 微调。
+                actions.append({
+                    "action": "alert" if rule.get("execution_mode") == "notify" else capability,
+                    "device_id": device_id,
+                    "rule_id": rule["id"],
+                    "params": params,
+                    "urgency": "immediate",
+                    "reason": f"规则引擎兜底: {rule.get('name', rule['id'])}",
+                })
 
             if actions:
                 return DecisionPlan(
@@ -1037,24 +1173,24 @@ class AutonomousFarmManager:
                         report.fallback_used = True
                     else:
                         report.summary = f"区域「{region}」LLM 和规则引擎均不可用，无法做出决策"
-                        report.duration_ms = int((datetime.now() - start).total_seconds() * 1000)
                         return report
             else:
                 report.summary = f"区域「{region}」无可用数据，跳过决策"
-                report.duration_ms = int((datetime.now() - start).total_seconds() * 1000)
                 return report
 
             # ④ 执行
-            if report.decision_plan and report.decision_plan.actions:
+            if report.decision_plan and (report.decision_plan.actions or report.decision_plan.follow_up):
+                self._cycle_baseline = state
                 self._execution_policy_context = {
+                    **self._build_rule_context(state, username),
                     "plot_id": region,
-                    "sensor_data": state.sensor_readings,
                 }
                 try:
                     # 保留原有二参数调用契约，便于旧扩展和测试继续替换。
                     results = self.execute_plan(report.decision_plan, username)
                 finally:
-                    self._execution_policy_context = {}
+                    self._cycle_baseline = state
+                self._execution_policy_context = {}
                 report.execution_results = results
 
             # ⑤ 生成总结
@@ -1063,9 +1199,11 @@ class AutonomousFarmManager:
         except Exception as e:
             logger.exception("自主决策周期异常: %s/%s", username, region)
             report.summary = f"周期异常: {e}"
+        finally:
+            # 哥哥，提前结束的周期也要记录耗时并保存报告。
+            report.duration_ms = int((datetime.now() - start).total_seconds() * 1000)
+            self._save_report(report)
 
-        report.duration_ms = int((datetime.now() - start).total_seconds() * 1000)
-        self._save_report(report)
         return report
 
     def _get_available_capabilities(self, state: FarmState) -> set:
@@ -1135,6 +1273,11 @@ class AutonomousFarmManager:
                 "region": report.farm_state.region if report.farm_state else "",
                 "camera_count": len(report.farm_state.camera_views) if report.farm_state else 0,
                 "sensor_count": len(report.farm_state.sensor_readings) if report.farm_state else 0,
+                "sensor_readings": report.farm_state.sensor_readings if report.farm_state else {},
+                "sensor_quality": report.farm_state.sensor_quality if report.farm_state else {},
+                "disease_risk_quality": report.farm_state.disease_risk_quality if report.farm_state else {},
+                "weather_quality": report.farm_state.weather_quality if report.farm_state else {},
+                "current_weather": report.farm_state.current_weather if report.farm_state else None,
             },
             "decision_plan": {
                 "overall_assessment": report.decision_plan.overall_assessment if report.decision_plan else "",
@@ -1143,7 +1286,7 @@ class AutonomousFarmManager:
             } if report.decision_plan else None,
             "execution_results": [
                 {"action": r.action, "device_id": r.device_id,
-                 "success": r.success, "message": r.message}
+                 "success": r.success, "message": r.message, "execution_id": r.execution_id, "acknowledged": r.acknowledged}
                 for r in report.execution_results
             ],
             "fallback_used": report.fallback_used,

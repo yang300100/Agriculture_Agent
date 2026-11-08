@@ -66,6 +66,7 @@ class DeviceCommand:
     params: Dict[str, Any] = field(default_factory=dict)
     timeout_ms: int = 30000
     priority: CommandPriority = CommandPriority.NORMAL
+    execution_id: Optional[str] = None  # 哥哥，仅传递作业幂等标识，不属于设备参数。
 
 
 @dataclass
@@ -78,6 +79,10 @@ class DeviceResult:
     message: str = ""
     error_code: Optional[str] = None
     raw_response: Dict[str, Any] = field(default_factory=dict)
+
+    execution_id: Optional[str] = None
+    acknowledged: bool = False
+    retry_safe: bool = False
 
     def __post_init__(self):
         """保证 success/error_code 一致性"""

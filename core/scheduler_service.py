@@ -79,6 +79,35 @@ def scheduler_enabled() -> bool:
     )
 
 
+def _record_heartbeat(status="running", detail=""):
+    try:
+        from core.autonomy_runtime import record_heartbeat
+        record_heartbeat(status=status, detail=detail)
+    except Exception:
+        logger.exception("记录调度心跳失败")
+
+
+def _autonomy_maintenance():
+    """哥哥，分别尝试维护任务和告警，管道异常才记为维护失败。"""
+    from core.autonomy_health import record_maintenance_result
+    failures = []
+    try:
+        from core.autonomy_runtime import process_due_jobs, dispatch_alerts
+        for label, operation in (("任务", process_due_jobs), ("告警", dispatch_alerts)):
+            try:
+                operation()
+            except Exception as exc:
+                logger.exception("自主维护%s管道失败", label)
+                failures.append(f"{label}: {type(exc).__name__}: {exc}")
+    except Exception as exc:
+        logger.exception("自主维护管道初始化失败")
+        failures.append(f"初始化: {type(exc).__name__}: {exc}")
+    try:
+        record_maintenance_result(not failures, "；".join(failures))
+    except Exception:
+        logger.exception("记录自主维护健康失败")
+
+
 def create_scheduler() -> BackgroundScheduler:
     """创建但不启动调度器，方便测试核对任务配置。"""
     from app.scheduler_jobs import (
@@ -95,6 +124,8 @@ def create_scheduler() -> BackgroundScheduler:
         "max_instances": 1,
         "misfire_grace_time": 300,
     })
+    scheduler.add_job(_record_heartbeat, "interval", seconds=20, id="autonomy_heartbeat")
+    scheduler.add_job(_autonomy_maintenance, "interval", seconds=5, id="autonomy_maintenance")
     scheduler.add_job(check_reminders_job, "interval", minutes=5, id="reminders")
     scheduler.add_job(check_weather_job, "interval", minutes=30, id="weather")
     scheduler.add_job(check_disease_job, "interval", hours=6, id="disease")
@@ -124,6 +155,7 @@ def start_scheduler():
         raise
     _scheduler = create_scheduler()
     _scheduler.start()
+    _record_heartbeat("running", "调度器已启动")
     logger.info("独立 APScheduler 已启动")
     return _scheduler
 
@@ -132,7 +164,9 @@ def stop_scheduler():
     """安全停止调度器。"""
     global _scheduler
     if _scheduler is not None and _scheduler.running:
-        _scheduler.shutdown(wait=False)
+        # 哥哥，旧设备任务结束后再释放实例锁，避免重启时两边同时下发。
+        _scheduler.shutdown(wait=True)
+        _record_heartbeat("stopped", "调度器已停止")
     _scheduler = None
 
 

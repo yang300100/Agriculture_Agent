@@ -12,6 +12,7 @@
 import asyncio
 import inspect
 import logging
+import threading
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -60,6 +61,7 @@ class ModbusDriver(BaseDeviceDriver):
         self._baudrate = baudrate
         self._timeout = timeout
         self._client = None
+        self._bus_lock = threading.Lock()
         self._connected = False
         self._devices: Dict[str, Dict] = {}
 
@@ -233,7 +235,7 @@ class ModbusDriver(BaseDeviceDriver):
                 )
 
             # 写 HR[2]=命令码, HR[3]=duration(秒), 一次性写入确保原子性
-            duration = int(command.params.get("duration") or 0) * 60  # 分钟转秒
+            duration = int(float(command.params.get("duration") or 0) * 60)  # 分钟转秒
             if not (0 <= duration <= 65535):
                 return DeviceResult(
                     success=False, device_id=device_id,
@@ -242,7 +244,7 @@ class ModbusDriver(BaseDeviceDriver):
                     error_code="INVALID_PARAMS",
                 )
             unit_kwargs = self._unit_kwargs(self._client.write_registers, slave_id)
-            result = await asyncio.to_thread(
+            result = await self._bus_call(
                 self._client.write_registers,
                 2,
                 [cmd_val, duration],
@@ -308,7 +310,7 @@ class ModbusDriver(BaseDeviceDriver):
 
         dev = self._devices[device_id]
         if not self._connected:
-            return {**dev["state"], "_driver": "modbus", "_read_at": datetime.now().isoformat()}
+            return {**dev["state"], "_driver": "modbus", "_quality": "error", "_error": "Modbus 未连接"}
 
         STATUS_RMAP = {0: "powered_off", 1: "standby", 2: "running", 3: "error"}
         try:
@@ -317,7 +319,7 @@ class ModbusDriver(BaseDeviceDriver):
             unit_kwargs = self._unit_kwargs(
                 self._client.read_holding_registers, slave_id
             )
-            result = await asyncio.to_thread(
+            result = await self._bus_call(
                 self._client.read_holding_registers,
                 0,
                 count=15,
@@ -329,19 +331,17 @@ class ModbusDriver(BaseDeviceDriver):
                     "status": STATUS_RMAP.get(registers[0], "powered_off"),
                     "power": registers[1] == 1,
                 }
-                # 传感器数据（如果有值）
-                if len(registers) > 10:
-                    if registers[10] > 0:
-                        new_state["temperature"] = registers[10] / 10.0
-                    if registers[11] > 0:
-                        new_state["humidity"] = registers[11] / 10.0
-                    if registers[12] > 0:
-                        new_state["soil_moisture"] = registers[12] / 10.0
-                    if registers[13] > 0:
-                        new_state["ph"] = registers[13] / 10.0
-                    if registers[14] > 0:
-                        new_state["light_lux"] = registers[14] * 100
+                # 哥哥，零是有效观测，不应当当成缺失。
+                for index, key, scale in ((10, "temperature", .1), (11, "humidity", .1),
+                                          (12, "soil_moisture", .1), (13, "ph", .1),
+                                          (14, "light_lux", 100)):
+                    if len(registers) > index:
+                        new_state[key] = registers[index] * scale
+                new_state.update({"_observed_at": datetime.now().isoformat(), "_quality": "good"})
+                dev["state"].pop("_error", None)
                 dev["state"].update(new_state)
+            else:
+                raise RuntimeError("Modbus 状态读取失败")
         except Exception as e:
             logger.debug("Modbus 读状态失败: %s", e)
             return {
@@ -349,10 +349,23 @@ class ModbusDriver(BaseDeviceDriver):
                 "status": "error",
                 "_driver": "modbus",
                 "_read_at": datetime.now().isoformat(),
+                "_quality": "error",
                 "_error": str(e),
             }
 
         return {**dev["state"], "_driver": "modbus", "_read_at": datetime.now().isoformat()}
+
+    async def _bus_call(self, method, *args, **kwargs):
+        """哥哥，取消排队请求时不下发；已开始的总线操作完成前保持锁。"""
+        while not self._bus_lock.acquire(blocking=False):
+            await asyncio.sleep(.01)
+        try:
+            task = asyncio.create_task(asyncio.to_thread(method, *args, **kwargs))
+        except BaseException:
+            self._bus_lock.release()
+            raise
+        task.add_done_callback(lambda _: self._bus_lock.release())
+        return await asyncio.shield(task)
 
     @staticmethod
     def _unit_kwargs(method, slave_id: int) -> Dict[str, int]:

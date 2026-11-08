@@ -10,7 +10,6 @@
 import json
 import logging
 import os
-import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
@@ -70,6 +69,8 @@ class Reminder:
     next_trigger: Optional[str]
     completed_count: int
     skipped_count: int
+    task_id: Optional[str] = None
+    progress_id: Optional[str] = None
 
 
 def _decode_channels(value: Any) -> List[str]:
@@ -108,11 +109,16 @@ class ReminderStorage:
         repo = ReminderRepository()
         reminders = repo.find_by(user_id=self._uid)
         return [{
-            "id": r.id, "crop": r.crop, "reminder_type": r.reminder_type,
+            "id": str(r.id), "user_id": self._user.username,
+            "crop": r.crop, "reminder_type": r.reminder_type,
             "task_description": r.task_description, "growth_stage": r.growth_stage,
             "frequency": r.frequency, "interval_days": r.interval_days,
             "time_of_day": r.time_of_day, "advance_hours": r.advance_hours or 0,
             "channels": _decode_channels(r.channels), "status": r.status,
+            "status_label": {"active": "待通知", "paused": "已暂停", "completed": "已通知", "cancelled": "已取消"}.get(r.status, r.status),
+            "start_date": r.start_date.isoformat() if r.start_date else (r.next_trigger.strftime("%Y-%m-%d") if r.next_trigger else ""),
+            "task_id": str(r.task_id) if r.task_id is not None else None,
+            "progress_id": str(r.progress_id) if r.progress_id is not None else None,
             "last_triggered": (
                 r.last_triggered.strftime("%Y-%m-%d %H:%M")
                 if r.last_triggered else ""
@@ -127,48 +133,76 @@ class ReminderStorage:
             ),
         } for r in reminders]
 
+    @staticmethod
+    def _reminder_values(reminder: Dict[str, Any]) -> Dict[str, Any]:
+        """哥哥，只保存模型支持的字段，渠道统一按 JSON 写入。"""
+        fields = (
+            "crop", "reminder_type", "task_description", "growth_stage", "frequency",
+            "interval_days", "time_of_day", "advance_hours", "channels", "status",
+            "next_trigger", "last_triggered", "created_at",
+            "start_date", "task_id", "progress_id",
+        )
+        values = {key: reminder[key] for key in fields if key in reminder}
+        if "channels" in values and not isinstance(values["channels"], str):
+            values["channels"] = json.dumps(values["channels"], ensure_ascii=False)
+        return values
+
+    def _owned_reminder(self, repo, reminder_id):
+        """哥哥，整型和字符串 ID 都只查当前用户自己的提醒。"""
+        try:
+            numeric_id = int(reminder_id)
+        except (ValueError, TypeError):
+            return None
+        return repo.find_one(id=numeric_id, user_id=self._uid)
+
     def save_reminders(self, reminders: List[Dict[str, Any]]):
-        """保存所有提醒到DB"""
+        """哥哥，同步当前用户的提醒列表，保留既有 ID 和触发时间。"""
+        from core.database.models import Reminder as ReminderModel
         from core.database.repository.reminders import ReminderRepository
         repo = ReminderRepository()
-        items = [{
-        "crop": r.get("crop", ""), "reminder_type": r.get("reminder_type", ""),
-        "task_description": r.get("task_description", ""),
-        "growth_stage": r.get("growth_stage", ""),
-        "frequency": r.get("frequency", "once"),
-        "interval_days": r.get("interval_days"),
-        "time_of_day": r.get("time_of_day"),
-        "advance_hours": r.get("advance_hours", 0),
-        "channels": (
-            r.get("channels", "[]")
-            if isinstance(r.get("channels", "[]"), str)
-            else json.dumps(r.get("channels", []), ensure_ascii=False)
-        ),
-        "status": r.get("status", "active"),
-        "next_trigger": r.get("next_trigger"),
-        } for r in reminders]
-        repo.replace_all_for_user(self._uid, items)
+        with repo.session_scope() as session:
+            existing = {str(row.id): row for row in repo.find_by(user_id=self._uid)}
+            retained = set()
+            for reminder in reminders:
+                key = str(reminder.get("id", ""))
+                values = repo._coerce_dates(self._reminder_values(reminder))
+                row = existing.get(key)
+                if row is None:
+                    row = ReminderModel(user_id=self._uid, **values)
+                    session.add(row)
+                else:
+                    values.pop("created_at", None)
+                    for field, value in values.items():
+                        setattr(row, field, value)
+                    retained.add(key)
+            for key, row in existing.items():
+                if key not in retained:
+                    session.delete(row)
+            session.commit()
 
-    def add_reminder(self, reminder: Dict[str, Any]):
-        """添加单个提醒"""
-        reminders = self.load_reminders()
-        reminders.append(reminder)
-        self.save_reminders(reminders)
+    def add_reminder(self, reminder: Dict[str, Any]) -> str:
+        """哥哥，只插入这条提醒，并返回数据库的真实 ID。"""
+        from core.database.repository.reminders import ReminderRepository
+        row = ReminderRepository().create(user_id=self._uid, **self._reminder_values(reminder))
+        return str(row.id)
 
     def update_reminder(self, reminder_id: str, updates: Dict[str, Any]):
         """更新提醒"""
-        reminders = self.load_reminders()
-        for i, r in enumerate(reminders):
-            if r.get("id") == reminder_id:
-                reminders[i].update(updates)
-                break
-        self.save_reminders(reminders)
+        from core.database.repository.reminders import ReminderRepository
+        repo = ReminderRepository()
+        row = self._owned_reminder(repo, reminder_id)
+        if row is not None:
+            values = self._reminder_values(updates)
+            values.pop("created_at", None)
+            repo.update(row.id, **values)
 
     def delete_reminder(self, reminder_id: str):
         """删除提醒"""
-        reminders = self.load_reminders()
-        reminders = [r for r in reminders if r.get("id") != reminder_id]
-        self.save_reminders(reminders)
+        from core.database.repository.reminders import ReminderRepository
+        repo = ReminderRepository()
+        row = self._owned_reminder(repo, reminder_id)
+        if row is not None:
+            repo.delete(row.id)
 
 
 class ReminderSystem:
@@ -201,6 +235,15 @@ class ReminderSystem:
             Reminder: 创建的提醒对象
         """
         now = datetime.now()
+        from core.database.repository.planting import PlantingPlanRepository, PlantingTaskRepository
+
+        # 哥哥，只有同一用户明确指定的记录才能建立关联。
+        for key, repository, label in (("task_id", PlantingTaskRepository, "任务"), ("progress_id", PlantingPlanRepository, "种植进度")):
+            value = reminder_data.get(key)
+            if value is not None:
+                row = repository().get_by_id(int(value)) if str(value).isdigit() else None
+                if row is None or row.user_id != self.storage._uid:
+                    raise ValueError(f"关联{label}不存在或不属于当前用户")
 
         # 计算下次触发时间
         next_trigger = self._calculate_next_trigger(
@@ -212,8 +255,8 @@ class ReminderSystem:
         )
 
         reminder = Reminder(
-            id=str(uuid.uuid4())[:8],  # 简化的8位ID
-            user_id=reminder_data.get("user_id", "default"),
+            id="",
+            user_id=self.storage._user.username,
             crop=reminder_data.get("crop", ""),
             reminder_type=reminder_data.get("reminder_type", "其他"),
             task_description=reminder_data.get("task_description", ""),
@@ -230,13 +273,43 @@ class ReminderSystem:
             last_triggered=None,
             next_trigger=next_trigger,
             completed_count=0,
-            skipped_count=0
+            skipped_count=0,
+            task_id=str(reminder_data["task_id"]) if reminder_data.get("task_id") is not None else None,
+            progress_id=str(reminder_data["progress_id"]) if reminder_data.get("progress_id") is not None else None,
         )
 
         # 保存到存储
-        self.storage.add_reminder(asdict(reminder))
+        reminder.id = self.storage.add_reminder(asdict(reminder))
 
         return reminder
+
+    def sync_task_reminders(self, task_id: str, status: str = None,
+                            start_date: str = None, deleted: bool = False, session=None) -> None:
+        """哥哥，只同步明确关联且尚未通知的单次提醒，循环系列保持独立。"""
+        from core.database.engine import get_session
+        from core.database.models import Reminder as ReminderModel
+
+        if session is None:
+            with get_session() as owned_session:
+                self.sync_task_reminders(task_id, status, start_date, deleted, session=owned_session)
+                owned_session.commit()
+            return
+        reminders = session.query(ReminderModel).filter(
+            ReminderModel.user_id == self.storage._uid,
+            ReminderModel.task_id == int(task_id),
+            ReminderModel.frequency.in_(["单次", "once"]),
+            ReminderModel.status.in_(["active", "paused"]),
+            ReminderModel.last_triggered.is_(None),
+        ).all()
+        for reminder in reminders:
+            if deleted or status in {"已完成", "completed"}:
+                reminder.status = "cancelled"
+                reminder.next_trigger = None
+            elif start_date:
+                reminder.start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+                reminder.next_trigger = datetime.strptime(
+                    f"{start_date} {reminder.time_of_day or '09:00'}", "%Y-%m-%d %H:%M"
+                )
 
     def _calculate_next_trigger(self, start_date: str, time_of_day: str,
                                 frequency: str, interval_days: int,
@@ -335,7 +408,7 @@ class ReminderSystem:
         """标记提醒为已完成"""
         reminders = self.storage.load_reminders()
         for reminder in reminders:
-            if reminder.get("id") == reminder_id:
+            if str(reminder.get("id")) == str(reminder_id):
                 reminder["completed_count"] = reminder.get("completed_count", 0) + 1
                 reminder["last_triggered"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -353,15 +426,14 @@ class ReminderSystem:
                         reminder.get("specific_days", [])
                     )
 
+                self.storage.update_reminder(reminder_id, reminder)
                 break
-
-        self.storage.save_reminders(reminders)
 
     def skip_reminder(self, reminder_id: str):
         """跳过本次提醒"""
         reminders = self.storage.load_reminders()
         for reminder in reminders:
-            if reminder.get("id") == reminder_id:
+            if str(reminder.get("id")) == str(reminder_id):
                 reminder["skipped_count"] = reminder.get("skipped_count", 0) + 1
                 reminder["last_triggered"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -374,9 +446,8 @@ class ReminderSystem:
                     reminder.get("interval_days", 0),
                     reminder.get("specific_days", [])
                 )
+                self.storage.update_reminder(reminder_id, reminder)
                 break
-
-        self.storage.save_reminders(reminders)
 
     def delete_reminder(self, reminder_id: str):
         """删除提醒"""
@@ -485,7 +556,7 @@ class ReminderSystem:
     def send_sms_notification(self, reminder_id: str, phone: str) -> Dict:
         """为指定提醒发送短信通知"""
         reminders = self.storage.load_reminders()
-        reminder = next((r for r in reminders if r.get("id") == reminder_id), None)
+        reminder = next((r for r in reminders if str(r.get("id")) == str(reminder_id)), None)
         if not reminder:
             return {"success": False, "error": "提醒不存在"}
 

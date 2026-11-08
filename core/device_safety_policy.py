@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -71,7 +72,16 @@ ABSOLUTE_CEILINGS: Dict[str, Dict[str, float]] = {
     },
 }
 
+PARAMETER_BOUNDS = {
+    "target_temp": (-50, 60), "concentration_percent": (0, 100),
+    "brightness_percent": (0, 100), "speed_percent": (0, 100),
+    "power_percent": (0, 100), "position_percent": (0, 100),
+    "target_soil_moisture": (0, 100), "target_lux": (0, 200000),
+}
+HIGH_RISK_PARAMETERS = set(PARAMETER_BOUNDS) | {"amount_kg"}
+
 SUPPORTED_LIMITS = {
+    "parameter_ranges",
     "max_duration_per_use_minutes",
     "max_duration_per_day_minutes",
     "max_amount_per_use_kg",
@@ -109,13 +119,13 @@ class PolicyEvaluation:
 
 
 def _number(value: Any) -> Optional[float]:
-    if value is None or value == "":
+    if isinstance(value, bool) or value is None or value == "":
         return None
     try:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number
+    return number if math.isfinite(number) else None
 
 
 def _duration(params: Dict[str, Any]) -> float:
@@ -231,7 +241,22 @@ class SafetyPolicyService:
         for key, value in raw_limits.items():
             if key not in SUPPORTED_LIMITS:
                 continue
-            if key == "forbidden_hours":
+            if key == "parameter_ranges":
+                if not isinstance(value, dict):
+                    raise ValueError("parameter_ranges 必须是对象")
+                ranges = {}
+                for field_name, bounds in value.items():
+                    if field_name not in PARAMETER_BOUNDS and field_name != "amount_kg":
+                        raise ValueError(f"不支持的参数范围: {field_name}")
+                    if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+                        raise ValueError(f"{field_name} 范围必须包含上下限")
+                    lo, hi = map(_number, bounds)
+                    absolute = PARAMETER_BOUNDS.get(field_name, (0, 50))
+                    if lo is None or hi is None or lo > hi or lo < absolute[0] or hi > absolute[1]:
+                        raise ValueError(f"{field_name} 范围无效或超过绝对边界")
+                    ranges[field_name] = [lo, hi]
+                limits[key] = ranges
+            elif key == "forbidden_hours":
                 if not isinstance(value, list):
                     raise ValueError("forbidden_hours 必须是小时数组")
                 limits[key] = sorted({
@@ -428,6 +453,20 @@ class SafetyPolicyService:
         if command in {"stop", "power_off", "shutdown"}:
             return PolicyEvaluation(AUTO_EXECUTE, "停止操作直接放行", params, capability)
 
+        numeric_parameters = {
+            "duration", "duration_minutes", "amount_kg", "volume_liters", "flow_rate_lpm", "flow_rate",
+            "target_temp", "brightness_percent", "speed_percent", "target_soil_moisture",
+            "target_lux", "power_percent", "position_percent", "concentration_percent",
+        }
+        for key, value in params.items():
+            if key in numeric_parameters and _number(value) is None:
+                # 哥哥，无效值要在下发前拦住，日志也需要能正常序列化。
+                clean_params = {
+                    name: str(item) if isinstance(item, float) and not math.isfinite(item) else item
+                    for name, item in params.items()
+                }
+                return PolicyEvaluation(REJECTED, f"参数 {key} 必须是有限数字", clean_params, capability)
+
         for key, value in params.items():
             if key in {"duration", "duration_minutes", "amount_kg", "volume_liters", "flow_rate_lpm", "flow_rate"}:
                 parsed = _number(value)
@@ -435,6 +474,13 @@ class SafetyPolicyService:
                     return PolicyEvaluation(REJECTED, f"参数 {key} 不能为负数", params, capability)
 
         duration = _duration(params)
+        if command == "start" and (duration <= 0 or any(_number(params[k]) <= 0 for k in ("duration", "duration_minutes") if k in params)
+                                   or ("duration" in params and "duration_minutes" in params
+                                       and _number(params["duration"]) != _number(params["duration_minutes"]))):
+            return PolicyEvaluation(REJECTED, "启动必须指定一致且正的有限时长", params, capability)
+        for key, (lo, hi) in PARAMETER_BOUNDS.items():
+            if key in params and not lo <= _number(params[key]) <= hi:
+                return PolicyEvaluation(REJECTED, f"参数 {key} 超出绝对范围 [{lo}, {hi}]", params, capability)
         amount = _amount(params)
         ceiling = ABSOLUTE_CEILINGS.get(capability, {})
         physical_violations: List[tuple[str, str]] = []
@@ -470,6 +516,10 @@ class SafetyPolicyService:
             policy for policy in self.list_policies()
             if self._matches(policy, capability, device_id, context)
         ]
+        if context.get("automatic"):
+            for key in HIGH_RISK_PARAMETERS.intersection(params):
+                if not any(key in (p.get("limits", {}).get("parameter_ranges", {}) or {}) for p in matched):
+                    return PolicyEvaluation(REJECTED, f"自动操作缺少 {key} 的明确农艺范围", params, capability)
         usage = self._successful_usage_today(device_id)
         violations: List[tuple[str, str]] = []
         policy_ids: List[int] = []
@@ -483,6 +533,15 @@ class SafetyPolicyService:
                 pass
             limits = policy.get("limits", {}) or {}
             action = policy.get("violation_action", "reject")
+            for key, bounds in (limits.get("parameter_ranges", {}) or {}).items():
+                if key in params:
+                    try:
+                        lo, hi = map(_number, bounds)
+                        actual = _number(params[key])
+                        if lo is None or hi is None or actual is None or not lo <= actual <= hi:
+                            violations.append((action, f"策略「{policy['name']}」：参数 {key} 超出范围"))
+                    except (TypeError, ValueError):
+                        violations.append(("reject", f"策略参数 {key} 范围无效"))
             rated_flow = _number(limits.get("rated_flow_lpm"))
             volume = _volume(params, rated_flow)
             if volume is not None:

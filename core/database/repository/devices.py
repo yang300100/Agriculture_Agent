@@ -21,11 +21,11 @@ class DeviceRuleRepository(BaseRepository[DeviceRule]):
 
     def sync_for_user(self, user_id: int, items: list[dict]):
         """按规则 ID 原子同步，避免全删重建导致 ID 与日志外键失效。"""
-        existing_rows = self.find_by(user_id=user_id)
-        existing = {row.id: row for row in existing_rows}
-        kept_ids = set()
-        synced_rows = []
-        try:
+        with self.session_scope() as session:
+            existing_rows = self.find_by(user_id=user_id)
+            existing = {row.id: row for row in existing_rows}
+            kept_ids = set()
+            synced_rows = []
             for item in items:
                 payload = dict(item)
                 raw_id = payload.pop("id", None)
@@ -37,8 +37,8 @@ class DeviceRuleRepository(BaseRepository[DeviceRule]):
                 row = existing.get(rule_id)
                 if row is None:
                     row = DeviceRule(user_id=user_id, **payload)
-                    self.session.add(row)
-                    self.session.flush()
+                    session.add(row)
+                    session.flush()
                 else:
                     for key, value in payload.items():
                         if hasattr(row, key):
@@ -48,12 +48,11 @@ class DeviceRuleRepository(BaseRepository[DeviceRule]):
 
             for rule_id, row in existing.items():
                 if rule_id not in kept_ids:
-                    self.session.delete(row)
-            self.session.commit()
+                    session.delete(row)
+            session.commit()
+            for row in synced_rows:
+                self._refresh_for_return(session, row)
             return synced_rows
-        except Exception:
-            self.session.rollback()
-            raise
 
 
 class DeviceSafetyPolicyRepository(BaseRepository[DeviceSafetyPolicy]):
@@ -66,6 +65,7 @@ class DeviceLogRepository(BaseRepository[DeviceActionLog]):
         super().__init__(DeviceActionLog, session)
 
     def get_recent(self, user_id: int, limit: int = 100):
-        return self.session.query(DeviceActionLog).filter(
-            DeviceActionLog.user_id == user_id
-        ).order_by(DeviceActionLog.created_at.desc()).limit(limit).all()
+        with self.session_scope() as session:
+            return session.query(DeviceActionLog).filter(
+                DeviceActionLog.user_id == user_id
+            ).order_by(DeviceActionLog.created_at.desc()).limit(limit).all()

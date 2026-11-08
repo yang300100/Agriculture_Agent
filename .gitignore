@@ -15,9 +15,12 @@ dist/
 build/
 
 # 大体积模型权重只保存在本机，不提交到 Git。
+/models/weights/
 *.pth
 *.pt
 *.onnx
+*.safetensors
+*.ckpt
 /experiments/
 /train_data/
 /data/backups/
@@ -33,6 +36,8 @@ agriculture_faiss_index/
 !README.md
 /docs/*
 !/docs/hardware_protocols.md
+!/docs/unattended-operation-setup.md
+!/docs/unattended-operation-verification-2026-11-08.md
 
 # 项目特定
 CLAUDE.md

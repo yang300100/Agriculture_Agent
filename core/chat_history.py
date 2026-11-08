@@ -74,10 +74,9 @@ class ChatHistoryStore:
     # ── 公共接口 ──────────────────────────────────
 
     def save_session(self, session_id: str, messages: List[Dict], title: str = "") -> str:
-        """保存一个会话（增量更新：先删旧，再插新）"""
-        from core.database.repository.chat import ChatSessionRepository, ChatMessageRepository
-        session_repo = ChatSessionRepository()
-        msg_repo = ChatMessageRepository()
+        """哥哥，整段消息在同一事务内续存，写入失败时保留原对话。"""
+        from core.database.engine import get_session
+        from core.database.models import ChatSession, ChatMessage
 
         if not title and messages:
             for m in messages:
@@ -85,27 +84,26 @@ class ChatHistoryStore:
                     title = (m.get("content") or "")[:30]
                     break
 
-        # 查找并删除已有同ID会话
-        for s in session_repo.find_by(user_id=self._uid):
-            if str(s.id) == session_id:
-                session_repo.delete(s.id)
-                break
-
-        # 创建新会话
         now = datetime.now()
-        sid = session_repo.create(
-            user_id=self._uid,
-            title=title or "新对话",
-            created_at=now,
-            updated_at=now,
-        ).id
-        for m in messages:
-            msg_repo.create(
-                session_id=sid,
-                role=m.get("role", "user"),
-                content=m.get("content", ""),
-            )
-        return str(sid)
+        with get_session() as database, database.begin():
+            row = None
+            if str(session_id).isdigit():
+                row = database.query(ChatSession).filter_by(
+                    id=int(session_id), user_id=self._uid,
+                ).first()
+            if row is None:
+                row = ChatSession(user_id=self._uid, created_at=now)
+                database.add(row)
+                database.flush()
+            row.title = title or "新对话"
+            row.updated_at = now
+            database.query(ChatMessage).filter_by(session_id=row.id).delete(synchronize_session=False)
+            database.add_all([
+                ChatMessage(session_id=row.id, role=message.get("role", "user"), content=message.get("content", ""))
+                for message in messages
+            ])
+            sid = str(row.id)
+        return sid
 
     def load_session(self, session_id: str) -> Optional[List[Dict]]:
         data = self._load()

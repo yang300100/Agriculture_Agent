@@ -1,12 +1,13 @@
 """设备操作日志与待确认队列 API。"""
 
 import logging
+import os
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from core.device_registry_factory import close_registry, setup_registry
+from core.device_registry_factory import RegistrySession, DEFAULT_DATA_DIR
 
 
 logger = logging.getLogger(__name__)
@@ -77,25 +78,79 @@ def register_device_action_routes(app: FastAPI) -> None:
                 status_code=500, detail="待确认操作修改失败"
             ) from exc
 
-    @app.post("/api/actions/{action_id}/confirm")
-    def confirm_action(action_id: str, username: str = "default"):
+    @app.post("/api/devices/{device_id}/reconcile")
+    def reconcile_device(device_id: str, username: str = "default"):
         try:
             from core.device_executor import DeviceExecutor
 
-            registry, loop = setup_registry(username)
-            try:
+            with RegistrySession(username) as (registry, loop):
                 loop.run_until_complete(registry.discover_all())
-                result = DeviceExecutor(
-                    registry, username=username
-                ).confirm_pending(action_id)
+                result = loop.run_until_complete(
+                    DeviceExecutor(registry, username=username).reconcile_uncertain(device_id)
+                )
+                if not result.get("success"):
+                    raise HTTPException(status_code=409, detail=result.get("message", "设备状态无法核对"))
+                return result
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("核对设备状态失败: user=%s device=%s", username, device_id)
+            raise HTTPException(status_code=500, detail="设备状态核对失败") from exc
+
+    @app.post("/api/actions/{action_id}/confirm")
+    def confirm_action(action_id: str, username: str = "default"):
+        claimed_tracker = None
+        task_id = None
+        execution_succeeded = False
+        result_recorded = False
+        task_execution_lock = None
+        try:
+            from core.device_executor import DeviceExecutor
+
+            with RegistrySession(username) as (registry, loop):
+                loop.run_until_complete(registry.discover_all())
+                executor = DeviceExecutor(registry, username=username)
+                action = next((
+                    item for item in executor.list_pending()
+                    if item.get("id") == action_id
+                ), None)
+                task_id = ((action or {}).get("policy_context") or {}).get("task_id")
+                if task_id:
+                    from core.planting_tracker import PlantingTracker
+
+                    tracker = PlantingTracker(os.path.join(DEFAULT_DATA_DIR, username))
+                    task_execution_lock = tracker.device_task_execution_lock(str(task_id))
+                    if not task_execution_lock.acquire():
+                        raise HTTPException(status_code=409, detail="关联任务正在处理，请稍后刷新")
+                    if action.get("status") == "pending":
+                        tracker.recover_unrecorded_device_task(str(task_id), registry, loop)
+                    claimed = tracker.claim_device_task(str(task_id))
+                    if (
+                        not claimed and action.get("status") == "failed"
+                        and action.get("last_error") == "上次执行被中断，请确认设备状态后重试"
+                    ):
+                        recovered = tracker.recover_interrupted_device_task(
+                            str(task_id), action.get("updated_at", ""),
+                        )
+                        if recovered:
+                            claimed = tracker.claim_device_task(str(task_id))
+                    if not claimed:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="关联任务不存在、正在执行或已完成，请刷新任务状态",
+                        )
+                    claimed_tracker = tracker
+                result = executor.confirm_pending(action_id)
+                execution_succeeded = bool(result.get("success"))
+                if claimed_tracker is not None:
+                    claimed_tracker.record_device_task_result(str(task_id), result, registry, loop)
+                    result_recorded = True
                 if (
                     not result.get("success")
                     and result.get("message") == "操作不存在或已处理"
                 ):
                     raise HTTPException(status_code=409, detail=result["message"])
                 return result
-            finally:
-                close_registry(loop, registry)
         except HTTPException:
             raise
         except Exception as exc:
@@ -103,22 +158,40 @@ def register_device_action_routes(app: FastAPI) -> None:
             raise HTTPException(
                 status_code=500, detail="待确认操作执行失败"
             ) from exc
+        finally:
+            try:
+                if claimed_tracker is not None and not result_recorded:
+                    claimed_tracker.update_task_status(
+                        str(task_id), "运行中" if execution_succeeded else "失败",
+                        progress=10 if execution_succeeded else 0,
+                    )
+            finally:
+                if task_execution_lock is not None:
+                    task_execution_lock.release()
 
     @app.post("/api/actions/{action_id}/reject")
     def reject_action(action_id: str, username: str = "default"):
         try:
             from core.device_executor import DeviceExecutor
 
-            registry, loop = setup_registry(username)
-            try:
-                ok = DeviceExecutor(
-                    registry, username=username
-                ).reject_pending(action_id)
+            with RegistrySession(username) as (registry, loop):
+                executor = DeviceExecutor(registry, username=username)
+                action = next((
+                    item for item in executor.list_pending()
+                    if item.get("id") == action_id
+                ), None)
+                ok = executor.reject_pending(action_id)
                 if not ok:
                     raise HTTPException(status_code=409, detail="操作不存在或已处理")
+                task_id = ((action or {}).get("policy_context") or {}).get("task_id")
+                if task_id:
+                    from core.planting_tracker import PlantingTracker
+
+                    tracker = PlantingTracker(os.path.join(DEFAULT_DATA_DIR, username))
+                    task = tracker.get_task_by_id(str(task_id))
+                    if task is not None and task.status == "待办":
+                        tracker.update_task_status(str(task_id), "待办", progress=0)
                 return {"success": True}
-            finally:
-                close_registry(loop, registry)
         except HTTPException:
             raise
         except Exception as exc:
