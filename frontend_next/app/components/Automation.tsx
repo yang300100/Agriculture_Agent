@@ -41,6 +41,7 @@ import {
   StatusPill,
 } from "./Common";
 import { PendingActionEditor } from "./PendingActionEditor";
+import { CameraStreamView } from "./CameraStreamView";
 import { localDateKey } from "../local-date";
 import {
   parseConditions,
@@ -897,20 +898,26 @@ function CameraLiveView({
   device: Device;
   offline: boolean;
 }) {
+  const useStream = device.driver === "camera";
   const [frame, setFrame] = useState("");
   const [frameTime, setFrameTime] = useState("");
   const [frameError, setFrameError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const generation = useRef(0);
+  const pendingGeneration = useRef<number | null>(null);
 
   const refreshFrame = useCallback(async () => {
-    if (offline) return;
+    const currentGeneration = generation.current;
+    if (pendingGeneration.current === currentGeneration) return;
+    pendingGeneration.current = currentGeneration;
     setRefreshing(true);
     try {
       const result = await get<JsonMap>(
         `/api/devices/${device.device_id}/snapshot`,
       );
+      if (generation.current !== currentGeneration) return;
       if (!result.success || !result.image_base64) {
-        throw new Error(result.error || "暂时无法获取摄像头画面");
+        throw new Error(result.error || "暂时无法获取摄像头快照");
       }
       setFrame(
         `data:${result.mime_type || "image/jpeg"};base64,${result.image_base64}`,
@@ -918,18 +925,35 @@ function CameraLiveView({
       setFrameTime(result.timestamp || new Date().toISOString());
       setFrameError("");
     } catch (reason) {
+      if (generation.current !== currentGeneration) return;
       setFrameError(
-        reason instanceof Error ? reason.message : "暂时无法获取摄像头画面",
+        reason instanceof Error ? reason.message : "暂时无法获取摄像头快照",
       );
     } finally {
-      setRefreshing(false);
+      if (generation.current === currentGeneration) {
+        pendingGeneration.current = null;
+        setRefreshing(false);
+      }
     }
-  }, [device.device_id, offline]);
+  }, [device.device_id]);
 
   useEffect(() => {
+    generation.current += 1;
+    pendingGeneration.current = null;
+    setFrame("");
+    setFrameTime("");
+    setFrameError("");
+    setRefreshing(false);
+    return () => {
+      generation.current += 1;
+      pendingGeneration.current = null;
+    };
+  }, [device.device_id, useStream]);
+
+  useEffect(() => {
+    if (useStream) return;
     if (offline) {
-      setFrame("");
-      setFrameError("摄像头当前离线");
+      setFrameError("摄像头状态离线，自动刷新已暂停，可手动重试");
       return;
     }
     let stopped = false;
@@ -943,40 +967,60 @@ function CameraLiveView({
       stopped = true;
       if (timer) clearTimeout(timer);
     };
-  }, [offline, refreshFrame]);
+  }, [offline, refreshFrame, useStream]);
+
+  if (useStream) return <CameraStreamView device={device} />;
 
   return (
     <div className="camera-live-panel">
       <div className="camera-live-head">
         <span>
-          <i className={!offline && frame ? "live" : ""} />
-          实时画面
+          <i />
+          摄像头快照
         </span>
         <button
           type="button"
           onClick={refreshFrame}
-          disabled={offline || refreshing}
-          aria-label="刷新摄像头画面"
+          disabled={refreshing}
+          aria-label="刷新摄像头快照"
         >
           <RefreshCw className={refreshing ? "spinning" : ""} />
-          {frameTime
-            ? `${String(frameTime).slice(11, 19)} 更新`
-            : "每 5 秒刷新"}
+          {refreshing
+            ? "正在抓拍"
+            : offline ? "手动重试" : "每 5 秒刷新"}
         </button>
       </div>
       <div className="camera-live-frame">
         {frame ? (
           <>
-            {/* 摄像头画面来自已配置设备的动态 Base64 数据。 */}
+            {/* 摄像头快照来自已配置设备的 Base64 数据。 */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={frame} alt={`${device.name} 当前画面`} />
-            <span className="camera-live-badge">LIVE</span>
+            <img src={frame} alt={`${device.name} 最后抓拍`} />
+            <span
+              className="camera-live-badge"
+              style={frameError ? { background: "#9f2d28" } : undefined}
+            >
+              {frameError ? "画面已过期" : "最后抓拍"}
+              {frameTime && ` · ${String(frameTime).slice(11, 19)}`}
+            </span>
+            {frameError && (
+              <div
+                role="alert"
+                style={{
+                  position: "absolute", bottom: 0, left: 0, right: 0,
+                  padding: "8px 12px", background: "rgba(111, 30, 26, 0.9)",
+                  color: "#fff", fontSize: 12, lineHeight: 1.5,
+                }}
+              >
+                最后抓拍可能已过期：{frameError}
+              </div>
+            )}
           </>
         ) : (
           <div className="camera-live-empty">
             <Camera />
-            <b>{refreshing ? "正在连接摄像头" : "暂无实时画面"}</b>
-            <small>{frameError || "正在等待摄像头返回第一帧"}</small>
+            <b>{refreshing ? "正在获取摄像头快照" : "暂无摄像头快照"}</b>
+            <small>{frameError || "正在等待摄像头返回快照"}</small>
           </div>
         )}
       </div>

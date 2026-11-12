@@ -54,6 +54,7 @@ class ChatMessage(Base):
     session_id = Column(Integer, ForeignKey("chat_sessions.id", ondelete="CASCADE"))
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
+    cards_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
     session = relationship("ChatSession", back_populates="messages")
 

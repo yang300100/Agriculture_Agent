@@ -36,14 +36,31 @@ DEVICES = [
      "capabilities": ["read_sensor"], "sensors": ["temperature", "humidity", "soil_moisture", "co2_ppm"],
      "connection": {"mode": "tcp", "host": "127.0.0.1", "port": "5020", "slave_id": 1},
      "location": "温室A区-中心"},
-    {"device_id": "greenhouse_camera_01", "name": "温室监控摄像头", "driver": "modbus",
+    # 摄像头图像走 HTTP；Modbus 寄存器无法传递 JPEG。
+    {"device_id": "greenhouse_camera_01", "name": "温室监控摄像头", "driver": "http",
      "capabilities": ["capture"], "sensors": [],
-     "connection": {"mode": "tcp", "host": "127.0.0.1", "port": "5020", "slave_id": 2},
+     "connection": {"base_url": "http://127.0.0.1:5000"},
      "location": "温室A区-入口"},
 ]
 
 
-def register(username="123"):
+def _is_legacy_local_camera(device):
+    """只识别旧脚本写入的本机摄像头配置，保留其他接线。"""
+    if device.device_id != "greenhouse_camera_01" or device.driver != "modbus":
+        return False
+    try:
+        conn = json.loads(device.connection or "{}")
+        return (
+            conn.get("mode", "tcp") == "tcp"
+            and conn.get("host") in ("127.0.0.1", "localhost", "::1")
+            and int(conn.get("port", 0)) == 5020
+            and int(conn.get("slave_id", 0)) == 2
+        )
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def register(username="123", *, repair_legacy_camera=False):
     init_db()
     session = Session()
     user = session.query(User).filter(User.username == username).first()
@@ -52,12 +69,20 @@ def register(username="123"):
         session.close()
         return
 
+    added = repaired = skipped = 0
     for d in DEVICES:
         existing = session.query(DeviceConfig).filter(
             DeviceConfig.user_id == user.id,
             DeviceConfig.device_id == d["device_id"],
         ).first()
         if existing:
+            if repair_legacy_camera and _is_legacy_local_camera(existing):
+                existing.driver = d["driver"]
+                existing.connection = json.dumps(d["connection"], ensure_ascii=False)
+                repaired += 1
+                print(f"  修复图像连接: {d['device_id']} [HTTP]")
+                continue
+            skipped += 1
             print(f"  跳过(已存在): {d['device_id']} ({d['name']})")
             continue
         session.add(DeviceConfig(
@@ -68,16 +93,19 @@ def register(username="123"):
             connection=json.dumps(d["connection"], ensure_ascii=False),
             location=d["location"],
         ))
+        added += 1
         print(f"  注册: {d['device_id']} ({d['name']}) [{d['driver'].upper()}]")
 
     session.commit()
     session.close()
-    print(f"\n完成! 共 {len(DEVICES)} 个设备已注册到用户 '{username}'")
+    print(f"\n完成! 用户 '{username}': 新增 {added}，修复 {repaired}，保留 {skipped}")
 
 
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--username", default="123", help="用户名")
+    p.add_argument("--repair-legacy-camera", action="store_true",
+                   help="将旧脚本的本机 Modbus 摄像头定向修复为 HTTP；请先备份数据库")
     args = p.parse_args()
-    register(args.username)
+    register(args.username, repair_legacy_camera=args.repair_legacy_camera)

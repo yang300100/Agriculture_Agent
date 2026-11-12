@@ -120,6 +120,43 @@ def test_update_device_supports_post_config_route():
     assert post_update is put_update
 
 
+def test_camera_cannot_be_configured_with_modbus_image_transport(monkeypatch):
+    devices = [{"device_id": "camera", "name": "温室摄像头", "driver": "http",
+                "capabilities": ["capture"], "connection": {"base_url": "http://127.0.0.1:5000"}}]
+    monkeypatch.setattr(api_routes, "load_custom_devices", lambda username: deepcopy(devices))
+    saved = []
+    monkeypatch.setattr(api_routes, "save_custom_devices", lambda username, rows: saved.extend(rows))
+    app = FastAPI()
+    api_routes.register_routes(app)
+    update = _route_endpoint(app, "/api/devices/{device_id}", "PUT")
+    result = update("camera", {"driver": "modbus", "connection": {
+        "host": "127.0.0.1", "port": 5020, "slave_id": 2,
+    }}, "farmer")
+    assert result["success"] is False
+    assert "图像" in result["error"]
+    assert not saved
+
+
+def test_local_camera_requires_explicit_valid_source(monkeypatch):
+    devices = [{"device_id": "camera", "name": "温室摄像头", "driver": "http",
+                "capabilities": ["capture"], "connection": {"base_url": "http://127.0.0.1:5000"}}]
+    monkeypatch.setattr(api_routes, "load_custom_devices", lambda username: deepcopy(devices))
+    saved = []
+    monkeypatch.setattr(api_routes, "save_custom_devices", lambda username, rows: saved.extend(rows))
+    app = FastAPI()
+    api_routes.register_routes(app)
+    update = _route_endpoint(app, "/api/devices/{device_id}", "PUT")
+    for connection in ({}, {"source": ""}, {"source": -1}, {"source": []},
+                       {"source": "0", "camera_type": "unknown"}):
+        result = update("camera", {"driver": "camera", "connection": connection}, "farmer")
+        assert result["success"] is False, connection
+    assert not saved
+    result = update("camera", {"driver": "camera", "connection": {
+        "source": 0, "camera_type": "usb",
+    }}, "farmer")
+    assert result["success"] is True
+
+
 def test_list_devices_keeps_unreachable_config_visible(monkeypatch):
     configured = {
         "device_id": "offline_sensor",

@@ -207,15 +207,15 @@ Agent 支持通过 4 种协议接入真实 IoT 设备，实现自主控制。通
 
 ```bash
 # 一键启动全部协议模拟器
-python hardware_examples/all_hardware_simulator.py
+python hardware_examples/start_all_simulators.py
 ```
 
 **架构**：
 ```
 UnifiedDeviceManager（共享状态）
- ├── 🌐 HTTP Server (Flask :5000)  ← 灌溉泵/补光灯/施肥机
+ ├── 🌐 HTTP Server (Flask :5000)  ← 灌溉泵/补光灯/施肥机/摄像头快照
  ├── 📡 MQTT Broker (内嵌 :1883) + 设备处理器  ← 通风扇/加热器
- ├── 🔧 Modbus TCP Server (内嵌 :5020)  ← 温湿度传感器/摄像头
+ ├── 🔧 Modbus TCP Server (内嵌 :5020)  ← 温湿度传感器
  └── 🖥️ 终端 CLI（协议客户端）
       ├── HTTP 设备 → requests.post(:5000)
       ├── MQTT 设备 → MQTT publish(:1883)
@@ -225,9 +225,16 @@ UnifiedDeviceManager（共享状态）
 **设备协议分布**：
 | 设备 | 协议 | 地址 |
 |------|------|------|
-| 灌溉泵 / 补光灯 / 施肥一体机 | HTTP | :5000 |
+| 灌溉泵 / 补光灯 / 施肥一体机 / 摄像头 | HTTP | :5000 |
 | 通风扇 / 加热器 | MQTT | :1883 |
-| 温湿度传感器 / 摄像头 | Modbus TCP | :5020 |
+| 温湿度传感器 | Modbus TCP | :5020 |
+
+浏览器面板：<http://127.0.0.1:5000/>。使用 `--headless` 可在无交互终端时持续运行，
+`--no-http`、`--no-mqtt`、`--no-modbus` 可禁用对应协议。
+模拟器摄像头提供每 5 秒刷新的 JPEG 快照；本机摄像头使用 `camera` 驱动，
+连接参数为 `{"camera_type":"usb","source":"0"}`，设备中心提供约 10 FPS 的连续实时预览。
+预览不保存照片，离开页面后释放摄像头连接。
+已有旧摄像头配置的修复步骤见 [硬件示例说明](hardware_examples/README.md)。
 
 **终端命令**：
 ```bash
@@ -324,60 +331,68 @@ app.run(host="0.0.0.0", port=8080)
 
 ## 快速开始
 
-### 1. 安装依赖
+### 0. 环境要求
+
+- Python 3.10+
+- Node.js >= 22.13（仅使用新版 React 前端时需要）
+- Git LFS（克隆仓库时拉取 HMPD-Net 模型权重）
+
+### 1. 获取代码与模型权重
+
+```bash
+git clone git@github.com:yang300100/Agriculture_Agent.git
+cd Agriculture_Agent
+git lfs install
+git lfs pull
+```
+
+模型 `models/weights/hmpd_net.pth`（HMPD-Net 病虫害识别，47 类联合分类）通过 Git LFS 随仓库分发。
+如果克隆时未安装 Git LFS，拉下来的会是几百字节的指针文件，执行上面的 `git lfs install && git lfs pull` 即可补全；也可以在 GitHub 页面直接 Download ZIP（压缩包内是完整模型）。
+
+### 2. 安装依赖
 
 ```bash
 pip install -r requirements.txt
+
+# 仅使用新版 React 前端时，再安装前端依赖
+cd frontend_next && npm install && cd ..
 ```
 
-### 2. 配置环境变量
+### 3. 配置环境变量
 
-```env
-# LLM 对话模型（必填）
-LLM_API_KEY=sk-your-key
-LLM_BASE_URL=https://api.deepseek.com/v1
-LLM_MODEL=deepseek-chat
-
-# Vision 视觉模型（可选）
-VISION_API_KEY=
-VISION_BASE_URL=
-VISION_MODEL=
-
-# Embedding 向量模型（可选，用于 FAISS）
-EMBEDDING_API_KEY=
-EMBEDDING_BASE_URL=
-EMBEDDING_MODEL=text-embedding-3-small
-
-# 天气服务（可选）
-WEATHER_API_PROVIDER=qweather
-WEATHER_API_KEY=
-
-# 腾讯云短信（可选）
-SMS_SECRET_ID=
-SMS_SECRET_KEY=
-SMS_SDK_APP_ID=
-SMS_SIGN_NAME=
-SMS_TEMPLATE_ID=
-SMS_REGION=ap-guangzhou
+```bash
+# Windows
+copy .env.example .env
+# macOS / Linux
+cp .env.example .env
 ```
 
-### 3. 构建知识库（可选，需要 Embedding API）
+然后编辑 `.env`，至少填写 `LLM_API_KEY`（未配置时后端会明确报错退出，这是预期行为）。其余可选项见 `.env.example` 内注释。
+
+### 4. 构建知识库（可选）
+
+需要 Embedding API；不构建时系统会自动回退到无需向量的关键词检索，不影响启动。
 
 ```bash
 python knowledge/build_agriculture_rag.py
-python knowledge/build_faiss_rag.py
 ```
 
-### 4. 启动
+### 5. 启动
 
 ```bash
-# 一键启动后端 + 前端
-python app/start.py all
+# 后端 + 新版 React 前端（推荐）
+python app/start.py all next
 
-# 或分别启动
+# 后端 + 原版 Streamlit 前端
+python app/start.py all streamlit
+
+# 也可以分别启动
 python app/start.py backend # 终端 1: FastAPI :18001
-python app/start.py web # 终端 2: Streamlit :8501
+python app/start.py web next # 终端 2: 新版前端
+python app/start.py web streamlit # 终端 2: Streamlit :8501
 ```
+
+首次启动会自动创建 `data/agriculture.db` 和运行时目录，无需手动准备数据文件。
 
 ---
 

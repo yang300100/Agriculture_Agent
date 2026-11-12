@@ -2221,6 +2221,246 @@ button:disabled {
   max-height: 180px;
   overflow-y: auto;
 }
+
+/* 哥哥，业务卡沿用青禾的色彩，观测、参数与确认分区呈现。 */
+.message > div {
+  min-width: 0;
+}
+.chat-business-cards {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  width: min(480px, 100%);
+}
+.chat-business-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #d2dfd7;
+  border-left: 3px solid var(--green-600);
+  border-radius: 4px 12px 12px 4px;
+  background: var(--white);
+  color: var(--ink-700);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.chat-business-card > header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.chat-business-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--mint-50);
+  color: var(--forest-800);
+}
+.chat-business-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.chat-business-card h3 {
+  margin: 0;
+  color: var(--ink-900);
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 1.5;
+}
+.chat-business-card p {
+  margin: 7px 0;
+}
+.chat-business-card header p {
+  margin: 2px 0 0;
+  color: var(--ink-500);
+  font-size: 11px;
+}
+.chat-card-device-id {
+  display: block;
+  font-size: 10px;
+}
+.chat-card-refresh {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--white);
+  color: var(--ink-500);
+}
+.chat-card-refresh:hover {
+  background: var(--mint-50);
+  color: var(--forest-800);
+}
+.chat-card-refresh svg,
+.chat-card-actions svg {
+  width: 15px;
+  height: 15px;
+}
+.chat-card-statuses,
+.chat-card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.chat-business-card .chat-card-observed,
+.chat-business-card .chat-card-muted {
+  color: var(--ink-500);
+  font-size: 11px;
+}
+.chat-card-details {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.chat-card-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  color: var(--forest-800);
+  font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+}
+.chat-card-details summary::-webkit-details-marker {
+  display: none;
+}
+.chat-card-details summary svg {
+  width: 15px;
+  height: 15px;
+}
+.chat-card-details[open] summary svg {
+  transform: rotate(180deg);
+}
+.chat-card-parameters,
+.chat-task-times {
+  display: grid;
+  gap: 6px;
+  margin: 9px 0;
+}
+.chat-card-parameters > div,
+.chat-task-times > div {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+  align-items: baseline;
+}
+.chat-card-parameters dt,
+.chat-task-times dt {
+  color: var(--ink-500);
+}
+.chat-card-parameters dd,
+.chat-task-times dd {
+  margin: 0;
+  color: var(--ink-900);
+}
+.chat-card-pending,
+.chat-card-prepare,
+.chat-task-device {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.chat-card-pending-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  color: var(--forest-800);
+}
+.chat-card-pending-title svg {
+  width: 17px;
+  height: 17px;
+}
+.chat-card-pending-title span {
+  margin-left: auto;
+  color: var(--ink-700);
+}
+.chat-card-prepare {
+  display: grid;
+  gap: 9px;
+}
+.chat-card-prepare label {
+  max-width: 240px;
+  font-size: 11px;
+}
+.chat-card-prepare input,
+.chat-card-prepare select {
+  min-height: 37px;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+.chat-card-prepare > p,
+.chat-card-param-editor > p {
+  margin: 0;
+  color: var(--ink-500);
+  font-size: 11px;
+}
+.chat-business-card .primary-button,
+.chat-business-card .secondary-button {
+  min-height: 35px;
+  padding: 7px 11px;
+  border-radius: 8px;
+  box-shadow: none;
+  font-size: 11px;
+}
+.chat-card-param-editor {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.chat-card-param-editor textarea {
+  font-size: 12px;
+}
+.chat-business-card .chat-card-warning,
+.chat-card-uncertain {
+  padding: 9px 11px;
+  border-radius: 7px;
+  background: var(--amber-100);
+  color: #80541e;
+  font-size: 11px;
+}
+.chat-card-uncertain {
+  margin-top: 10px;
+}
+.chat-card-uncertain p {
+  margin: 0 0 8px;
+}
+.chat-business-card .chat-card-error {
+  color: var(--red-600);
+  font-size: 11px;
+}
+.chat-business-card .chat-card-feedback {
+  color: var(--forest-700);
+  font-size: 11px;
+}
+.chat-task-card {
+  border-left-color: var(--amber-500);
+}
+.chat-task-card .chat-business-icon {
+  background: var(--amber-100);
+  color: #80541e;
+}
+@media (max-width: 600px) {
+  .chat-business-card {
+    padding: 13px;
+  }
+  .chat-card-actions > button {
+    flex: 1 1 auto;
+  }
+  .chat-card-parameters > div,
+  .chat-task-times > div {
+    grid-template-columns: minmax(72px, 0.8fr) minmax(0, 1.2fr);
+    gap: 8px;
+  }
+}
 .chat-card .chat-pending-list > div {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }

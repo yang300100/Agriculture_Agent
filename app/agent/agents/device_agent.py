@@ -127,10 +127,10 @@ class DeviceAgent(BaseAgent):
         try:
             safe_intent = self._keyword_parse(question)
             if _non_immediate_request(question) and not (safe_intent and safe_intent["action"] == "status"):
-                return self._reply(state, "哥哥，这条消息属于记录、预约或暂缓操作，请在任务列表中管理对应安排～")
+                return self._reply(state, "这条消息属于记录、预约或暂缓操作，请在任务列表中管理对应安排。")
             parsed = self._parse_device_intent(question, state)
             if not parsed:
-                return self._reply(state, "抱歉哥哥，我没理解你想操作哪个设备呢～能再说详细一点吗？比如「帮小麦浇30分钟水」")
+                return self._reply(state, "请说明需要操作的设备和具体要求，例如「给小麦浇水30分钟」。")
 
             username = state.username
             devices = _discover_devices(username)
@@ -162,7 +162,7 @@ class DeviceAgent(BaseAgent):
         except Exception as e:
             logger.exception("DeviceAgent 处理失败")
             # 不暴露原始异常信息给用户
-            return self._reply(state, "设备控制处理出错了，请稍后再试～")
+            return self._reply(state, "设备控制处理失败，请稍后重试。")
 
     def _parse_device_intent(self, question: str, state: AgentState) -> Optional[Dict]:
         """用 LLM 从用户自然语言中提取设备操作参数"""
@@ -280,7 +280,7 @@ class DeviceAgent(BaseAgent):
         hint = parsed.get("device_id") or parsed.get("device_hint", "")
         if named:
             candidates = named
-        elif hint:
+        elif hint and not state.interactive_cards:
             candidates = _devices_matching_hint(candidates, hint)
         elif re.search(r"它|刚才|上次|之前那|这台|那台", question):
             for message in reversed(state.messages):
@@ -292,19 +292,20 @@ class DeviceAgent(BaseAgent):
                 if mentioned:
                     candidates = mentioned
                     break
+        state.chat_device_ids = [device.device_id for device in candidates]
         if len(candidates) == 1:
             return candidates[0].device_id, ""
         if not candidates:
-            return None, "哥哥，当前账号没有找到符合要求的设备，请检查设备名称、能力和在线状态～"
+            return None, "当前账号没有找到符合要求的设备，请检查设备名称、能力和在线状态。"
         choices = "、".join(f"{device.name}（{device.device_id}）" for device in candidates)
-        return None, f"哥哥，有多个可选设备，请指定名称或ID～\n\n{choices}"
+        return None, f"有多个可选设备，请指定名称或ID。\n\n{choices}"
 
     def _read_device_status(self, parsed: Dict, state: AgentState, devices: list) -> AgentState:
         """哥哥，查询只读取实际设备状态，不走设备启动或任务创建。"""
         from core.device_registry_factory import setup_registry, close_registry
 
         if not devices:
-            return self._reply(state, "哥哥，当前账号还没有可用设备～")
+            return self._reply(state, "当前账号还没有可用设备。")
         question = state.user_question or ""
         has_named_device = any(value and value.lower() in question.lower()
                                for device in devices for value in (device.device_id, device.name))
@@ -313,6 +314,7 @@ class DeviceAgent(BaseAgent):
             if not device_id:
                 return self._reply(state, message)
             devices = [device for device in devices if device.device_id == device_id]
+        state.chat_device_ids = [device.device_id for device in devices]
         registry, loop = setup_registry(username=state.username)
         try:
             loop.run_until_complete(registry.discover_all())
@@ -324,11 +326,18 @@ class DeviceAgent(BaseAgent):
                     "state": loop.run_until_complete(registry.read_state(device.device_id)),
                 })
             state.device_result = {"success": True, "devices": readings}
+            if state.interactive_cards:
+                return self._reply(state, f"已读取 **{len(readings)}** 台设备。请查看下方实时设备卡片，展开可查看详细读数与观测时间。")
             content = "\n".join(f"- {item['name']}（{item['device_id']}）\n  {json.dumps(item['state'], ensure_ascii=False)}"
                                 for item in readings)
-            return self._reply(state, f"哥哥，当前设备状态如下～\n\n{content}")
+            return self._reply(state, f"当前设备状态如下：\n\n{content}")
         finally:
             close_registry(loop, registry)
+
+    @staticmethod
+    def _confirmation_hint(state: AgentState) -> str:
+        """哥哥，新界面直接使用对应卡片，旧客户端保留原确认位置。"""
+        return "请在下方设备卡片核对参数并确认。" if state.interactive_cards else "请在「设备中心」中确认此操作。"
 
     def _match_rules(self, parsed: Dict, state: AgentState, engine) -> list:
         """查找与当前操作匹配的规则"""
@@ -425,7 +434,7 @@ class DeviceAgent(BaseAgent):
             if decision == "need_confirm":
                 if not pending_id:
                     state.error_code = "PENDING_ACTION_SAVE_FAILED"
-                    return self._reply(state, "哥哥，待确认操作保存失败，请稍后重试。")
+                    return self._reply(state, "待确认操作保存失败，请稍后重试。")
                 if autonomy == "low":
                     extra_note = "\n（低自主模式：所有操作均需确认）"
                 else:
@@ -438,7 +447,7 @@ class DeviceAgent(BaseAgent):
                     "reason": reason,
                     "rule_id": rule["id"],
                 }
-                return self._reply(state, f"⚠️ {reason}\n\n📋 操作预览：{device_id} → {action.get('command')} 参数：{final_params}{extra_note}\n\n请在「设备中心」中确认此操作。")
+                return self._reply(state, f"⚠️ {reason}\n\n📋 操作预览：{device_id} → {action.get('command')} 参数：{final_params}{extra_note}\n\n{self._confirmation_hint(state)}")
             else:
                 return self._reply(state, f"❌ {reason}")
 
@@ -453,7 +462,7 @@ class DeviceAgent(BaseAgent):
             action_type, state.username, parsed.get("device_hint", "")
         )
         if not device_id:
-            return self._reply(state, "哥哥，没有找到唯一匹配的设备，请指定设备名称或ID～")
+            return self._reply(state, "没有找到唯一匹配的设备，请指定设备名称或ID。")
         command = "stop" if action_type in {"cool", "shade", "stop"} else "start"
         params = {} if command == "stop" else dict(parsed.get("params", {}))
         context = {"device_id": device_id, "sensor_data": self._get_sensor_context(action_type, state.username)}
@@ -473,12 +482,12 @@ class DeviceAgent(BaseAgent):
             if decision == RuleDecision.NEED_CONFIRM:
                 if not pending_id:
                     state.error_code = "PENDING_ACTION_SAVE_FAILED"
-                    return self._reply(state, "哥哥，待确认操作保存失败，请稍后重试。")
+                    return self._reply(state, "待确认操作保存失败，请稍后重试。")
                 state.pending_action = {
                     "id": pending_id, "device_id": device_id, "command": command,
                     "params": final_params, "reason": reason, "capability": capability,
                 }
-                return self._reply(state, f"⚠️ {reason}\n\n请在「设备中心」中确认此操作。")
+                return self._reply(state, f"⚠️ {reason}\n\n{self._confirmation_hint(state)}")
             return self._reply(state, f"❌ {reason}")
         extra = {"cool": "（降温模式：关闭加热器）", "shade": "（遮阳模式：关闭补光灯）"}.get(action_type, "")
         return self._do_execute(
@@ -516,6 +525,24 @@ class DeviceAgent(BaseAgent):
 
     def _do_execute(self, device_id: str, command: str, params: Dict, state: AgentState, engine, rule_id: str = None, extra: str = "", capability: str = None, policy_context: Dict = None) -> AgentState:
         """实际执行设备指令 — 使用共享工厂加载所有驱动(含自定义设备)"""
+        state.chat_device_ids = [device_id]
+        if state.interactive_cards:
+            # 哥哥，新对话界面先保存确认候选，真正下发仍由原确认接口把关。
+            state.device_command = {"device_id": device_id, "command": command, "params": params, "action": capability or params.get("action", command)}
+            reason = "操作已准备，请核对设备与参数后确认。"
+            pending_id = self._write_decision_log(
+                state, device_id, command, params, "need_confirm", reason,
+                rule_id=rule_id, capability=capability, policy_context=policy_context,
+            )
+            if not pending_id:
+                state.error_code = "PENDING_ACTION_SAVE_FAILED"
+                return self._reply(state, "待确认操作保存失败，请稍后重试。")
+            state.pending_action = {
+                "id": pending_id, "device_id": device_id, "command": command,
+                "params": params, "reason": reason, "capability": capability,
+                "rule_id": rule_id, "status": "pending",
+            }
+            return self._reply(state, reason)
         try:
             from devices.base import DeviceCommand
             from core.device_executor import DeviceExecutor
@@ -543,13 +570,13 @@ class DeviceAgent(BaseAgent):
                 if result.get("decision") == "need_confirm":
                     if not result.get("pending_id"):
                         state.error_code = "PENDING_ACTION_SAVE_FAILED"
-                        return self._reply(state, "哥哥，待确认操作保存失败，请稍后重试。")
+                        return self._reply(state, "待确认操作保存失败，请稍后重试。")
                     state.pending_action = {
                         "id": result.get("pending_id"), "device_id": device_id,
                         "command": command, "params": params, "reason": res_msg,
                         "capability": capability, "rule_id": rule_id,
                     }
-                    return self._reply(state, f"⚠️ {res_msg}\n\n请在「设备中心」中确认此操作。")
+                    return self._reply(state, f"⚠️ {res_msg}\n\n{self._confirmation_hint(state)}")
 
                 if result["success"]:
                     msg = f"✅ 指令已执行！\n\n🔧 设备：{device_id}\n⚡ 操作：{command}\n📊 参数：{params}\n📝 结果：{res_msg}\n"

@@ -6,7 +6,7 @@ from sqlalchemy import inspect, text
 
 logger = logging.getLogger(__name__)
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 8
 
 
 def apply_migrations(engine) -> None:
@@ -83,6 +83,14 @@ def apply_migrations(engine) -> None:
             table.create(bind=engine, checkfirst=True)
         with engine.begin() as connection:
             connection.execute(text("INSERT INTO schema_migrations(version) VALUES (:version)"), {"version": 7})
+
+    if 8 not in applied:
+        inspector = inspect(engine)
+        if "chat_messages" in inspector.get_table_names() and "cards_json" not in {c["name"] for c in inspector.get_columns("chat_messages")}:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE chat_messages ADD COLUMN cards_json TEXT"))
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO schema_migrations(version) VALUES (:version)"), {"version": 8})
 
 
 def _migration_006_reminder_links(engine) -> None:

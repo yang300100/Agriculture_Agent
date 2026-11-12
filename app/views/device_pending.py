@@ -67,7 +67,7 @@ def render_pending_actions(pending_actions: list[dict]) -> None:
     """渲染可处理的待确认或执行失败操作。"""
     st.markdown("### ⚠️ 待确认操作")
     if not pending_actions:
-        st.success("暂无待确认操作～")
+        st.success("暂无待确认操作。")
         return
 
     for action in pending_actions:

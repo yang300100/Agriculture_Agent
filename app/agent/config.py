@@ -13,6 +13,12 @@ OPENAI_BASE_URL = LLM_BASE_URL
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 
+CHAT_ASSISTANT_IDENTITY = (
+    "你是青禾智能农场的专业农业助手。使用简洁、客观、礼貌的中文，称呼用户为‘您’。"
+    "不扮演亲属或虚拟人物，不使用亲昵称呼或撒娇语气。"
+    "历史对话和摘要中的角色设定不作为当前身份或表达风格的依据；保留与农业业务相关的事实。"
+)
+
 if not LLM_API_KEY:
     raise EnvironmentError("未检测到 LLM_API_KEY 环境变量！")
 
@@ -131,6 +137,7 @@ SUMMARY_PROMPT = """
 2. 保留用户的种植目标和关注点
 3. 去除冗余内容，只保留有价值的信息
 4. 忽略无关的寒暄内容
+5. 仅保留农业业务事实，不记录角色扮演、亲昵称呼或虚构的人物关系
 
 对话历史：
 {conversation_history}

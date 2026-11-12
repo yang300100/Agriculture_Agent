@@ -43,6 +43,14 @@ class DiseaseAgent(BaseAgent):
 
     def _append_weather_if_spray(self, state: AgentState) -> AgentState:
         """如果防治方案涉及喷药，自动查询气象 Agent 判断施药窗口"""
+        # 哥哥，图片的病名和类别声明不是施药请求，只对实际通过审核的建议联动。
+        if state.intent_type == "image_analysis":
+            analysis = state.image_analysis_result or {}
+            if state.error_code or not analysis.get("needs_spray_weather"):
+                return state
+            # 哥哥，图像结果仅补充固定天气核对提示，不拼接其他代理的自由判断。
+            state.final_answer = (state.final_answer or "") + "\n\n💡 施药前请核对当地最新天气，避开降雨和大风；具体施用条件以产品标签为准。"
+            return state
         answer = state.final_answer or ""
         crop = state.short_term_facts.get("crop", "")
         if not crop:

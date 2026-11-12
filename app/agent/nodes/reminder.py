@@ -165,9 +165,9 @@ def reminder_management_node(state: AgentState) -> AgentState:
                     parsed["device_hint"] = user_question
                     task_data.update(task_device_fields(parsed, username))
                 task = tracker.create_task(task_data)
-                if frequency == "单次":
-                    system.storage.update_reminder(reminder.id, {"task_id": task.id})
-                    reminder.task_id = task.id
+                state.chat_task_ids.append(str(task.id))
+                system.storage.update_reminder(reminder.id, {"task_id": task.id})
+                reminder.task_id = task.id
             except Exception:
                 # 哥哥，卡片保存失败时撤回本次提醒，避免只完成了一半。
                 system.delete_reminder(reminder.id)
@@ -188,12 +188,19 @@ def reminder_management_node(state: AgentState) -> AgentState:
             confirmation += f"**提醒时间**: {reminder.next_trigger}\n"
             confirmation += f"**频率**: {reminder.frequency}\n"
             if frequency != "单次":
-                confirmation += "哥哥，循环提醒会继续按周期通知；日历任务仅代表这一次安排。\n"
+                confirmation += "循环提醒会继续按周期通知；日历任务仅代表这一次安排。\n"
             confirmation += f"**已创建任务**: {task.title}\n"
             confirmation += f"**通知方式**: {', '.join(channels)}\n\n"
             if "sms" in channels:
                 confirmation += f"📱 短信将发送到: {user_phone}\n\n"
-            confirmation += "哥哥，可以在「农事日历」里查看和管理任务。"
+            confirmation += "您可以在「农事日历」里查看和管理任务。"
+            if state.interactive_cards:
+                confirmation = (
+                    f"已为 **{reminder.crop}** 创建 **{reminder.reminder_type}** 预约。\n\n"
+                    f"- **提醒时间**：{reminder.next_trigger}\n"
+                    f"- **频率**：{reminder.frequency}\n\n"
+                    "请在下方任务卡片查看预约详情。"
+                )
 
             state.final_answer = confirmation
             state.messages.append(AIMessage(content=confirmation))
@@ -201,7 +208,7 @@ def reminder_management_node(state: AgentState) -> AgentState:
         except Exception:
             logger.exception("对话任务创建失败")
             state.error_code = "TASK_CREATION_FAILED"
-            state.final_answer = "哥哥，任务和提醒未能保存，请稍后重试。"
+            state.final_answer = "任务和提醒未能保存，请稍后重试。"
             state.messages.append(AIMessage(content=state.final_answer))
 
     return state

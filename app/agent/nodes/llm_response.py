@@ -19,6 +19,13 @@ _stream_token_callback: contextvars.ContextVar = contextvars.ContextVar(
 
 def _stream_invoke(llm, messages, state: AgentState = None):
     """智能调用 LLM：检测到流式回调时使用 streaming，否则用普通 invoke"""
+    messages = list(messages)
+    if messages and isinstance(messages[0], SystemMessage):
+        messages[0] = messages[0].model_copy(update={
+            "content": f"{CHAT_ASSISTANT_IDENTITY}\n\n{messages[0].content}",
+        })
+    else:
+        messages.insert(0, SystemMessage(content=CHAT_ASSISTANT_IDENTITY))
     callback = _stream_token_callback.get(None)
     if callback is None:
         return llm.invoke(messages)

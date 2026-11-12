@@ -35,6 +35,13 @@ def classify_intent(state: AgentState) -> AgentState:
     state.progress_message = "正在分析您的意图..."
     user_question = state.user_question or ""
 
+    # 哥哥，附件先交给识别节点，文字中的任务或设备词不能绕开图片结果校验。
+    if state.has_image:
+        state.intent_type = "image_analysis"
+        state.need_rag = False
+        state.need_clarification = False
+        return state
+
     if re.search(r"(?:查看|查询|看看|列出|显示).*?(?:任务|待办)", user_question):
         state.intent_type = "progress_tracking"
         state.need_rag = False
@@ -58,12 +65,6 @@ def classify_intent(state: AgentState) -> AgentState:
                           "crop_monitoring", "image_analysis"}
         if state.intent_type in no_rag_intents:
             state.need_rag = False
-        return state
-
-    # 图片分析意图判断（优先）
-    if state.has_image:
-        state.intent_type = "image_analysis"
-        state.need_rag = True
         return state
 
     # 通用意图快速判断（关键词匹配 — 仅用于不会误判的安全意图）

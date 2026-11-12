@@ -8,7 +8,7 @@ def render_profile_page():
     st.markdown("管理您的个人种植档案。")
     profile = api("/api/profile")
     if profile is None:
-        st.error("哥哥，档案读取失败，请稍后重试。")
+        st.error("档案读取失败，请稍后重试。")
         return
     with st.form("profile_page_form"):
         c1, c2 = st.columns(2)
@@ -54,7 +54,7 @@ def render_profile_page():
                 "autonomy_level": autonomy_level,
             })
             if not result or not result.get("success"):
-                st.error("哥哥，档案保存失败，设置尚未更新。")
+                st.error("档案保存失败，设置尚未更新。")
                 return
             st.session_state.user_region = region
             st.session_state.user_soil_type = soil_type if soil_type != "请选择" else ""

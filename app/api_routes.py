@@ -126,6 +126,7 @@ class ChatRequest(BaseModel):
     image_data: Optional[str] = None
     image_mime_type: Optional[str] = None
     username: str = "default"
+    interactive_cards: bool = PydanticField(default=False, strict=True)
 
 class AutonomyScheduleData(BaseModel):
     """哥哥，排期只改变时间，不能偷偷更换设备与动作。"""
@@ -415,6 +416,8 @@ def register_routes(app: FastAPI):
             request.scope.get("query_string", b"").decode("utf-8"),
             keep_blank_values=True,
         )
+        if sum(key == "username" for key, _ in query_items) > 1:
+            return JSONResponse(status_code=400, content={"detail": "用户名参数不能重复"})
         username = next(
             (value for key, value in query_items if key == "username"),
             None,
@@ -552,6 +555,7 @@ def register_routes(app: FastAPI):
             messages=history,
             user_profile=profile,
             username=resolved_username,
+            interactive_cards=req.interactive_cards,
         )
 
         if req.image_data:
@@ -589,13 +593,17 @@ def register_routes(app: FastAPI):
             except Exception:
                 facts[k] = str(v)
 
+        from app.chat_cards import build_chat_cards
+        cards = build_chat_cards(resolved_username, state) if req.interactive_cards and not error_code else []
         return {
             "final_answer": answer,
+            "image_analysis_result": state.image_analysis_result or {},
             "short_term_facts": facts,
             "error_code": error_code,
             "device_command": state.device_command,
             "device_result": state.device_result,
             "pending_action": state.pending_action,
+            "cards": cards,
         }
 
     # ── 对话历史 ──────────────────────────────────────
@@ -1577,6 +1585,21 @@ def register_routes(app: FastAPI):
             connection = {}
         if not isinstance(connection, dict):
             raise ValueError("connection 必须是 JSON 对象")
+        if driver == "camera":
+            camera_type = str(connection.get("camera_type", "usb")).strip().lower()
+            if camera_type not in ("usb", "ip", "esp32cam"):
+                raise ValueError("摄像头类型必须是 usb、ip 或 esp32cam")
+            camera_source = connection.get("source")
+            if (isinstance(camera_source, bool)
+                    or not isinstance(camera_source, (str, int))
+                    or not str(camera_source).strip()):
+                raise ValueError("请明确填写摄像头来源，本机摄像头可填写索引 0")
+            camera_source = str(camera_source).strip()
+            if camera_type == "usb" and camera_source.startswith("-") and camera_source[1:].isdigit():
+                raise ValueError("本机摄像头索引不能为负数")
+            if camera_type != "usb" and not camera_source.startswith(("rtsp://", "rtsps://", "http://", "https://")):
+                raise ValueError("网络摄像头必须填写有效的视频流地址")
+            connection = {**connection, "camera_type": camera_type, "source": camera_source}
         if driver == "mqtt" and any(char in device_id for char in "+#"):
             raise ValueError("MQTT 设备ID不能包含 + 或 #")
         if driver == "http" and not str(connection.get("base_url", "")).startswith(
@@ -1605,6 +1628,8 @@ def register_routes(app: FastAPI):
         ]
         if invalid_capabilities:
             raise ValueError(f"不支持的设备能力: {invalid_capabilities[0]}")
+        if driver == "modbus" and "capture" in capabilities:
+            raise ValueError("Modbus 驱动不支持传输摄像头图像，请使用 HTTP 或 camera 驱动")
 
         sensors = source.get("sensors", [])
         if not isinstance(sensors, list) or any(
@@ -1885,7 +1910,8 @@ def register_routes(app: FastAPI):
                 if "capture" not in device_caps:
                     return {"success": False, "error": f"设备 '{device_id}' 不是摄像头，不支持拍照功能"}
 
-                cmd = DeviceCommand(command="capture", params={}, timeout_ms=15000)
+                # 定时预览只读取画面，巡检中的显式 capture 仍按驱动默认保存照片。
+                cmd = DeviceCommand(command="capture", params={"save": False}, timeout_ms=15000)
                 result = loop.run_until_complete(registry.execute(device_id, cmd))
 
                 if not result.success:
@@ -2089,6 +2115,10 @@ def register_routes(app: FastAPI):
     # ── 操作管理：逐步拆出超大路由文件 ─────────────────
     from app.routes.device_actions import register_device_action_routes
     register_device_action_routes(app)
+    from app.routes.chat_cards import register_chat_card_routes
+    register_chat_card_routes(app)
+    from app.routes.cameras import register_camera_routes
+    register_camera_routes(app)
 
     # ── 巡检日志 ──────────────────────────────────────
 

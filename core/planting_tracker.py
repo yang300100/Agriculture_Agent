@@ -669,7 +669,7 @@ class PlantingTracker:
         if not row or row.user_id != self._uid:
             return {"success": False, "message": "未找到进度记录"}
         if row.start_date and row.start_date > datetime.now().date():
-            return {"success": False, "message": "哥哥，计划尚未到开始日期，不能提前推进阶段。"}
+            return {"success": False, "message": "计划尚未到开始日期，不能提前推进阶段。"}
 
         progress = self._effective_progress(self._load_progress_by_id(str(row.id)))
         current_stage = progress.stage_number

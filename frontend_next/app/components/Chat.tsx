@@ -17,12 +17,24 @@ import {
   X,
 } from "lucide-react";
 import { get, post, remove } from "../api";
-import type { ChatMessage, JsonMap, Profile, Session } from "../types";
+import type {
+  ChatCardReference,
+  ChatMessage,
+  JsonMap,
+  Profile,
+  Session,
+} from "../types";
 import { Card, Empty, ErrorState, PageHeader } from "./Common";
 import { MarkdownContent } from "./MarkdownContent";
 import { actionAllowed } from "../autonomy-status";
 import { shouldSendChatKey } from "../chat-input";
 import { useVisiblePolling } from "../use-visible-polling";
+import {
+  createChatRequestGuard,
+  inlinePendingIds,
+  normalizeChatCards,
+} from "../chat-cards";
+import { ChatCards } from "./ChatCards";
 
 const prompts = [
   "帮我安排本周的小麦农事",
@@ -41,6 +53,9 @@ export function ChatPage() {
     mime: string;
     name: string;
   } | null>(null);
+  const [imageReading, setImageReading] = useState("");
+  const imageSelection = useRef(0);
+  const imageReader = useRef<FileReader | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -49,63 +64,109 @@ export function ChatPage() {
   const endRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const compositionEndedAt = useRef(0);
+  const requestGuard = useRef(createChatRequestGuard());
+  const epoch = useRef(0);
+  const [viewEpoch, setViewEpoch] = useState(0);
+  const messagesRef = useRef(messages);
+  const sessionIdRef = useRef(sessionId);
+  const mounted = useRef(true);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  messagesRef.current = messages;
+  sessionIdRef.current = sessionId;
+
+  function updateMessages(next: ChatMessage[]) {
+    messagesRef.current = next;
+    setMessages(next);
+  }
 
   async function loadSessions() {
     try {
-      setSessions(await get<Session[]>("/api/chat/sessions?limit=30"));
+      const rows = await get<Session[]>("/api/chat/sessions?limit=30");
+      if (mounted.current) setSessions(rows);
     } catch {
-      setSessions([]);
+      if (mounted.current) setSessions([]);
     }
   }
   async function loadPendingActions() {
     const actions = await get<JsonMap[]>("/api/actions/pending");
+    if (!mounted.current) return;
     setPendingActions(
-      actions.filter((action) => ["pending", "failed", "uncertain"].includes(action.status)),
+      actions.filter((action) =>
+        ["pending", "failed", "uncertain"].includes(action.status),
+      ),
     );
   }
   useEffect(() => {
+    mounted.current = true;
     loadSessions();
     loadPendingActions().catch(() => null);
     get<Profile>("/api/profile")
-      .then(setProfile)
+      .then((next) => {
+        if (mounted.current) setProfile(next);
+      })
       .catch(() => null);
+    return () => {
+      mounted.current = false;
+      epoch.current += 1;
+      requestGuard.current.invalidate();
+      invalidateImageRead();
+    };
   }, []);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
   useVisiblePolling(loadPendingActions, 5000, !loading && !deciding);
 
-  async function saveMessages(completed: ChatMessage[]) {
-    try {
-      const saved = await post<{ id: string }>("/api/chat/sessions", {
-        session_id: sessionId,
-        messages: completed.map(({ role, content }) => ({ role, content })),
-      });
-      if (saved.id) setSessionId(saved.id);
-      await loadSessions();
-    } catch {
-      setError("操作已完成，但对话记录保存失败，请保留当前页面。");
-    }
+  function saveMessages(completed: ChatMessage[], originEpoch = epoch.current) {
+    const request = saveQueue.current.then(async () => {
+      if (!mounted.current || epoch.current !== originEpoch) return;
+      try {
+        const saved = await post<{ id: string }>("/api/chat/sessions", {
+          session_id: sessionIdRef.current,
+          messages: completed.map(({ role, content, cards }) => ({
+            role,
+            content,
+            cards: normalizeChatCards(cards),
+          })),
+        });
+        if (!mounted.current || epoch.current !== originEpoch) return;
+        if (saved.id) {
+          sessionIdRef.current = saved.id;
+          setSessionId(saved.id);
+        }
+        await loadSessions();
+      } catch {
+        if (mounted.current && epoch.current === originEpoch)
+          setError("操作已完成，但对话记录保存失败，请保留当前页面。");
+      }
+    });
+    saveQueue.current = request;
+    return request;
   }
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const question = input.trim();
-    if ((!question && !image) || loading || deciding) return;
+    const sentImage = image;
+    if ((!question && !sentImage) || loading || deciding || imageReader.current)
+      return;
+    const token = requestGuard.current.begin();
+    if (!token) return;
+    const originEpoch = epoch.current;
     const nextMessages: ChatMessage[] = [
-      ...messages,
+      ...messagesRef.current,
       {
         role: "user",
         content: question || "请分析这张农作物图片",
-        image: image
+        image: sentImage
           ? {
-              name: image.name,
-              url: `data:${image.mime};base64,${image.data}`,
+              name: sentImage.name,
+              url: `data:${sentImage.mime};base64,${sentImage.data}`,
             }
           : undefined,
       },
     ];
-    setMessages(nextMessages);
+    updateMessages(nextMessages);
     setInput("");
     setLoading(true);
     setError("");
@@ -114,17 +175,20 @@ export function ChatPage() {
         final_answer: string;
         error_code?: string;
         pending_action?: JsonMap;
+        cards?: unknown;
       }>("/api/chat", {
         user_question: question,
         messages: nextMessages.map(({ role, content }) => ({ role, content })),
         user_profile: profile || {},
-        image_data: image?.data,
-        image_mime_type: image?.mime,
+        image_data: sentImage?.data,
+        image_mime_type: sentImage?.mime,
+        interactive_cards: true,
       });
+      if (!requestGuard.current.isCurrent(token)) return;
       if (response.pending_action?.id) {
         const pending: JsonMap = {
           ...response.pending_action,
-          status: "pending",
+          status: response.pending_action.status || "pending",
         };
         setPendingActions((actions) => [
           ...actions.filter((action) => action.id !== pending.id),
@@ -135,37 +199,51 @@ export function ChatPage() {
         throw new Error(response.final_answer || "对话未返回有效回答，请重试");
       }
       const completed: ChatMessage[] = [
-        ...nextMessages,
-        { role: "assistant", content: response.final_answer || "已完成分析。" },
+        ...messagesRef.current,
+        {
+          role: "assistant",
+          content: response.final_answer || "已完成分析。",
+          cards: normalizeChatCards(response.cards),
+        },
       ];
-      setMessages(completed);
-      setImage(null);
-      await saveMessages(completed);
+      updateMessages(completed);
+      // 只收起这次发送的图片，下一张还要留给哥哥核对呢。
+      setImage((current) => (current === sentImage ? null : current));
+      await saveMessages(completed, originEpoch);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "对话请求失败");
+      if (requestGuard.current.isCurrent(token))
+        setError(reason instanceof Error ? reason.message : "对话请求失败");
     } finally {
-      await loadPendingActions().catch(() =>
-        setError(
-          (current) => current || "待确认操作读取失败，请到设备中心查看。",
-        ),
-      );
-      setLoading(false);
+      if (requestGuard.current.isCurrent(token)) {
+        await loadPendingActions().catch(() => {
+          if (requestGuard.current.isCurrent(token))
+            setError(
+              (current) => current || "待确认操作读取失败，请到设备中心查看。",
+            );
+        });
+        if (requestGuard.current.isCurrent(token)) setLoading(false);
+      }
+      requestGuard.current.finish(token);
     }
   }
 
   async function decideAction(id: string, accept: boolean) {
     if (deciding || loading) return;
+    const token = requestGuard.current.begin();
+    if (!token) return;
+    const originEpoch = epoch.current;
     setDeciding(id);
     setError("");
     try {
       const result = await post<JsonMap>(
-        `/api/actions/${id}/${accept ? "confirm" : "reject"}`,
+        `/api/actions/${encodeURIComponent(id)}/${accept ? "confirm" : "reject"}`,
       );
+      if (!requestGuard.current.isCurrent(token)) return;
       if (!result.success)
         throw new Error(result.message || result.error || "设备操作处理失败");
       const action = pendingActions.find((item) => item.id === id);
       const completed: ChatMessage[] = [
-        ...messages,
+        ...messagesRef.current,
         {
           role: "assistant",
           content: accept
@@ -173,34 +251,56 @@ export function ChatPage() {
             : `已拒绝 ${action?.device_id || "设备"} 的待确认操作。`,
         },
       ];
-      setMessages(completed);
-      await saveMessages(completed);
+      updateMessages(completed);
+      await saveMessages(completed, originEpoch);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "设备操作处理失败");
+      if (requestGuard.current.isCurrent(token))
+        setError(reason instanceof Error ? reason.message : "设备操作处理失败");
     } finally {
-      await loadPendingActions().catch(() =>
-        setError(
-          (current) => current || "待确认操作读取失败，请到设备中心查看。",
-        ),
-      );
-      setDeciding("");
+      if (requestGuard.current.isCurrent(token)) {
+        await loadPendingActions().catch(() => {
+          if (requestGuard.current.isCurrent(token))
+            setError(
+              (current) => current || "待确认操作读取失败，请到设备中心查看。",
+            );
+        });
+        if (requestGuard.current.isCurrent(token)) setDeciding("");
+      }
+      requestGuard.current.finish(token);
     }
   }
 
   async function openSession(id: string) {
     if (loading || deciding) return;
+    epoch.current += 1;
+    setViewEpoch(epoch.current);
+    clearImage();
+    updateMessages([]);
+    requestGuard.current.invalidate();
+    const token = requestGuard.current.begin();
+    if (!token) return;
     setLoading(true);
     try {
       const result = await get<{ messages: ChatMessage[] }>(
-        `/api/chat/sessions/${id}`,
+        `/api/chat/sessions/${encodeURIComponent(id)}`,
       );
+      if (!requestGuard.current.isCurrent(token)) return;
+      sessionIdRef.current = id;
       setSessionId(id);
-      setMessages(result.messages || []);
+      updateMessages(
+        (result.messages || []).map((message) => ({
+          ...message,
+          cards: normalizeChatCards(message.cards),
+        })),
+      );
+      setInput("");
       setError("");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "会话加载失败");
+      if (requestGuard.current.isCurrent(token))
+        setError(reason instanceof Error ? reason.message : "会话加载失败");
     } finally {
-      setLoading(false);
+      if (requestGuard.current.isCurrent(token)) setLoading(false);
+      requestGuard.current.finish(token);
     }
   }
 
@@ -212,37 +312,117 @@ export function ChatPage() {
       !window.confirm(`确定删除“${title}”及其中的全部消息吗？删除后无法恢复。`)
     )
       return;
+    const token = requestGuard.current.begin();
+    if (!token) return;
     setLoading(true);
     try {
-      await remove(`/api/chat/sessions/${id}`);
+      await remove(`/api/chat/sessions/${encodeURIComponent(id)}`);
+      if (!requestGuard.current.isCurrent(token)) return;
       if (id === sessionId) newSession();
       await loadSessions();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "会话删除失败");
+      if (requestGuard.current.isCurrent(token))
+        setError(reason instanceof Error ? reason.message : "会话删除失败");
     } finally {
-      setLoading(false);
+      if (requestGuard.current.isCurrent(token)) setLoading(false);
+      requestGuard.current.finish(token);
     }
   }
 
   function newSession() {
-    setMessages([]);
-    setSessionId(`new-${Date.now()}`);
-    setImage(null);
+    epoch.current += 1;
+    setViewEpoch(epoch.current);
+    requestGuard.current.invalidate();
+    updateMessages([]);
+    const id = `new-${Date.now()}`;
+    sessionIdRef.current = id;
+    setSessionId(id);
+    setLoading(false);
+    setDeciding("");
+    clearImage();
     setInput("");
     setError("");
   }
 
+  function updateCard(
+    messageIndex: number,
+    cardIndex: number,
+    reference: ChatCardReference,
+    originEpoch: number,
+  ) {
+    if (!mounted.current || originEpoch !== epoch.current) return;
+    const completed = messagesRef.current.map((message, index) => {
+      if (index !== messageIndex) return message;
+      const cards = normalizeChatCards(message.cards);
+      cards[cardIndex] = reference;
+      return { ...message, cards: normalizeChatCards(cards) };
+    });
+    updateMessages(completed);
+    void saveMessages(completed, originEpoch);
+  }
+
+  function invalidateImageRead() {
+    imageSelection.current += 1;
+    const reader = imageReader.current;
+    imageReader.current = null;
+    if (reader?.readyState === 1) reader.abort();
+  }
+
+  function clearImage() {
+    invalidateImageRead();
+    setImage(null);
+    setImageReading("");
+  }
+
   function chooseImage(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
+    event.target.value = "";
     if (!file) return;
+    clearImage();
+    setError("");
+    if (!file.type.startsWith("image/") || !file.size) {
+      setError("请选择有效且非空的图片文件。");
+      return;
+    }
+    const originEpoch = epoch.current;
+    const selection = imageSelection.current;
     const reader = new FileReader();
-    reader.onload = () =>
-      setImage({
-        data: String(reader.result).split(",")[1] || "",
-        mime: file.type,
-        name: file.name,
-      });
-    reader.readAsDataURL(file);
+    imageReader.current = reader;
+    setImageReading(file.name);
+    const isCurrent = () =>
+      mounted.current &&
+      originEpoch === epoch.current &&
+      selection === imageSelection.current &&
+      imageReader.current === reader;
+    const fail = (message: string) => {
+      if (!isCurrent()) return;
+      imageReader.current = null;
+      setImageReading("");
+      setError(message);
+    };
+    reader.onload = () => {
+      if (!isCurrent()) return;
+      const result =
+        typeof reader.result === "string"
+          ? /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/]+={0,2})$/i.exec(
+              reader.result,
+            )
+          : null;
+      if (!result || result[2].length % 4 !== 0) {
+        fail("图片读取失败，文件内容无效，请重新选择。");
+        return;
+      }
+      imageReader.current = null;
+      setImageReading("");
+      setImage({ data: result[2], mime: result[1], name: file.name });
+    };
+    reader.onerror = () => fail("图片读取失败，请重新选择。");
+    reader.onabort = () => fail("图片读取已中断，请重新选择。");
+    try {
+      reader.readAsDataURL(file);
+    } catch {
+      fail("图片读取失败，请重新选择。");
+    }
   }
 
   function voiceInput() {
@@ -251,10 +431,16 @@ export function ChatPage() {
       (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) return setError("当前浏览器不支持语音输入");
     const recognition = new SpeechRecognition();
+    const originEpoch = epoch.current;
     recognition.lang = "zh-CN";
-    recognition.onresult = (event: any) =>
-      setInput(event.results[0][0].transcript);
-    recognition.onerror = () => setError("没有识别到语音，请重试");
+    recognition.onresult = (event: any) => {
+      if (mounted.current && originEpoch === epoch.current)
+        setInput(event.results[0][0].transcript);
+    };
+    recognition.onerror = () => {
+      if (mounted.current && originEpoch === epoch.current)
+        setError("没有识别到语音，请重试");
+    };
     recognition.start();
   }
 
@@ -264,6 +450,11 @@ export function ChatPage() {
     utterance.lang = "zh-CN";
     speechSynthesis.speak(utterance);
   }
+
+  const linkedPending = inlinePendingIds(messages);
+  const unlinkedPendingActions = pendingActions.filter(
+    (action) => !linkedPending.has(String(action.id)),
+  );
 
   return (
     <>
@@ -384,6 +575,20 @@ export function ChatPage() {
                       message.content
                     )}
                   </div>
+                  {message.role === "assistant" && !!message.cards?.length && (
+                    <ChatCards
+                      key={`${viewEpoch}:${index}`}
+                      cards={message.cards}
+                      disabled={loading || !!deciding}
+                      onReferenceChange={(cardIndex, reference) =>
+                        updateCard(index, cardIndex, reference, viewEpoch)
+                      }
+                      onPendingChange={() => {
+                        if (viewEpoch === epoch.current)
+                          void loadPendingActions().catch(() => null);
+                      }}
+                    />
+                  )}
                   {message.role === "assistant" && (
                     <button
                       className="speak-button"
@@ -415,9 +620,9 @@ export function ChatPage() {
             {error && <ErrorState message={error} />}
             <div ref={endRef} />
           </div>
-          {pendingActions.length > 0 && (
+          {unlinkedPendingActions.length > 0 && (
             <div className="pending-list chat-pending-list">
-              {pendingActions.map((action) => (
+              {unlinkedPendingActions.map((action) => (
                 <div key={action.id}>
                   <div>
                     <b>待确认设备操作</b>
@@ -436,33 +641,42 @@ export function ChatPage() {
                     )}
                   </div>
                   {!actionAllowed(String(action.status)) ? (
-                    <small className="pending-error">执行结果不确定，请到设备中心只读核对；不会重复下发。</small>
-                  ) : (<>
-                  <button
-                    className="secondary-button"
-                    disabled={loading || !!deciding}
-                    onClick={() => decideAction(action.id, false)}
-                  >
-                    拒绝操作
-                  </button>
-                  <button
-                    className="primary-button"
-                    disabled={loading || !!deciding}
-                    onClick={() => decideAction(action.id, true)}
-                  >
-                    确认执行
-                  </button>
-                  </>)}
+                    <small className="pending-error">
+                      执行结果不确定，请到设备中心只读核对；不会重复下发。
+                    </small>
+                  ) : (
+                    <>
+                      <button
+                        className="secondary-button"
+                        disabled={loading || !!deciding}
+                        onClick={() => decideAction(action.id, false)}
+                      >
+                        拒绝操作
+                      </button>
+                      <button
+                        className="primary-button"
+                        disabled={loading || !!deciding}
+                        onClick={() => decideAction(action.id, true)}
+                      >
+                        确认执行
+                      </button>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
           )}
           <form className="composer" onSubmit={submit}>
-            {image && (
+            {(image || imageReading) && (
               <div className="image-chip">
                 <Camera />
-                <span>{image.name}</span>
-                <button type="button" onClick={() => setImage(null)}>
+                <span>{imageReading || image?.name}</span>
+                {imageReading && <small role="status">正在读取图片…</small>}
+                <button
+                  type="button"
+                  onClick={clearImage}
+                  aria-label="移除图片"
+                >
                   <X />
                 </button>
               </div>
@@ -517,7 +731,12 @@ export function ChatPage() {
               <button
                 className="send-button"
                 aria-label="发送消息"
-                disabled={loading || !!deciding || (!input.trim() && !image)}
+                disabled={
+                  loading ||
+                  !!deciding ||
+                  !!imageReading ||
+                  (!input.trim() && !image)
+                }
               >
                 <Send />
               </button>

@@ -88,6 +88,8 @@ def test_提醒及任务属于当前用户且约定明天时间(time_text, expec
     assert saved[0]["next_trigger"] == f"{tomorrow} {expected_time}"
     assert str(saved[0]["id"]) == str(state.reminders[0]["id"])
     assert PlantingTracker(str(tmp_path / username)).get_tasks()[0].end_date == tomorrow
+    assert not any(term in state.final_answer for term in ("哥哥", "妹妹", "Yuki", "～"))
+    assert state.messages[-1].content == state.final_answer
 
 
 def test_提醒节点已建任务后提取节点不再重复(tmp_path, monkeypatch):
@@ -119,6 +121,7 @@ def test_设备建议动态绑定且未发现设备也保留任务(device_id, tm
     tasks = PlantingTracker(str(tmp_path / username)).get_tasks()
     assert len(tasks) == 1
     assert tasks[0].device_id == device_id
+    assert not any(term in state.final_answer for term in ("哥哥", "妹妹", "Yuki", "～"))
     if device_id:
         assert tasks[0].device_command == "start"
         assert tasks[0].device_params == {"duration": 10}
@@ -179,6 +182,8 @@ def test_卡片写入失败撤回提醒并返回失败码(tmp_path, monkeypatch)
     assert state.error_code == "TASK_CREATION_FAILED"
     assert state.reminders == []
     assert ReminderSystem(username=state.username).storage.load_reminders() == []
+    assert not any(term in state.final_answer for term in ("哥哥", "妹妹", "Yuki", "～"))
+    assert state.messages[-1].content == state.final_answer
 
 
 def test_模型错误回答不会被再提取成任务(tmp_path, monkeypatch):

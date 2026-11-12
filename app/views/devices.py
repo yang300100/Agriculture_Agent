@@ -481,7 +481,7 @@ def render_devices_page():
                     st.rerun()
 
     if not devices:
-        st.info("暂无设备。请点击「添加设备」注册您的第一个设备～")
+        st.info("暂无设备。请点击「添加设备」注册您的第一个设备。")
     else:
         for dev in devices:
             state = dev.get("state", {})

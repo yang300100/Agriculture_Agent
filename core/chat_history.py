@@ -1,6 +1,7 @@
 """对话历史持久化模块 — SQLite 数据库存储"""
 
 import logging
+import json
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -47,9 +48,28 @@ class ChatHistoryStore:
                 "created_at": s.created_at.isoformat() if s.created_at else "",
                 "updated_at": s.updated_at.isoformat() if s.updated_at else "",
                 "message_count": len(s.messages) if s.messages else 0,
-                "messages": [{"role": m.role, "content": m.content} for m in (s.messages or [])],
+                "messages": [self._message_data(m) for m in (s.messages or [])],
             })
         return {"sessions": sessions}
+
+    def _message_data(self, message) -> Dict:
+        data = {"role": message.role, "content": message.content}
+        if message.role == "assistant" and message.cards_json:
+            try:
+                from app.chat_cards import sanitize_chat_cards
+                cards = sanitize_chat_cards(self.username, json.loads(message.cards_json))
+            except (TypeError, ValueError):
+                cards = []
+            if cards:
+                data["cards"] = cards
+        return data
+
+    def _cards_json(self, message: Dict) -> Optional[str]:
+        if message.get("role") != "assistant" or not message.get("cards"):
+            return None
+        from app.chat_cards import sanitize_chat_cards
+        cards = sanitize_chat_cards(self.username, message["cards"])
+        return json.dumps(cards, ensure_ascii=False) if cards else None
 
     def _save(self, data: Dict):
         """全量替换DB中的会话"""
@@ -69,6 +89,7 @@ class ChatHistoryStore:
                     session_id=sid,
                     role=m.get("role", "user"),
                     content=m.get("content", ""),
+                    cards_json=self._cards_json(m),
                 )
 
     # ── 公共接口 ──────────────────────────────────
@@ -85,6 +106,7 @@ class ChatHistoryStore:
                     break
 
         now = datetime.now()
+        prepared_messages = [(message, self._cards_json(message)) for message in messages]
         with get_session() as database, database.begin():
             row = None
             if str(session_id).isdigit():
@@ -99,8 +121,8 @@ class ChatHistoryStore:
             row.updated_at = now
             database.query(ChatMessage).filter_by(session_id=row.id).delete(synchronize_session=False)
             database.add_all([
-                ChatMessage(session_id=row.id, role=message.get("role", "user"), content=message.get("content", ""))
-                for message in messages
+                ChatMessage(session_id=row.id, role=message.get("role", "user"), content=message.get("content", ""), cards_json=cards_json)
+                for message, cards_json in prepared_messages
             ])
             sid = str(row.id)
         return sid

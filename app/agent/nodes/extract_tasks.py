@@ -121,6 +121,7 @@ def extract_and_create_tasks_node(state: AgentState) -> AgentState:
                         task_data.update(task_device_fields(device_action, username))
 
                     task = tracker.create_task(task_data)
+                    state.chat_task_ids.append(str(task.id))
                     created_tasks.append(task)
                     logger.info("extract_tasks 创建任务: %s (类型=%s, 优先级=%s)",
                                 task.title, task.task_type, task.priority)
@@ -138,7 +139,7 @@ def extract_and_create_tasks_node(state: AgentState) -> AgentState:
                     task_notice += f"{i}. {task.title}\n"
                 if len(created_tasks) > 3:
                     task_notice += f"... 还有 {len(created_tasks) - 3} 个任务已添加到任务列表\n"
-                task_notice += "\n💡 哥哥，可以在「农事日历」里查看和管理任务。"
+                task_notice += "\n💡 您可以在「农事日历」里查看和管理任务。"
 
                 # 追加到回答中
                 state.final_answer += task_notice

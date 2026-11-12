@@ -40,7 +40,7 @@ def _agent_dispatch_node(state: AgentState) -> AgentState:
         logger.exception("Agent 调度失败")
         state.error_code = "AGENT_EXECUTION_FAILED"
         state.final_answer = (
-            f"抱歉，处理您的请求时遇到了问题。请稍后重试或换个方式描述您的需求～"
+            "处理您的请求时遇到了问题，请稍后重试或补充具体需求。"
         )
         state.messages.append(AIMessage(content=state.final_answer))
     return state

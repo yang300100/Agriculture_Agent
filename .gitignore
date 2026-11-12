@@ -14,19 +14,22 @@ __pycache__/
 dist/
 build/
 
-# 大体积模型权重只保存在本机，不提交到 Git。
+# 大体积模型权重：默认不提交；HMPD-Net 主模型通过 Git LFS 随仓库分发。
 /models/weights/
 *.pth
 *.pt
 *.onnx
 *.safetensors
 *.ckpt
+# 例外：默认推理模型必须随仓库提供，保证 clone 后开箱即用（走 LFS）
+!/models/weights/
+!/models/weights/hmpd_net.pth
 /experiments/
 /train_data/
 /data/backups/
 
-# 运行时数据（本地存储）
-data/
+# 运行时数据（本地存储）：只保留占位文件，确保 clone 后目录存在
+data/*
 !data/.gitkeep
 faiss_index/
 agriculture_faiss_index/

@@ -10,6 +10,22 @@ DB_URL = os.getenv("DATABASE_URL") or f"sqlite:///{os.path.abspath(DB_PATH)}"
 if DB_URL.startswith("postgres://"):
     DB_URL = "postgresql://" + DB_URL[len("postgres://"):]
 
+
+def _ensure_sqlite_dir(url: str) -> None:
+    """哥哥，SQLite 不会自己创建父目录，clone 后的首次启动要替它补上。"""
+    prefix = "sqlite:///"
+    if not url.startswith(prefix):
+        return
+    raw_path = url[len(prefix):]
+    if not raw_path or raw_path == ":memory:":
+        return
+    parent = os.path.dirname(os.path.abspath(raw_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
+_ensure_sqlite_dir(DB_URL)
+
 _engine_options = {
     "echo": False,
     "pool_pre_ping": True,

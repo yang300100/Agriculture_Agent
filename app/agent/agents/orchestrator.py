@@ -72,6 +72,10 @@ class AgentOrchestrator:
             logger.info("调度: intent=%s 属于跳过类型，直接走 RAG 检索", intent)
             return "rag_retrieval"
 
+        # 哥哥，图像的建议范围和联动由植保代理核对，别让关键词再触发一套操作。
+        if intent == "image_analysis":
+            return self._run_single(state, intent)
+
         secondary = self._detect_secondary(question, intent)
         targets = [intent] + secondary if secondary else [intent]
         logger.info("调度: targets=%s", targets)
@@ -189,6 +193,7 @@ class AgentOrchestrator:
             "policy_query": "📜 政策信息", "progress_tracking": "📋 进度跟踪",
             "reminder_setup": "⏰ 提醒", "field_management": "📍 地块信息",
             "harvest_planning": "🌾 收获规划", "image_analysis": "🔍 图片分析",
+            "device_control": "设备操作", "crop_monitoring": "作物监测",
         }
 
         primary_answer = results.get(primary, "")
@@ -206,7 +211,7 @@ class AgentOrchestrator:
                 if intent == "weather_query" and has_weather:
                     logger.info("合并回答: primary 已包含天气信息，跳过 weather_query 副 section")
                     continue
-                name = section_names.get(intent, intent)
+                name = section_names.get(intent, "补充信息")
                 sections.append(f"\n---\n### {name}\n{answer}")
         return "\n".join(sections)
 
@@ -217,6 +222,10 @@ class AgentOrchestrator:
         is_task_creation = any(
             re.search(p, question) for p in _TASK_CREATION_PATTERNS
         )
+        if primary == "reminder_setup" and not re.search(
+            r"(?:现在|立即|马上).{0,4}(?:停止|关闭|启动|打开)", question
+        ):
+            is_task_creation = True
         found = []
         for intent, keywords in CROSS_DOMAIN_KEYWORDS.items():
             if intent == primary:

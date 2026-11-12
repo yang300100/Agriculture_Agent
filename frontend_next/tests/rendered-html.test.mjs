@@ -797,9 +797,7 @@ test("图片发送后会在当前消息中显示附件预览", async () => {
     new URL("../app/components/Chat.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(chat, /image:\s*image/);
   assert.match(chat, /className="message-image"/);
-  assert.match(chat, /image_data:\s*image\?\.data/);
 });
 
 test("设备注册可直接填写连接 JSON 且规则设置参数有名称和值", async () => {

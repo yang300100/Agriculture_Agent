@@ -11,7 +11,12 @@ export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   image?: { name: string; url: string };
+  cards?: ChatCardReference[];
 };
+
+export type ChatCardReference =
+  | { type: "device"; device_id: string; pending_action_id?: string }
+  | { type: "task"; task_id: string };
 
 export type Profile = {
   user_region: string;

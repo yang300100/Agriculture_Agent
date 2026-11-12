@@ -2,16 +2,16 @@
 一体化硬件模拟器 v5.0 — 完整协议栈模拟
 
 每个虚拟设备绑定真实通信协议，终端/前端/API 均通过协议通道控制设备。
-无需真实硬件，无需 mosquitto/pymodbus/paho-mqtt。
+无需真实硬件、外部 mosquitto 或 pymodbus；依赖 Flask、paho-mqtt 和 Pillow。
 
 架构:
   UnifiedDeviceManager（共享状态）
    ├── 🌐 HTTP Server (Flask :5000)
-   │    └── irrigation_pump_01, grow_light_01, fertilizer_pump_01
+   │    └── irrigation_pump_01, grow_light_01, fertilizer_pump_01, greenhouse_camera_01
    ├── 📡 MQTT Broker (内嵌 :1883) + 设备处理器
    │    └── ventilation_fan_01, heater_01
    ├── 🔧 Modbus TCP Server (内嵌 :5020)
-   │    └── env_sensor_01, greenhouse_camera_01
+   │    └── env_sensor_01
    └── 🖥️  终端 CLI（协议客户端）
         ├── HTTP设备 → requests.post(:5000)
         ├── MQTT设备 → MQTT publish(:1883)
@@ -30,6 +30,10 @@ import socket
 import random
 import threading
 import asyncio
+import argparse
+import io
+import queue
+import signal
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -135,8 +139,8 @@ DEVICE_DEFS = {
     "greenhouse_camera_01": {
         "name": "温室监控摄像头",
         "type": "capture",
-        "protocol": PROTO_MODBUS,
-        "modbus_slave": 2,
+        "protocol": PROTO_HTTP,
+        "http_url": f"http://127.0.0.1:{HTTP_PORT}",
         "initial": {"power": True, "status": "standby", "resolution": "640x480", "last_capture_time": None},
         "sensors": ["resolution"],
     },
@@ -202,6 +206,7 @@ class UnifiedDeviceManager:
     def __init__(self):
         self._devices: Dict[str, dict] = {}
         self._lock = threading.Lock()
+        self.protocol_status = {PROTO_HTTP: True, PROTO_MQTT: True, PROTO_MODBUS: True}
 
     def init_all(self):
         """从 DEVICE_DEFS 初始化所有设备"""
@@ -322,54 +327,70 @@ class UnifiedDeviceManager:
         threading.Thread(target=auto, daemon=True).start()
 
     def _do_capture(self, dev: dict, name: str, source: str) -> dict:
-        import base64
         if dev["_type"] != "capture":
             return {"success": False, "message": f"{name} 不支持拍照"}
-        # 优先读取桌面真实图片（用于病害识别测试），不存在则生成模拟 JPEG
-        path = os.path.join(os.path.expanduser("~"), "Desktop", "病害1.jpg")
-        if os.path.exists(path):
-            try:
-                with open(path, "rb") as f:
-                    data = f.read()
-                dev["last_capture_time"] = datetime.now().isoformat()
-                log(name, "拍照成功", f"{len(data)//1024}KB (真实图片)", source)
-                return {
-                    "success": True,
-                    "message": f"OK ({len(data)} bytes)",
-                    "image_base64": base64.b64encode(data).decode("utf-8"),
-                    "metadata": {"width": 640, "height": 480, "size_bytes": len(data),
-                                 "timestamp": datetime.now().isoformat(), "source": "desktop_image"},
-                }
-            except Exception as e:
-                log(name, "读取真实图片失败，回退模拟", str(e), source)
-        # fallback: 生成模拟 JPEG 图像（最小有效 JPEG，约 1KB 绿色图）
+        # 哥哥，默认只生成虚拟温室图；外部图片必须通过环境变量显式指定。
+        configured_path = os.getenv("HARDWARE_CAMERA_IMAGE")
         try:
-            sim_data = self._generate_simulated_jpeg()
-            dev["last_capture_time"] = datetime.now().isoformat()
-            log(name, "拍照成功", f"{len(sim_data)}B (模拟图片)", source)
+            from PIL import Image, ImageOps
+            if configured_path is not None:
+                if not configured_path.strip():
+                    raise ValueError("图片路径不能为空")
+                with Image.open(configured_path) as image:
+                    image.load()
+                    image = ImageOps.exif_transpose(image).convert("RGB")
+                    width, height = image.size
+                    output = io.BytesIO()
+                    image.save(output, format="JPEG", quality=90)
+                    data = output.getvalue()
+                image_source = "configured_image"
+            else:
+                data = self._generate_simulated_jpeg()
+                with Image.open(io.BytesIO(data)) as image:
+                    width, height = image.size
+                image_source = "simulated"
+            timestamp = datetime.now().isoformat()
+            dev["last_capture_time"] = timestamp
+            dev["resolution"] = f"{width}x{height}"
+            log(name, "虚拟快照成功", f"{width}x{height}, {len(data)}B", source)
             return {
                 "success": True,
-                "message": f"OK — 模拟图片 ({len(sim_data)} bytes)",
-                "image_base64": base64.b64encode(sim_data).decode("utf-8"),
-                "metadata": {"width": 320, "height": 240, "size_bytes": len(sim_data),
-                             "timestamp": datetime.now().isoformat(), "source": "simulated"},
+                "message": f"虚拟摄像头快照 ({len(data)} bytes)",
+                "image_base64": base64.b64encode(data).decode("ascii"),
+                "metadata": {"width": width, "height": height, "size_bytes": len(data),
+                             "timestamp": timestamp, "source": image_source, "simulated": True},
             }
-        except Exception as e:
-            log(name, "拍照失败", str(e), source)
-            return {"success": False, "message": str(e)}
+        except ImportError:
+            message = "虚拟摄像头需要 Pillow，请执行 pip install Pillow"
+        except Exception as exc:
+            prefix = "HARDWARE_CAMERA_IMAGE 读取失败" if configured_path is not None else "生成虚拟图片失败"
+            message = f"{prefix}: {exc}"
+        log(name, "快照失败", message, source)
+        return {"success": False, "message": message}
 
     @staticmethod
     def _generate_simulated_jpeg() -> bytes:
-        """返回内嵌的有效 1×1 绿色 JPEG，保持模拟器零额外依赖。"""
-        encoded = (
-            "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQO"
-            "DwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcH"
-            "BwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo"
-            "KCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAA"
-            "AAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAA"
-            "AAAABv/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJQAXDX/2Q=="
-        )
-        return base64.b64decode(encoded)
+        """生成 640×480 温室演示 JPEG，保留旧调用入口。"""
+        from PIL import Image, ImageDraw
+        image = Image.new("RGB", (640, 480), "#deecdf")
+        draw = ImageDraw.Draw(image)
+        draw.polygon([(0, 350), (320, 245), (640, 350), (640, 480), (0, 480)], fill="#a8bba0")
+        for x in range(0, 641, 80):
+            draw.line([(320, 55), (x, 350)], fill="#72988a", width=3)
+        for y in (135, 205, 275, 345):
+            draw.line([(0, y), (640, y)], fill="#a6bdb2", width=2)
+        for y, size in ((285, 14), (340, 22), (410, 31)):
+            for x in range(65, 641, 100):
+                draw.line([(x, y), (x, y + size)], fill="#39624b", width=4)
+                draw.ellipse((x - size, y - size, x + 3, y + 6), fill="#3c8756")
+                draw.ellipse((x - 3, y - size + 3, x + size, y + 9), fill="#5b9a65")
+        draw.rectangle((0, 0, 640, 55), fill="#173e31")
+        draw.text((22, 21), "GREENHOUSE 01", fill="white")
+        draw.rectangle((0, 452, 640, 480), fill="#173e31")
+        draw.text((22, 461), "CAMERA 01 | 640 x 480", fill="white")
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=90)
+        return output.getvalue()
 
 
 def _fmt_params(p: dict) -> str:
@@ -383,15 +404,70 @@ def _fmt_params(p: dict) -> str:
 # 🌐 HTTP 设备服务器 (Flask)
 # ═══════════════════════════════════════════════════
 
-def create_http_server(mgr: UnifiedDeviceManager) -> bool:
-    """启动 Flask HTTP 服务器，所有 HTTP 设备通过此服务器暴露。"""
+PANEL_HTML = r"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>温室硬件模拟器</title><style>
+:root{font-family:system-ui,"Microsoft YaHei",sans-serif;color:#173e31;background:#f2f6f1}*{box-sizing:border-box}
+body{max-width:1180px;margin:auto;padding:32px 24px}header{margin-bottom:28px}h1{margin:8px 0;font-size:30px}
+.eyebrow{font-size:12px;letter-spacing:3px;color:#537663}p{line-height:1.65;color:#607168}.protocols{display:flex;gap:12px;flex-wrap:wrap}
+.badge{background:#e3eddf;padding:8px 12px;border-radius:8px}.disabled{background:#f3e8df;color:#875e3e}
+.devices{display:grid;grid-template-columns:repeat(auto-fit,minmax(285px,1fr));gap:18px;margin-top:24px}
+article{background:white;border:1px solid #dce7dc;border-radius:14px;padding:20px}h2{margin:0 0 8px;font-size:19px}
+.detail{font-size:12px;color:#738078;overflow-wrap:anywhere}.state{min-height:88px;white-space:pre-wrap;font-size:13px;line-height:1.6}
+.actions{display:flex;gap:7px;flex-wrap:wrap}button{border:1px solid #ccdbce;border-radius:7px;background:#f5f8f3;color:#214f3c;padding:8px 11px;cursor:pointer}
+button:hover{background:#e2eddd}button:disabled{cursor:not-allowed;opacity:.45}#message{min-height:26px;margin-top:20px;white-space:pre-wrap}
+.preview{margin-top:26px;background:white;padding:20px;border:1px solid #dce7dc;border-radius:14px}.preview img{display:block;width:min(100%,640px);height:auto;border-radius:8px}
+</style></head><body><header><div class="eyebrow">VIRTUAL GREENHOUSE / LOCAL DEMO</div><h1>温室硬件模拟器</h1>
+<p>7 台虚拟设备，共享同一份运行状态。摄像头提供模拟快照；本面板未连接物理摄像头。</p>
+<div id="protocols" class="protocols"></div></header><main><div id="devices" class="devices"></div>
+<div id="message" role="status" aria-live="polite"></div><section id="preview" class="preview" hidden><h2>虚拟摄像头快照</h2>
+<p id="capture-info"></p><img id="snapshot" alt="虚拟温室模拟快照"></section></main>
+<script>
+const devices = document.getElementById('devices');
+const message = document.getElementById('message');
+const labels = {powered_off:'已关机',standby:'待机',running:'工作中',error:'故障'};
+function element(tag,text,className){const node=document.createElement(tag);node.textContent=text;if(className)node.className=className;return node;}
+async function loadState(){
+ const response=await fetch('/api/panel/state');if(!response.ok)throw new Error('读取状态失败');const data=await response.json();
+ const protocols=document.getElementById('protocols');protocols.replaceChildren();
+ for(const [name,available] of Object.entries(data.protocols))protocols.append(element('span',name+' · '+(available?'可用':'已禁用 / 不可用'),'badge'+(available?'':' disabled')));
+ devices.replaceChildren();
+ for(const device of data.devices){
+  const card=element('article','');card.append(element('h2',device.name));
+  card.append(element('div',device.id+' · '+device.protocol,'detail'));
+  card.append(element('p','状态：'+(labels[device.state.status]||device.state.status)+'\n电源：'+(device.state.power?'开启':'关闭'),'state'));
+  const actions=element('div','','actions');const commands=[['power_on','开机']];
+  if(!['capture','read_sensor'].includes(device.type))commands.push(['start','开始'],['stop','停止']);
+  commands.push(['power_off','关机'],['reset','复位']);
+  if(device.type==='capture')commands.push(['capture','拍摄快照']);
+  for(const [command,label] of commands){const button=element('button',label);button.disabled=!data.protocols[device.protocol];button.onclick=()=>sendCommand(device.id,command);actions.append(button);}
+  card.append(actions);devices.append(card);
+ }
+}
+async function sendCommand(deviceId,command){
+ try{const response=await fetch('/api/panel/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:deviceId,command})});
+ const result=await response.json();if(!response.ok||!result.success)throw new Error(result.message||'设备操作失败');message.textContent=result.message||'操作完成';
+ if(result.image_base64){const metadata=result.metadata||{};document.getElementById('snapshot').src='data:image/jpeg;base64,'+result.image_base64;
+ document.getElementById('capture-info').textContent='模拟快照 · '+metadata.width+' × '+metadata.height+' · '+metadata.timestamp;document.getElementById('preview').hidden=false;}
+ await loadState();}catch(error){message.textContent=error.message;}
+}
+loadState().catch(error=>message.textContent=error.message);
+setInterval(()=>loadState().catch(error=>message.textContent=error.message),3000);
+</script></body></html>"""
+
+
+def create_http_app(mgr: UnifiedDeviceManager):
+    """构建共享管理器上的 HTTP 接口和中文面板，不启动网络监听。"""
     try:
         from flask import Flask, request, jsonify
-    except ImportError:
-        log_info("[HTTP] Flask 未安装: pip install flask", C.R)
-        return False
+    except ImportError as exc:
+        raise RuntimeError("[HTTP] Flask 未安装，请执行 pip install flask") from exc
 
     app = Flask(__name__)
+
+    @app.route("/", methods=["GET"])
+    def panel():
+        return PANEL_HTML
 
     @app.route("/health", methods=["GET"])
     def health():
@@ -400,11 +476,13 @@ def create_http_server(mgr: UnifiedDeviceManager) -> bool:
     @app.route("/api/state", methods=["GET"])
     @app.route("/state", methods=["GET"])
     def get_state():
+        if not mgr.protocol_status.get(PROTO_HTTP, False):
+            return jsonify({"error": "HTTP 已禁用或不可用"}), 503
         device_id = request.args.get("device_id", "")
         if device_id:
             dev = mgr.get(device_id)
-            if dev:
-                return jsonify({k: v for k, v in dev.items() if not k.startswith("_")})
+            if dev and dev["_protocol"] == PROTO_HTTP:
+                return jsonify(mgr.read_state(device_id))
             return jsonify({"error": "not found"}), 404
         # 返回所有 HTTP 设备概览
         summary = {}
@@ -414,45 +492,92 @@ def create_http_server(mgr: UnifiedDeviceManager) -> bool:
                                     "status": d["state"].get("status")}
         return jsonify({"devices": summary, "total": len(summary)})
 
-    @app.route("/api/command", methods=["POST"])
-    @app.route("/command", methods=["POST"])
-    def execute():
-        data = request.get_json(silent=True) or {}
+    @app.route("/api/panel/state", methods=["GET"])
+    def panel_state():
+        return jsonify({"devices": mgr.list_all(), "protocols": dict(mgr.protocol_status)})
+
+    def handle_command(panel_control=False):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "message": "请求必须是 JSON 对象"}), 400
         device_id = data.get("device_id", "")
         command = data.get("command", "")
         params = data.get("params", {})
-        if not device_id:
-            return jsonify({"success": False, "message": "缺少 device_id"}), 400
+        if not isinstance(device_id, str) or not device_id:
+            return jsonify({"success": False, "message": "缺少有效的 device_id"}), 400
+        if not isinstance(command, str) or not command or not isinstance(params, dict):
+            return jsonify({"success": False, "message": "command 必须是非空字符串，params 必须是对象"}), 400
         dev = mgr.get(device_id)
-        if not dev or dev["_protocol"] != PROTO_HTTP:
+        if not dev or (not panel_control and dev["_protocol"] != PROTO_HTTP):
             return jsonify({"success": False, "message": f"设备 '{device_id}' 不存在或非HTTP"}), 404
-        src = request.headers.get("X-Source", PROTO_HTTP)
+        if not mgr.protocol_status.get(dev["_protocol"], False):
+            return jsonify({"success": False, "message": f"{dev['_protocol']} 已禁用或不可用"}), 503
+        src = "面板" if panel_control else request.headers.get("X-Source", PROTO_HTTP)
         result = mgr.execute(device_id, command, params, source_proto=src)
         code = 200 if result.get("success") else 400
         return jsonify(result), code
 
-    def run():
-        import logging
-        logging.getLogger('werkzeug').setLevel(logging.ERROR)
-        app.run(host="0.0.0.0", port=HTTP_PORT, debug=False, use_reloader=False)
+    @app.route("/api/command", methods=["POST"])
+    @app.route("/command", methods=["POST"])
+    def execute():
+        return handle_command()
 
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
+    @app.route("/api/panel/command", methods=["POST"])
+    def panel_execute():
+        return handle_command(panel_control=True)
 
-    # Flask 首次导入在较慢的 Windows 环境中可能超过 0.5 秒，轮询就绪状态。
-    last_error = None
-    for _ in range(20):
+    return app
+
+
+class HttpServer:
+    """持有自身监听资源，绑定失败不会误认其他进程的健康检查。"""
+
+    def __init__(self, mgr: UnifiedDeviceManager, host="0.0.0.0", port=HTTP_PORT):
+        self._mgr = mgr
+        self._host, self._port = host, port
+        self._server = None
+        self._thread = None
+
+    def start(self):
+        from werkzeug.serving import ThreadedWSGIServer
+
+        class OwnedWSGIServer(ThreadedWSGIServer):
+            allow_reuse_address = sys.platform != "win32"
+
+            def server_bind(server):
+                # 哥哥，Windows 必须独占绑定，避免通配地址悄悄复用别人的端口。
+                if sys.platform == "win32":
+                    server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                return super().server_bind()
+
         try:
-            import requests
-            r = requests.get(f"http://127.0.0.1:{HTTP_PORT}/health", timeout=0.5)
-            if r.status_code == 200:
-                log_info(f"[HTTP] 服务器就绪 -> :{HTTP_PORT}", C.G)
-                return True
-        except Exception as exc:
-            last_error = exc
-        time.sleep(0.25)
-    log_info(f"[HTTP] 启动失败 (:{HTTP_PORT}): {last_error}", C.R)
-    return False
+            self._server = OwnedWSGIServer(self._host, self._port, create_http_app(self._mgr))
+        except (OSError, SystemExit) as exc:
+            raise RuntimeError(f"[HTTP] 无法绑定 {self._host}:{self._port}，请检查端口占用") from exc
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        log_info(f"[HTTP] 控制面板 -> http://127.0.0.1:{self._port}/", C.G)
+        return self
+
+    def stop(self):
+        if self._server is not None:
+            if self._thread and self._thread.is_alive():
+                self._server.shutdown()
+                self._thread.join(timeout=3)
+            self._server.server_close()
+            self._server = None
+
+
+def create_http_server(mgr: UnifiedDeviceManager) -> bool:
+    """保留旧启动入口；调用方可通过管理器持有的服务对象停止监听。"""
+    service = HttpServer(mgr)
+    mgr._http_server = service
+    try:
+        service.start()
+        return True
+    except (ImportError, RuntimeError) as exc:
+        log_info(f"[HTTP] 启动失败: {exc}", C.R)
+        return False
 
 
 # ═══════════════════════════════════════════════════
@@ -476,6 +601,12 @@ class MqttBroker:
         self._wildcard_subs: List[Tuple[str, any]] = [] # [(pattern, writer), ...]
         self._running = False
         self._started = False  # 是否成功绑定端口
+        self._ready = threading.Event()
+        self._loop = None
+        self._server = None
+        self._thread = None
+        self._clients = set()
+        self._start_error = None
 
     @staticmethod
     def _match_topic(pattern: str, topic: str) -> bool:
@@ -497,6 +628,7 @@ class MqttBroker:
         return val, offset
 
     async def _handle(self, reader, writer):
+        self._clients.add(writer)
         addr = writer.get_extra_info("peername")
         cid = str(addr)
         buf = b""
@@ -584,6 +716,7 @@ class MqttBroker:
         except (asyncio.TimeoutError, ConnectionError, OSError):
             pass
         finally:
+            self._clients.discard(writer)
             for tp in list(self._subscriptions):
                 self._subscriptions[tp] = [w for w in self._subscriptions[tp] if w != writer]
                 if not self._subscriptions[tp]:
@@ -603,28 +736,51 @@ class MqttBroker:
 
     async def _run(self):
         self._running = True
+        self._loop = asyncio.get_running_loop()
         try:
-            server = await asyncio.start_server(
+            self._server = await asyncio.start_server(
                 self._handle, self._host, self._port,
-                reuse_address=True,  # 允许端口快速复用
+                reuse_address=(sys.platform != "win32"),
             )
             log_info(f"[MQTT Broker] 启动 -> {self._host}:{self._port}", C.G)
             self._started = True
-            async with server:
-                await server.serve_forever()
-        except OSError as e:
-            log_info(f"[MQTT Broker] 端口 {self._port} 被占用: {e}", C.R)
-            log_info(f"[MQTT Broker] 请先关闭占用端口的程序，或: netstat -ano | findstr \":{self._port}\"", C.Y)
-            self._started = False
+            self._ready.set()
+            async with self._server:
+                await self._server.serve_forever()
+        except OSError as exc:
+            self._start_error = exc
+            log_info(f"[MQTT Broker] 启动失败，无法绑定 {self._host}:{self._port}: {exc}", C.R)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._running = self._started = False
+            self._ready.set()
 
     def start(self):
         """在后台线程启动 Broker"""
         def _go():
             asyncio.run(self._run())
-        t = threading.Thread(target=_go, daemon=True)
-        t.start()
-        time.sleep(0.3)
-        return t
+        self._thread = threading.Thread(target=_go, daemon=True)
+        self._thread.start()
+        if not self._ready.wait(timeout=5) or not self._started:
+            raise RuntimeError(f"[MQTT] 无法启动 :{self._port}: {self._start_error or '启动超时'}")
+        return self._thread
+
+    def stop(self):
+        async def close():
+            for writer in list(self._clients):
+                writer.close()
+            if self._server:
+                self._server.close()
+                await self._server.wait_closed()
+        if self._loop and self._loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(close(), self._loop)
+            try:
+                future.result(timeout=3)
+            except (TimeoutError, RuntimeError):
+                pass
+        if self._thread:
+            self._thread.join(timeout=3)
 
 
 # ═══════════════════════════════════════════════════
@@ -641,6 +797,7 @@ class MqttDeviceHandler:
         self._port = broker_port
         self._running = False
         self._topic_to_device: Dict[str, str] = {}  # topic -> device_id
+        self._stop_event = threading.Event()
 
     def connect(self) -> bool:
         """连接 Broker 并订阅所有 MQTT 设备的控制主题"""
@@ -679,17 +836,17 @@ class MqttDeviceHandler:
 
         log_info(f"[MQTT Handler] 已订阅 {len(self._topic_to_device)} 个设备控制主题", C.G)
         self._running = True
+        self._stop_event.clear()
         self._last_publish = 0
 
         # 启动状态发布线程
         def _publish_loop():
-            while self._running:
-                time.sleep(2)
-                if self._running:
-                    for did in self._topic_to_device.values():
-                        self.publish_state(did)
+            while not self._stop_event.wait(2):
+                for did in self._topic_to_device.values():
+                    self.publish_state(did)
 
-        threading.Thread(target=_publish_loop, daemon=True).start()
+        self._publish_thread = threading.Thread(target=_publish_loop, daemon=True)
+        self._publish_thread.start()
         return True
 
     def _on_connect(self, client, userdata, flags, rc):
@@ -727,6 +884,15 @@ class MqttDeviceHandler:
             self._client.publish(state_topic, json.dumps(state, ensure_ascii=False), qos=0)
         except Exception:
             pass
+
+    def stop(self):
+        self._running = False
+        self._stop_event.set()
+        if hasattr(self, "_publish_thread"):
+            self._publish_thread.join(timeout=3)
+        if hasattr(self, "_client"):
+            self._client.disconnect()
+            self._client.loop_stop()
 
 
 # ═══════════════════════════════════════════════════
@@ -818,6 +984,8 @@ class ModbusTcpServer:
         self._host = host; self._port = port
         self._running = False
         self._server_sock: Optional[socket.socket] = None
+        self._clients = set()
+        self._client_lock = threading.Lock()
         # 每个从站持有自己管理器的引用
         self._slave_ids = set()
         for d in mgr.list_all():
@@ -948,6 +1116,8 @@ class ModbusTcpServer:
         except (socket.timeout, ConnectionError, OSError):
             pass
         finally:
+            with self._client_lock:
+                self._clients.discard(conn)
             try: conn.close()
             except Exception: pass
 
@@ -955,7 +1125,10 @@ class ModbusTcpServer:
         """在后台线程启动 Modbus TCP 服务器"""
         self._running = True
         self._server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if sys.platform == "win32":
+            self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server_sock.bind((self._host, self._port))
         self._server_sock.listen(10)
         self._server_sock.settimeout(1.0)
@@ -965,6 +1138,8 @@ class ModbusTcpServer:
             while self._running:
                 try:
                     conn, addr = self._server_sock.accept()
+                    with self._client_lock:
+                        self._clients.add(conn)
                     log_info(f"[Modbus] 客户端连接: {addr}", C.DIM)
                     threading.Thread(target=self._handle_client, args=(conn, addr), daemon=True).start()
                 except socket.timeout:
@@ -972,15 +1147,24 @@ class ModbusTcpServer:
                 except Exception:
                     break
 
-        t = threading.Thread(target=_loop, daemon=True)
-        t.start()
-        time.sleep(0.2)
-        return t
+        self._thread = threading.Thread(target=_loop, daemon=True)
+        self._thread.start()
+        return self._thread
 
     def stop(self):
         self._running = False
         try: self._server_sock.close()
         except Exception: pass
+        if hasattr(self, "_thread"):
+            self._thread.join(timeout=2)
+        with self._client_lock:
+            clients = list(self._clients)
+        for conn in clients:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            conn.close()
 
 
 # ═══════════════════════════════════════════════════
@@ -1041,13 +1225,14 @@ class SensorSimulator:
     def __init__(self, mgr: UnifiedDeviceManager):
         self._mgr = mgr
         self._running = False
+        self._stop_event = threading.Event()
 
     def start(self, interval: int = 5):
         self._running = True
+        self._stop_event.clear()
 
         def loop():
-            while self._running:
-                time.sleep(interval)
+            while not self._stop_event.wait(interval):
                 with self._mgr._lock:
                     for dev_id, dev in self._mgr._devices.items():
                         if dev.get("status") != "running":
@@ -1064,11 +1249,15 @@ class SensorSimulator:
                         if "flow_rate" in dev and dev.get("_type") == "irrigate":
                             dev["flow_rate"] = round(random.uniform(2.0, 8.0), 1)
 
-        threading.Thread(target=loop, daemon=True).start()
+        self._thread = threading.Thread(target=loop, daemon=True)
+        self._thread.start()
         return self
 
     def stop(self):
         self._running = False
+        self._stop_event.set()
+        if hasattr(self, "_thread"):
+            self._thread.join(timeout=2)
 
 
 # ═══════════════════════════════════════════════════
@@ -1101,9 +1290,9 @@ class TerminalUI:
 
   {C.BOLD}协议:{C.W}  🌐 HTTP(:{HTTP_PORT})  |  📡 MQTT(:{MQTT_PORT})  |  🔧 Modbus TCP(:{MODBUS_PORT})
 
-  {C.Y}HTTP 设备 (3台):{C.W}   灌溉泵 / 补光灯 / 施肥一体机
+  {C.Y}HTTP 设备 (4台):{C.W}   灌溉泵 / 补光灯 / 施肥一体机 / 虚拟摄像头
   {C.Y}MQTT 设备 (2台):{C.W}   通风扇 / 加热器
-  {C.Y}Modbus 设备 (2台):{C.W} 温湿度传感器 / 摄像头
+  {C.Y}Modbus 设备 (1台):{C.W} 温湿度传感器
   {C.G}初始状态: 全部通电待机 ✅{C.W}
 """)
 
@@ -1227,6 +1416,9 @@ class TerminalUI:
         proto = dev["_protocol"]
         name = dev["_name"]
         params = params or {}
+        if not self._mgr.protocol_status.get(proto, False):
+            log_info(f"[{proto}] 已禁用或不可用", C.Y)
+            return
 
         if proto == PROTO_HTTP:
             self._via_http(device_id, command, params, name)
@@ -1332,83 +1524,110 @@ def _setup_console():
         except Exception: pass
 
 
-def main():
+def main(argv=None):
+    """启动启用的协议；EOF 转为后台等待，退出时回收本进程持有的资源。"""
     _setup_console()
-
-    # ── 1. 统一设备管理器（默认通电待机）──
+    parser = argparse.ArgumentParser(description="统一虚拟温室硬件模拟器")
+    parser.add_argument("--no-http", action="store_true", help="禁用 HTTP 和网页面板")
+    parser.add_argument("--no-mqtt", action="store_true", help="禁用 MQTT 协议设备")
+    parser.add_argument("--no-modbus", action="store_true", help="禁用 Modbus 协议设备")
+    parser.add_argument("--headless", action="store_true", help="不读取终端输入，持续运行直到收到退出信号")
+    options = parser.parse_args(argv)
     mgr = UnifiedDeviceManager()
     mgr.init_all()
+    mgr.protocol_status = {PROTO_HTTP: False, PROTO_MQTT: False, PROTO_MODBUS: False}
+    stop_event = threading.Event()
+    cleanup = []
+    previous_handlers = {}
+    mqtt_client = modbus_client = None
+    exit_code = 0
 
-    # ── 2. HTTP 服务器 ──
-    http_ok = create_http_server(mgr)
+    def request_stop(signum, frame):
+        stop_event.set()
 
-    # ── 3. MQTT Broker ──
-    mqtt_broker = MqttBroker("127.0.0.1", MQTT_PORT)
-    mqtt_broker.start()
-    time.sleep(0.5)  # 等待 broker 绑定端口
-    mqtt_broker_ok = mqtt_broker._started
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.signal(signum, request_stop)
 
-    # ── 4. MQTT 设备处理器 ──
-    mqtt_handler = MqttDeviceHandler(mgr, broker_port=MQTT_PORT)
-    mqtt_handler_ok = mqtt_handler.connect() if mqtt_broker_ok else False
-
-    # ── 5. MQTT 客户端（供终端使用）──
-    mqtt_client = SimpleMqttClient(port=MQTT_PORT)
-    mqtt_client_ok = mqtt_client.connect() if mqtt_broker_ok else False
-
-    # ── 6. Modbus TCP 服务器 ──
-    modbus_server = ModbusTcpServer(mgr, port=MODBUS_PORT)
     try:
-        modbus_server.start()
-        modbus_ok = True
-    except OSError as exc:
-        modbus_ok = False
-        log_info(f"[Modbus] 启动失败 (:{MODBUS_PORT}): {exc}", C.R)
+        if not options.no_mqtt:
+            broker = MqttBroker("127.0.0.1", MQTT_PORT)
+            cleanup.append((PROTO_MQTT, broker.stop))
+            broker.start()
+            handler = MqttDeviceHandler(mgr, broker_port=MQTT_PORT)
+            cleanup.append(("MQTT 设备处理器", handler.stop))
+            if not handler.connect():
+                raise RuntimeError("[MQTT] 设备处理器连接失败，请检查 paho-mqtt 依赖及本机连接")
+            mqtt_client = SimpleMqttClient(port=MQTT_PORT)
+            cleanup.append(("MQTT 终端客户端", mqtt_client.close))
+            if not mqtt_client.connect():
+                raise RuntimeError("[MQTT] 终端客户端连接失败")
+            mgr.protocol_status[PROTO_MQTT] = True
 
-    # ── 7. Modbus 客户端（供终端使用）──
-    modbus_client = SimpleModbusClient(port=MODBUS_PORT) if modbus_ok else None
-
-    # ── 8. 传感器数据模拟 ──
-    sensor = SensorSimulator(mgr).start(interval=5)
-
-    # ── 9. 终端 UI ──
-    ui = TerminalUI(mgr, mqtt_client if mqtt_client_ok else None, modbus_client)
-    ui.banner()
-
-    # 统计信息
-    proto_counts = {}
-    for d in mgr.list_all():
-        p = d["protocol"]
-        proto_counts[p] = proto_counts.get(p, 0) + 1
-    proto_str = " | ".join(f"{PROTO_ICONS.get(p, '')} {p}: {c}台" for p, c in proto_counts.items())
-
-    print(f"  {C.BOLD}{'═'*60}{C.W}")
-    print(f"  {C.G}  {proto_str}{C.W}")
-    print(f"  {C.G}  HTTP :{HTTP_PORT} {'✅' if http_ok else '❌'}  |  MQTT :{MQTT_PORT} {'✅' if mqtt_broker_ok else '❌'}  |  Modbus :{MODBUS_PORT} {'✅' if modbus_ok else '❌'}{C.W}")
-    print(f"  {C.G}  全部设备默认通电待机，等待指令...{C.W}")
-    print(f"  {C.BOLD}{'═'*60}{C.W}")
-    print(f"  {C.DIM}输入 {C.C}help{C.DIM} 查看命令 | {C.C}list{C.DIM} 查看状态{C.W}\n")
-
-    # ── 交互循环 ──
-    try:
-        while True:
+        if not options.no_modbus:
+            modbus_server = ModbusTcpServer(mgr, port=MODBUS_PORT)
+            cleanup.append((PROTO_MODBUS, modbus_server.stop))
             try:
-                line = input(f"  {C.C}▸ {C.W}").strip()
-            except (EOFError, KeyboardInterrupt):
-                break
-            if not ui.dispatch(line):
-                break
+                modbus_server.start()
+            except OSError as exc:
+                raise RuntimeError(f"[Modbus] 无法绑定 :{MODBUS_PORT}: {exc}") from exc
+            modbus_client = SimpleModbusClient(port=MODBUS_PORT)
+            mgr.protocol_status[PROTO_MODBUS] = True
+
+        if not options.no_http:
+            http_server = HttpServer(mgr, port=HTTP_PORT)
+            cleanup.append((PROTO_HTTP, http_server.stop))
+            http_server.start()
+            mgr.protocol_status[PROTO_HTTP] = True
+
+        sensor = SensorSimulator(mgr)
+        cleanup.append(("传感器模拟", sensor.stop))
+        sensor.start(interval=5)
+        ui = TerminalUI(mgr, mqtt_client, modbus_client)
+        ui.banner()
+        for protocol, available in mgr.protocol_status.items():
+            log_info(f"[{protocol}] {'就绪' if available else '已禁用 / 不可用'}", C.G if available else C.Y)
+        log_info("所有已启用服务就绪。Ctrl+C 退出；摄像头只提供虚拟快照。", C.G)
+
+        commands = queue.Queue()
+        if not options.headless:
+            def read_commands():
+                while not stop_event.is_set():
+                    try:
+                        commands.put(input(f"  {C.C}▸ {C.W}"))
+                    except (EOFError, OSError):
+                        commands.put(None)
+                        return
+            threading.Thread(target=read_commands, daemon=True).start()
+
+        while not stop_event.wait(.1):
+            try:
+                line = commands.get_nowait()
+            except queue.Empty:
+                continue
+            if line is None:
+                log_info("终端输入已关闭，服务继续运行；使用 Ctrl+C 或终止信号退出。", C.Y)
+            elif not ui.dispatch(line):
+                stop_event.set()
     except KeyboardInterrupt:
         pass
-
-    # ── 清理 ──
-    print(f"\n  {C.Y}正在停止所有服务...{C.W}")
-    sensor.stop()
-    try: mqtt_client.close()
-    except Exception: pass
-    modbus_server.stop()
-    print(f"  {C.G}硬件模拟器已安全退出 👋{C.W}\n")
+    except (ImportError, OSError, RuntimeError) as exc:
+        log_info(f"启动失败: {exc}", C.R)
+        exit_code = 1
+    finally:
+        stop_event.set()
+        log_info("正在停止本进程的模拟服务...", C.Y)
+        for name, close in reversed(cleanup):
+            try:
+                close()
+            except Exception as exc:
+                log_info(f"[{name}] 清理失败: {exc}", C.R)
+                exit_code = 1
+        for signum, previous in previous_handlers.items():
+            signal.signal(signum, previous)
+        log_info("硬件模拟器已退出。", C.G)
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

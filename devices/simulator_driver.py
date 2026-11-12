@@ -250,7 +250,7 @@ class SimulatorDriver(BaseDeviceDriver):
         elif command.command == "stop":
             if command.execution_id and current == "running" and dev["state"].get("run_id") != command.execution_id:
                 return DeviceResult(success=False, device_id=device_id, executed_command=command.command,
-                                    message="哥哥，运行编号已变化，不能停止其他作业", error_code="RUN_MISMATCH")
+                                    message="运行编号已变化，不能停止其他作业", error_code="RUN_MISMATCH")
             if current == "running":
                 self._end_run(dev["state"], "interrupted")
             dev["state"]["run_until"] = None

@@ -274,12 +274,12 @@ def setup_registry(username: str = "default", loop=None):
                 broker_groups.setdefault(key, []).append(cd)
             for index, (key, devices_list) in enumerate(broker_groups.items(), start=1):
                 (
-                    host, port, username, password, use_tls, ca_cert,
+                    host, port, broker_username, broker_password, use_tls, ca_cert,
                     client_cert, client_key, tls_insecure, client_id,
                 ) = key
                 mqtt_drv = MQTTDriver(
                     broker_host=host, broker_port=port,
-                    username=username, password=password, client_id=client_id,
+                    username=broker_username, password=broker_password, client_id=client_id,
                     use_tls=use_tls, ca_cert=ca_cert,
                     client_cert=client_cert, client_key=client_key,
                     tls_insecure=tls_insecure,
