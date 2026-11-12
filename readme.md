@@ -340,7 +340,7 @@ app.run(host="0.0.0.0", port=8080)
 ### 1. 获取代码与模型权重
 
 ```bash
-git clone git@github.com:yang300100/Agriculture_Agent.git
+git clone https://github.com/yang300100/Agriculture_Agent.git
 cd Agriculture_Agent
 git lfs install
 git lfs pull
